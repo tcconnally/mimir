@@ -68,23 +68,23 @@ mod tests {
 
     #[test]
     fn parses_direct_server_with_db() {
-        let cli = Cli::parse_from(["mimir", "--db", "/tmp/mneme-direct.db"]);
+        let cli = Cli::parse_from(["mimir", "--db", "/tmp/mimir-direct.db"]);
         assert!(cli.command.is_none());
-        assert_eq!(cli.db, "/tmp/mneme-direct.db");
+        assert_eq!(cli.db, "/tmp/mimir-direct.db");
     }
 
     #[test]
     fn parses_direct_server_with_deprecated_mcp_flag() {
-        let cli = Cli::parse_from(["mimir", "--db", "/tmp/mneme-direct.db", "--mcp"]);
+        let cli = Cli::parse_from(["mimir", "--db", "/tmp/mimir-direct.db", "--mcp"]);
         assert!(cli.command.is_none());
-        assert_eq!(cli.db, "/tmp/mneme-direct.db");
+        assert_eq!(cli.db, "/tmp/mimir-direct.db");
     }
 
     #[test]
     fn parses_serve_subcommand_with_deprecated_mcp_flag() {
-        let cli = Cli::parse_from(["mimir", "serve", "--db", "/tmp/mneme-serve.db", "--mcp"]);
+        let cli = Cli::parse_from(["mimir", "serve", "--db", "/tmp/mimir-serve.db", "--mcp"]);
         match cli.command {
-            Some(Commands::Serve { db, .. }) => assert_eq!(db, "/tmp/mneme-serve.db"),
+            Some(Commands::Serve { db, .. }) => assert_eq!(db, "/tmp/mimir-serve.db"),
             None => panic!("expected serve subcommand"),
         }
     }

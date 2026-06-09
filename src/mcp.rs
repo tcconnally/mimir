@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn rejects_non_json_rpc_2_requests() {
         let db_path =
-            std::env::temp_dir().join(format!("mneme-jsonrpc-version-{}.db", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("mimir-jsonrpc-version-{}.db", uuid::Uuid::new_v4()));
         let db = Database::open(db_path.to_str().expect("temp db path")).expect("open temp db");
         let req = JsonRpcRequest {
             jsonrpc: "1.0".to_string(),
