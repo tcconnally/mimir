@@ -144,7 +144,7 @@ mimir --version
 ### Override database path
 
 ```bash
-export MNEME_DB_PATH=/custom/path/mimir.db
+export MIMIR_DB_PATH=/custom/path/mimir.db
 mimir
 ```
 
