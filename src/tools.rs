@@ -65,8 +65,8 @@ fn default_weight() -> f64 {
 }
 
 pub fn handle_recall(db: &Database, args: Value) -> Result<String, String> {
-    let recall_args: RecallArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid recall arguments: {}", e))?;
+    let recall_args: RecallArgs =
+        serde_json::from_value(args).map_err(|e| format!("Invalid recall arguments: {}", e))?;
 
     let items = db
         .recall(
@@ -86,10 +86,11 @@ pub fn handle_recall(db: &Database, args: Value) -> Result<String, String> {
 }
 
 pub fn handle_store(db: &Database, args: Value) -> Result<String, String> {
-    let store_args: StoreArgs = serde_json::from_value(args)
-        .map_err(|e| format!("Invalid store arguments: {}", e))?;
+    let store_args: StoreArgs =
+        serde_json::from_value(args).map_err(|e| format!("Invalid store arguments: {}", e))?;
 
-    let id = format!("mem-{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
+    let raw_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+    let id = format!("mem-{}", &raw_id[..12]);
 
     let tags = store_args.tags.unwrap_or(json!({}));
     let links: Vec<MemoryLink> = store_args

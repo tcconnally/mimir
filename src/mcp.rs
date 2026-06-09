@@ -38,9 +38,7 @@ struct MCPState {
 
 impl MCPState {
     fn new() -> Self {
-        MCPState {
-            initialized: false,
-        }
+        MCPState { initialized: false }
     }
 }
 
@@ -106,6 +104,14 @@ fn handle_request(
 ) -> Option<JsonRpcResponse> {
     let id = req.id.clone();
 
+    if req.jsonrpc != "2.0" {
+        return Some(error_response(
+            id,
+            -32600,
+            "Invalid Request: jsonrpc must be \"2.0\"",
+        ));
+    }
+
     match req.method.as_str() {
         "initialize" => {
             let response = JsonRpcResponse {
@@ -115,7 +121,7 @@ fn handle_request(
                     "protocolVersion": "2025-06-18",
                     "serverInfo": {
                         "name": "mneme",
-                        "version": "0.1.0"
+                        "version": env!("CARGO_PKG_VERSION")
                     },
                     "capabilities": {
                         "tools": {
@@ -277,7 +283,13 @@ fn handle_request(
                     Err(e) => return Some(error_response(id, -32603, &e)),
                 },
                 "mneme_health" => tools::handle_health(db),
-                _ => return Some(error_response(id, -32601, &format!("Unknown tool: {}", tool_name))),
+                _ => {
+                    return Some(error_response(
+                        id,
+                        -32601,
+                        &format!("Unknown tool: {}", tool_name),
+                    ))
+                }
             };
 
             Some(JsonRpcResponse {
@@ -293,7 +305,11 @@ fn handle_request(
             })
         }
 
-        _ => Some(error_response(id, -32601, &format!("Method not found: {}", req.method))),
+        _ => Some(error_response(
+            id,
+            -32601,
+            &format!("Method not found: {}", req.method),
+        )),
     }
 }
 
@@ -306,5 +322,32 @@ fn error_response(id: Option<Value>, code: i64, message: &str) -> JsonRpcRespons
             code,
             message: message.to_string(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn rejects_non_json_rpc_2_requests() {
+        let db_path =
+            std::env::temp_dir().join(format!("mneme-jsonrpc-version-{}.db", uuid::Uuid::new_v4()));
+        let db = Database::open(db_path.to_str().expect("temp db path")).expect("open temp db");
+        let req = JsonRpcRequest {
+            jsonrpc: "1.0".to_string(),
+            id: Some(json!(1)),
+            method: "initialize".to_string(),
+            params: None,
+        };
+        let mut state = MCPState::new();
+
+        let resp = handle_request(&req, &mut state, &db).expect("error response");
+
+        assert_eq!(resp.error.expect("json-rpc error").code, -32600);
+        assert!(!state.initialized);
+
+        let _ = fs::remove_file(db_path);
     }
 }

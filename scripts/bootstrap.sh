@@ -195,7 +195,7 @@ fi
 if [ ! -f "$MNEME_DB_PATH" ]; then
     info "Warming up database at $MNEME_DB_PATH..."
     # Brief serve+kill to trigger DB creation
-    timeout 2 mneme serve --db "$MNEME_DB_PATH" --mcp 2>/dev/null || true
+    timeout 2 mneme --db "$MNEME_DB_PATH" 2>/dev/null || true
     if [ -f "$MNEME_DB_PATH" ]; then
         ok "Database created: $MNEME_DB_PATH"
     else
@@ -244,14 +244,14 @@ fi
 # ── Step 6: Verify binary ───────────────────────────────────────────────────
 header "Step 6: Verify binary"
 
-# Quick smoke test: start server briefly, check it initializes
-SMOKE_OUT=$(timeout 2 mneme serve --db "$MNEME_DB_PATH" --mcp 2>&1 </dev/null || true)
+# Quick smoke test: start server directly, check it initializes
+SMOKE_OUT=$(timeout 2 mneme --db "$MNEME_DB_PATH" 2>&1 </dev/null || true)
 if echo "$SMOKE_OUT" | grep -q "MCP server ready"; then
     ok "MCP server initializes correctly"
     ok "Tools: mneme_recall, mneme_store, mneme_health"
 else
     warn "MCP smoke test had issues (non-critical). Manual check:"
-    warn "  Run: mneme serve --db $MNEME_DB_PATH --mcp"
+    warn "  Run: mneme --db $MNEME_DB_PATH"
 fi
 
 # ── Step 7: Success summary ─────────────────────────────────────────────────
@@ -272,11 +272,11 @@ echo "============================================"
 echo "  ${GREEN}Mneme bootstrap complete!${NC}"
 echo ""
 echo "  Quick commands:"
-echo "    mneme serve --db $MNEME_DB_PATH --mcp   # Start MCP server"
-echo "    mneme --version                         # Show version"
+echo "    mneme --db $MNEME_DB_PATH   # Start MCP server"
+echo "    mneme --version             # Show version"
 echo ""
 echo "  Standalone MCP server:"
-echo "    mneme serve --db $MNEME_DB_PATH --mcp"
+echo "    mneme --db $MNEME_DB_PATH"
 echo ""
 echo "  Docs: https://github.com/tcconnally/mneme"
 echo "============================================"

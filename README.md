@@ -57,7 +57,7 @@ Add Mneme as an MCP server in your host's config. Pick your tool:
   "mcpServers": {
     "mneme": {
       "command": "mneme",
-      "args": ["serve", "--db", "/home/YOU/.mneme/data/mneme.db", "--mcp"]
+      "args": ["--db", "/home/YOU/.mneme/data/mneme.db"]
     }
   }
 }
@@ -72,7 +72,7 @@ Add Mneme as an MCP server in your host's config. Pick your tool:
   "mcpServers": {
     "mneme": {
       "command": "mneme",
-      "args": ["serve", "--db", "/home/YOU/.mneme/data/mneme.db", "--mcp"]
+      "args": ["--db", "/home/YOU/.mneme/data/mneme.db"]
     }
   }
 }
@@ -87,7 +87,7 @@ In your OpenClaw MCP config:
   "mcpServers": {
     "mneme": {
       "command": "mneme",
-      "args": ["serve", "--db", "/home/YOU/.mneme/data/mneme.db", "--mcp"]
+      "args": ["--db", "/home/YOU/.mneme/data/mneme.db"]
     }
   }
 }
@@ -101,7 +101,7 @@ In your OpenClaw MCP config:
 mcp_servers:
   mneme:
     command: "mneme"
-    args: ["serve", "--db", "~/.mneme/data/mneme.db", "--mcp"]
+    args: ["--db", "~/.mneme/data/mneme.db"]
 ```
 
 ---
@@ -129,8 +129,11 @@ mcp_servers:
 ### Start the MCP server
 
 ```bash
-mneme serve --db ~/.mneme/data/mneme.db --mcp
+mneme --db ~/.mneme/data/mneme.db
 ```
+
+The legacy `mneme serve --db ... --mcp` form still works for older MCP host
+configs. The `--mcp` flag is deprecated because stdio MCP mode is always on.
 
 ### Show version
 
@@ -142,14 +145,14 @@ mneme --version
 
 ```bash
 export MNEME_DB_PATH=/custom/path/mneme.db
-mneme serve --mcp
+mneme
 ```
 
 ### Manual MCP testing
 
 ```bash
 # Pipe JSON-RPC directly
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | mneme serve --db /tmp/test.db --mcp
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | mneme --db /tmp/test.db
 ```
 
 ---
@@ -190,7 +193,7 @@ ever. The binary never dials home. You own every byte.
 
 ## Roadmap
 
-**Current:** v0.1.0 — MVP
+**Current:** v0.1.1 — direct MCP server mode
 
 | Feature | Status |
 |---------|--------|
@@ -214,7 +217,7 @@ a live context engine for AI agents. If you use Perseus, add to `.perseus/config
 mneme:
   enabled: true
   transport: "stdio"
-  command: ["mneme", "serve", "--db", "~/.mneme/data/mneme.db", "--mcp"]
+  command: ["mneme", "--db", "~/.mneme/data/mneme.db"]
   timeout_s: 10.0
   merge_strategy: "local_first"
   fallback_to_local: true

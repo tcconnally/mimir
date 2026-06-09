@@ -113,6 +113,8 @@ impl Database {
         Ok(())
     }
 
+    // Mirrors MCP recall parameters; keep this flat until a request type exists.
+    #[allow(clippy::too_many_arguments)]
     pub fn recall(
         &self,
         query: &str,
@@ -224,8 +226,7 @@ impl Database {
             let tags_str: String = row
                 .get::<_, String>(13)
                 .unwrap_or_else(|_| "{}".to_string());
-            let links: Vec<MemoryLink> =
-                serde_json::from_str(&links_str).unwrap_or_default();
+            let links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
             let tags: serde_json::Value = serde_json::from_str(&tags_str)
                 .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
