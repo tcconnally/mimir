@@ -43,12 +43,7 @@ fn main() {
     // Determine db path based on subcommand or top-level flag
     let db_path = match &cli.command {
         Some(Commands::Serve { db, .. }) => db.clone(),
-        None => {
-            eprintln!("Usage: mneme serve [--db PATH] [--mcp]");
-            eprintln!("       The serve command starts the MCP JSON-RPC stdio server.");
-            eprintln!("       Set MNEME_DB_PATH env var to override default database path.");
-            std::process::exit(0);
-        }
+        None => cli.db.clone(),
     };
 
     let database = match db::Database::open(&db_path) {
