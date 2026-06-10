@@ -1,0 +1,33 @@
+name: Feature Request
+description: Propose an idea for Mimir
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: Thank you for the idea! Tell us what you need and why.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem would this solve?
+      placeholder: E.g., I can't do X because...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How should it work?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any workarounds or alternative approaches you've tried?
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Links, screenshots, related issues, etc.

@@ -1,0 +1,60 @@
+name: Bug Report
+description: File a bug report to help us improve Mimir
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thank you for reporting a bug! Please fill out the form below.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of what the bug is.
+      placeholder: E.g., mimir_recall returns empty results when...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Step-by-step instructions to reproduce.
+      placeholder: |
+        1. Start mimir with `mimir --db /tmp/test.db`
+        2. Store a memory via MCP
+        3. Try to recall with query "..."
+        4. See error / unexpected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Mimir Version
+      description: Output of `mimir --version`
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: E.g., Ubuntu 22.04, macOS 14, Windows 11
+    validations:
+      required: true
+  - type: input
+    id: mcp_host
+    attributes:
+      label: MCP Host
+      description: E.g., Claude Desktop, Cursor, Hermes Agent, Perseus
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Output
+      description: Paste any relevant error output or logs.
+      render: shell
