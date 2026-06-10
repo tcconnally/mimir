@@ -2,7 +2,7 @@ use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::models::{
-    CompactReport, Entity, JournalEvent, MemoryLink, RecallParams, StateEntry, Stats,
+    CompactReport, DecayReport, Entity, JournalEvent, MemoryLink, RecallParams, StateEntry, Stats,
     TimelineParams,
 };
 use crate::schema;
@@ -41,6 +41,95 @@ impl Database {
         self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
     }
 
+
+    // ─── Decay & Layer Progression ──────────────────────────────────
+
+    /// Ebbinghaus decay half-life in milliseconds (default: 7 days).
+    const DECAY_HALF_LIFE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+    /// Retrieval boost: how much decay_score increases on recall.
+    const DECAY_BOOST: f64 = 0.25;
+
+    /// Layer promotion thresholds (retrieval_count).
+    const CORE_THRESHOLD: i64 = 20;     // ≥20 retrievals → core
+    const WORKING_THRESHOLD: i64 = 5;   // ≥5 retrievals → working
+
+    /// Compute Ebbinghaus decay score based on time since last access.
+    /// decay = e^(-elapsed_ms / half_life_ms)
+    /// Returns value in [0.0, 1.0] where 1.0 = just accessed.
+    fn compute_decay(last_accessed_ms: i64, now_ms: i64) -> f64 {
+        let elapsed = (now_ms - last_accessed_ms).max(0) as f64;
+        let half_life = Self::DECAY_HALF_LIFE_MS as f64;
+        if half_life <= 0.0 || elapsed <= 0.0 {
+            return 1.0;
+        }
+        (-elapsed / half_life).exp().clamp(0.0, 1.0)
+    }
+
+    /// Boost decay score on retrieval (capped at 1.0).
+    fn boost_decay(current: f64) -> f64 {
+        (current + Self::DECAY_BOOST).min(1.0)
+    }
+
+    /// Determine layer based on retrieval_count.
+    fn compute_layer(retrieval_count: i64) -> &'static str {
+        if retrieval_count >= Self::CORE_THRESHOLD {
+            "core"
+        } else if retrieval_count >= Self::WORKING_THRESHOLD {
+            "working"
+        } else {
+            "buffer"
+        }
+    }
+
+    /// Recalculate decay scores for all non-archived entities.
+    /// Called periodically or via mimir_decay tool.
+    pub fn decay_tick(&self) -> Result<DecayReport, Box<dyn std::error::Error>> {
+        let now = now_ms();
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM entities WHERE archived = 0", [], |r| r.get(0)
+        )?;
+
+        // Update decay_score for all non-archived entities
+        let mut stmt = self.conn.prepare(
+            "SELECT id, last_accessed_unix_ms FROM entities WHERE archived = 0"
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+
+        let mut updated = 0i64;
+        let mut auto_archived = 0i64;
+        let now_val = now;
+
+        for row in rows {
+            let (id, last_access) = row?;
+            let new_decay = Self::compute_decay(last_access, now_val);
+            self.conn.execute(
+                "UPDATE entities SET decay_score = ?1 WHERE id = ?2",
+                params![new_decay, id],
+            )?;
+            updated += 1;
+
+            // Auto-archive entities that have fully decayed (decay < 0.05)
+            if new_decay < 0.05 {
+                self.conn.execute(
+                    "UPDATE entities SET archived = 1, archive_reason = 'decay threshold' WHERE id = ?1 AND archived = 0",
+                    params![id],
+                )?;
+                auto_archived += 1;
+            }
+        }
+
+        Ok(DecayReport {
+            entities_checked: total,
+            entities_updated: updated,
+            auto_archived,
+            completed_at_unix_ms: now,
+        })
+    }
+
+
     // ─── Entities ────────────────────────────────────────────────
 
     /// Store or update an entity. Idempotent by (category, key).
@@ -64,29 +153,37 @@ impl Database {
         let id;
 
         if let Some(ex_id) = existing_id {
-            // Update existing entity
+            // Update existing entity — compute decay + boost (it's being remembered)
             id = ex_id;
+            let now = now_ms();
+            let old_decay: f64 = self.conn.query_row(
+                "SELECT decay_score FROM entities WHERE id = ?1",
+                params![id], |r| r.get(0)
+            ).unwrap_or(1.0);
+            let boosted = Self::boost_decay(old_decay);
+            let new_layer = Self::compute_layer(entity.retrieval_count + 1);
             self.conn.execute(
                 "UPDATE entities SET
                     body_json = ?1, status = ?2, type = ?3, tags = ?4,
                     decay_score = ?5, layer = ?6, topic_path = ?7,
                     archived = ?8, archive_reason = ?9, links = ?10,
-                    verified = ?11, source = ?12, last_accessed_unix_ms = ?13
+                    verified = ?11, source = ?12, last_accessed_unix_ms = ?13,
+                    retrieval_count = retrieval_count + 1
                  WHERE id = ?14",
                 params![
                     entity.body_json,
                     entity.status,
                     entity.entity_type,
                     tags_json,
-                    entity.decay_score,
-                    entity.layer,
+                    boosted,
+                    new_layer,
                     entity.topic_path,
                     archived_int,
                     entity.archive_reason,
                     links_json,
                     verified_int,
                     entity.source,
-                    now_ms(),
+                    now,
                     id,
                 ],
             )?;
@@ -288,11 +385,15 @@ impl Database {
         let mut items = Vec::new();
         for row in rows {
             let entity = row?;
-            // Update retrieval count and recency
+            // Update retrieval count, recency, decay boost, and layer
+            let new_count = entity.retrieval_count + 1;
+            let boosted_decay = Self::boost_decay(entity.decay_score);
+            let new_layer = Self::compute_layer(new_count);
             let _ = self.conn.execute(
-                "UPDATE entities SET retrieval_count = retrieval_count + 1,
-                 last_accessed_unix_ms = ?1 WHERE id = ?2",
-                params![now_ms(), entity.id],
+                "UPDATE entities SET retrieval_count = ?1,
+                 last_accessed_unix_ms = ?2, decay_score = ?3, layer = ?4
+                 WHERE id = ?5",
+                params![new_count, now_ms(), boosted_decay, new_layer, entity.id],
             );
             items.push(entity);
         }

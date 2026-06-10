@@ -402,6 +402,14 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
                     }
                 },
                 {
+                    "name": "mimir_decay",
+                    "description": "Recalculate Ebbinghaus decay scores for all entities and auto-archive fully decayed ones (decay < 0.05).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                {
                     "name": "mimir_workspace_list",
                     "description": "List all distinct entity categories in the database.",
                     "inputSchema": {
@@ -466,6 +474,7 @@ fn call_tool(
 
         "mimir_context" => Ok(tools::handle_context(db, args)),
 
+        "mimir_decay" => Ok(tools::handle_decay(db, args)),
         "mimir_workspace_list" => Ok(tools::handle_workspace_list(db)),
 
         _ => Err(error_response(

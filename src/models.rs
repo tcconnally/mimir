@@ -164,6 +164,16 @@ pub struct MigrationReport {
     pub completed_at_unix_ms: i64,
 }
 
+
+/// Decay tick report.
+#[derive(Debug, Clone, Serialize)]
+pub struct DecayReport {
+    pub entities_checked: i64,
+    pub entities_updated: i64,
+    pub auto_archived: i64,
+    pub completed_at_unix_ms: i64,
+}
+
 /// Compact report.
 #[derive(Debug, Clone, Serialize)]
 pub struct CompactReport {

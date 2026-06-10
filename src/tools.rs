@@ -503,6 +503,16 @@ pub fn handle_context(db: &Database, args: Value) -> String {
     }
 }
 
+
+pub fn handle_decay(db: &Database, _args: Value) -> String {
+    match db.decay_tick() {
+        Ok(report) => serde_json::to_string(&report).unwrap_or_else(|e| {
+            json!({"error": format!("Decay report serialization failed: {}", e)}).to_string()
+        }),
+        Err(e) => json!({"error": format!("Decay tick failed: {}", e)}).to_string(),
+    }
+}
+
 pub fn handle_workspace_list(db: &Database) -> String {
     match db.workspace_list_categories() {
         Ok(cats) => json!({"categories": cats, "total": cats.len()}).to_string(),
