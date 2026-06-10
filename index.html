@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mimir — Persistent Memory for AI Agents</title>
+<style>
+  :root {
+    --bg: #0a0f0f;
+    --surface: #111a1a;
+    --border: #1a2a2a;
+    --ink: #e0e8e8;
+    --muted: #6a7a7a;
+    --accent: #2dd4a8;
+    --accent-glow: rgba(45, 212, 168, 0.15);
+    --code-bg: #0d1414;
+  }
+  * { margin:0; padding:0; box-sizing:border-box }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, sans-serif;
+    line-height:1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration:none }
+  a:hover { text-decoration:underline }
+  .container { max-width:880px; margin:0 auto; padding:0 24px }
+  
+  header {
+    padding: 80px 0 48px;
+    text-align:center;
+    border-bottom:1px solid var(--border);
+  }
+  header h1 {
+    font-size: 48px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--accent);
+    margin-bottom:8px;
+  }
+  header p {
+    font-size: 18px;
+    color: var(--muted);
+    max-width: 560px;
+    margin: 0 auto;
+  }
+  
+  .install {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 14px;
+    color: var(--accent);
+    margin: 32px auto 0;
+    max-width: 560px;
+    text-align: left;
+    overflow-x: auto;
+  }
+  .install span { color: var(--muted) }
+  
+  section {
+    padding: 64px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  section:last-child { border-bottom:none }
+  
+  h2 {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing:-0.01em;
+    margin-bottom:24px;
+  }
+  
+  .tools-grid {
+    display:grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap:12px;
+  }
+  .tool-card {
+    background: var(--surface);
+    border:1px solid var(--border);
+    border-radius:6px;
+    padding:16px;
+  }
+  .tool-card .name {
+    font-family:'SF Mono','Fira Code',monospace;
+    font-size:14px;
+    color: var(--accent);
+    margin-bottom:4px;
+  }
+  .tool-card .desc {
+    font-size:13px;
+    color: var(--muted);
+  }
+  
+  .feature-list {
+    display:grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap:16px;
+  }
+  .feature {
+    background: var(--surface);
+    border:1px solid var(--border);
+    border-radius:8px;
+    padding:20px;
+  }
+  .feature h3 { font-size:15px; margin-bottom:6px; color:var(--ink) }
+  .feature p { font-size:13px; color:var(--muted) }
+  
+  .stats {
+    display:grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap:12px;
+    margin-top:24px;
+  }
+  .stat {
+    background: var(--surface);
+    border:1px solid var(--border);
+    border-radius:8px;
+    padding:20px;
+    text-align:center;
+  }
+  .stat .num { font-size:32px; font-weight:700; color:var(--accent) }
+  .stat .label { font-size:12px; color:var(--muted); margin-top:4px; text-transform:uppercase; letter-spacing:0.05em }
+  
+  .schema-block {
+    background: var(--code-bg);
+    border:1px solid var(--border);
+    border-radius:8px;
+    padding:20px 24px;
+    font-family:'SF Mono','Fira Code',monospace;
+    font-size:12px;
+    line-height:1.7;
+    overflow-x:auto;
+    margin-top:16px;
+  }
+  .schema-block .kw { color: #5ccfe6 }
+  .schema-block .tbl { color: var(--accent) }
+  .schema-block .com { color: #4a5a5a }
+  
+  .bench-results {
+    background: var(--surface);
+    border:1px solid var(--border);
+    border-radius:8px;
+    overflow:hidden;
+  }
+  .bench-results table {
+    width:100%;
+    border-collapse:collapse;
+    font-size:13px;
+  }
+  .bench-results th {
+    text-align:left;
+    padding:12px 16px;
+    background: var(--code-bg);
+    color: var(--muted);
+    font-weight:500;
+    text-transform:uppercase;
+    font-size:11px;
+    letter-spacing:0.05em;
+  }
+  .bench-results td {
+    padding:10px 16px;
+    border-top:1px solid var(--border);
+  }
+  .bench-results .pass { color: var(--accent) }
+  .bench-results .metric { font-family:'SF Mono','Fira Code',monospace }
+  
+  footer {
+    padding:48px 0;
+    text-align:center;
+    color: var(--muted);
+    font-size:13px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <h1>Mimir</h1>
+    <p>Persistent memory for AI agents. Structured entities. Journal events. State management. MCP-native. Fully local. Zero dependencies.</p>
+    <div class="install">
+      <span>$</span> curl -sSL https://raw.githubusercontent.com/tcconnally/mimir/main/scripts/bootstrap.sh | bash
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="container">
+    <h2>What Mimir Does</h2>
+    <p style="color:var(--muted); max-width:640px; margin-bottom:32px">
+      AI agents forget everything between sessions. Mimir gives them durable memory — 
+      structured entities that survive restarts, journal events that log decisions, 
+      and state that expires when it should. All through standard MCP tools. 
+      No API keys. No cloud. A single static binary.
+    </p>
+    <div class="stats">
+      <div class="stat"><div class="num">23</div><div class="label">MCP Tools</div></div>
+      <div class="stat"><div class="num">3.7MB</div><div class="label">Binary Size</div></div>
+      <div class="stat"><div class="num">3</div><div class="label">Tables</div></div>
+      <div class="stat"><div class="num">0</div><div class="label">Runtime Deps</div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <h2>Features</h2>
+    <div class="feature-list">
+      <div class="feature">
+        <h3>Structured Entity Model</h3>
+        <p>Idempotent storage by (category, key). Update the same entity as many times as you want — no duplicates.</p>
+      </div>
+      <div class="feature">
+        <h3>Ebbinghaus Decay</h3>
+        <p>Memories fade when unused, strengthen on recall. Layer progression: buffer → working → core.</p>
+      </div>
+      <div class="feature">
+        <h3>Journal Events</h3>
+        <p>Append-only log with evaluated/acted/forward structure. Timeline queries for decision auditing.</p>
+      </div>
+      <div class="feature">
+        <h3>State with TTL</h3>
+        <p>Key-value store with automatic expiration. Session state, counters, locks — gone when they should be.</p>
+      </div>
+      <div class="feature">
+        <h3>.md Vault</h3>
+        <p>Export entities as markdown files with YAML frontmatter. Human-readable, git-trackable, Obsidian-compatible.</p>
+      </div>
+      <div class="feature">
+        <h3>Entity Linking</h3>
+        <p>Create navigable relationship graphs between entities. Chain traversal follows links up to configurable depth.</p>
+      </div>
+      <div class="feature">
+        <h3>Near-Duplicate Detection</h3>
+        <p>Trigram overlap check prevents storing the same fact twice. Bumps existing entity instead of creating clutter.</p>
+      </div>
+      <div class="feature">
+        <h3>Conflict Detection</h3>
+        <p>Finds contradictory entities in the same category. Flags low-similarity pairs for agent review.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <h2>Tools</h2>
+    <div class="tools-grid" id="tools"></div>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <h2>Schema</h2>
+    <div class="schema-block">
+<span class="com">-- Entities: idempotent by UNIQUE(category, key)</span>
+<span class="kw">CREATE TABLE</span> <span class="tbl">entities</span> (
+    id <span class="kw">TEXT PRIMARY KEY</span>,
+    category <span class="kw">TEXT NOT NULL</span>, key <span class="kw">TEXT NOT NULL</span>,
+    body_json <span class="kw">TEXT</span>, status <span class="kw">TEXT</span>, type <span class="kw">TEXT</span>,
+    decay_score <span class="kw">REAL</span>, retrieval_count <span class="kw">INTEGER</span>,
+    layer <span class="kw">TEXT</span>, <span class="com">-- buffer | working | core</span>
+    archived <span class="kw">INTEGER</span>, links <span class="kw">TEXT</span>,
+    created_at_unix_ms <span class="kw">INTEGER</span>, last_accessed_unix_ms <span class="kw">INTEGER</span>,
+    <span class="kw">UNIQUE</span>(category, key)
+);
+
+<span class="com">-- Journal: append-only event log</span>
+<span class="kw">CREATE TABLE</span> <span class="tbl">journal</span> (
+    id <span class="kw">TEXT PRIMARY KEY</span>,
+    event_type <span class="kw">TEXT</span>,
+    evaluated_json <span class="kw">TEXT</span>, acted_json <span class="kw">TEXT</span>, forward_json <span class="kw">TEXT</span>,
+    created_at_unix_ms <span class="kw">INTEGER</span>
+);
+
+<span class="com">-- State: key-value with TTL</span>
+<span class="kw">CREATE TABLE</span> <span class="tbl">state</span> (
+    key <span class="kw">TEXT PRIMARY KEY</span>,
+    value_json <span class="kw">TEXT</span>,
+    expires_at_unix_ms <span class="kw">INTEGER</span>
+);
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <h2>Benchmark</h2>
+    <p style="color:var(--muted); margin-bottom:24px">Mimir v0.5-rc capability benchmark against Sibyl's claimed feature set.</p>
+    <div class="bench-results">
+      <table>
+        <tr><th>Capability</th><th>Mimir</th><th>Sibyl</th><th>Winner</th></tr>
+        <tr><td>Category/Key Entity Model</td><td class="pass">✅</td><td>✅</td><td>=</td></tr>
+        <tr><td>Idempotent Entity Storage</td><td class="pass">✅</td><td>✅</td><td>=</td></tr>
+        <tr><td>Category-Filtered Search</td><td class="pass">✅</td><td>✅</td><td>=</td></tr>
+        <tr><td>Journal Events</td><td class="pass">✅</td><td>✅</td><td>=</td></tr>
+        <tr><td>State with TTL</td><td class="pass">✅</td><td>✅</td><td>=</td></tr>
+        <tr><td>Entity Linking</td><td class="pass">✅</td><td>❌</td><td>Mimir</td></tr>
+        <tr><td>Ebbinghaus Decay</td><td class="pass">✅</td><td>❌</td><td>Mimir</td></tr>
+        <tr><td>Layer Progression</td><td class="pass">✅</td><td>❌</td><td>Mimir</td></tr>
+        <tr><td>Near-Duplicate Detection</td><td class="pass">✅</td><td>❌</td><td>Mimir</td></tr>
+        <tr><td>.md Vault Export</td><td class="pass">✅</td><td>❌</td><td>Mimir</td></tr>
+        <tr><td>Conflict Detection</td><td class="pass">✅</td><td>❌</td><td>Mimir</td></tr>
+        <tr><td>Quality Scoring</td><td class="pass">✅</td><td>❌</td><td>Mimir</td></tr>
+        <tr><td>Chain Traversal</td><td class="pass">✅</td><td>❌</td><td>Mimir</td></tr>
+        <tr><td>Zero Python SDK Dep</td><td class="pass">✅ Rust binary</td><td>❌ pip install</td><td>Mimir</td></tr>
+        <tr><td>MCP-Native</td><td class="pass">✅ Built-in</td><td>⚠ Wrapper needed</td><td>Mimir</td></tr>
+      </table>
+    </div>
+    <p style="color:var(--muted); font-size:13px; margin-top:16px">
+      LongMemEval pending — requires embedding model (v0.3). Sibyl claims 95.6% (#2). 
+      Target: match or exceed with hybrid FTS5 + cosine similarity search.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <h2>Works With</h2>
+    <p style="color:var(--muted); margin-bottom:16px">
+      Any MCP-compatible host. Configuration is one block in your MCP settings.
+    </p>
+    <p style="color:var(--muted)">
+      Claude Desktop · Cursor · OpenClaw · Hermes Agent · 
+      <a href="https://github.com/tcconnally/perseus">Perseus</a> (native integration)
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p><a href="https://github.com/tcconnally/mimir">github.com/tcconnally/mimir</a> · MIT · Rust · 3.7MB static binary</p>
+  </div>
+</footer>
+
+<script>
+const tools = [
+  ["mimir_remember","Store/update entity. Idempotent by (category, key)."],
+  ["mimir_recall","Search entities with FTS5 + LIKE. Category-filtered."],
+  ["mimir_forget","Soft-delete entity (archived=1)."],
+  ["mimir_link","Create relationship link between entities."],
+  ["mimir_unlink","Remove entity link."],
+  ["mimir_journal","Append journal event (evaluated/acted/forward)."],
+  ["mimir_timeline","Query journal by time range + filters."],
+  ["mimir_state_set","Set key-value with optional TTL."],
+  ["mimir_state_get","Get state value. Auto-expire check."],
+  ["mimir_state_delete","Remove state entry."],
+  ["mimir_state_list","List keys with optional prefix filter."],
+  ["mimir_health","Server + database health check."],
+  ["mimir_stats","Full stats across all 3 tables."],
+  ["mimir_compact","Archive entities below decay threshold."],
+  ["mimir_migrate","Migrate v0.1.x DB to v0.2.0 schema."],
+  ["mimir_context","Pre-formatted markdown context block."],
+  ["mimir_workspace_list","List distinct entity categories."],
+  ["mimir_decay","Recalculate decay scores. Auto-archive stale."],
+  ["mimir_vault_export","Export entities as .md files."],
+  ["mimir_vault_import","Import .md files from vault directory."],
+  ["mimir_traverse","Follow entity link graph up to max_depth."],
+  ["mimir_score","Rate entity quality (0.0–1.0)."],
+  ["mimir_conflicts","Detect contradictory entities in category."],
+];
+const grid = document.getElementById('tools');
+tools.forEach(([name, desc]) => {
+  const card = document.createElement('div');
+  card.className = 'tool-card';
+  card.innerHTML = `<div class="name">${name}</div><div class="desc">${desc}</div>`;
+  grid.appendChild(card);
+});
+</script>
+
+</body>
+</html>

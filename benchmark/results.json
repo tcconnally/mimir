@@ -1,0 +1,59 @@
+{
+  "version": "0.5-rc",
+  "date": "2026-06-10",
+  "binary": "mimir 0.2.0 (3.7MB static)",
+  "hardware": "Linux 6.18.33-Unraid, Intel i5-13500, 32GB DDR5, NVMe storage",
+  "results": {
+    "write": {
+      "count": 10000,
+      "elapsed_s": 64.6,
+      "docs_per_sec": 155,
+      "note": "Sequential writes via MCP stdio. Each write includes FTS5 index update."
+    },
+    "recall": {
+      "p50_ms": 15.3,
+      "p99_ms": 23.9,
+      "avg_ms": 15.4,
+      "note": "FTS5 keyword search over 10,000 entities. 100 queries, random terms."
+    },
+    "journal": {
+      "count": 1000,
+      "elapsed_s": 7.1,
+      "events_per_sec": 141,
+      "note": "Append-only journal writes via MCP stdio."
+    },
+    "vault_export": {
+      "files": 13,
+      "elapsed_s": 0.003,
+      "files_per_sec": 4112,
+      "note": "Small sample. Scales linearly with entity count."
+    },
+    "decay": {
+      "fresh_score": 1.0,
+      "stale_score": 0.1,
+      "fresh_layer": "working",
+      "stale_layer": "working",
+      "fresh_ranks_higher": true,
+      "note": "Fresh entity (10 retrievals) ranks above stale entity (0 retrievals)."
+    },
+    "dedup": {
+      "detected": true,
+      "action": "deduped",
+      "note": "Second store with similar body_json detected as near-duplicate."
+    },
+    "db": {
+      "entities": 10013,
+      "journal": 1000,
+      "size_kb": 184,
+      "note": "Includes all benchmark data. Entities from 5 categories."
+    }
+  },
+  "known_issues": [
+    "Category-filtered FTS5 recall returned fewer results than expected on bulk-inserted data. Investigating FTS5 index population edge case."
+  ],
+  "comparison": {
+    "sibyl_longmemeval": "95.6% (#2 on leaderboard)",
+    "mimir_target": "≥95% with hybrid FTS5 + embedding search (v0.3)",
+    "mimir_capability_benchmark": "23/23 features vs Sibyl's 14/23"
+  }
+}
