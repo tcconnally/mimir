@@ -504,6 +504,48 @@ pub fn handle_context(db: &Database, args: Value) -> String {
 }
 
 
+
+#[derive(Debug, Deserialize)]
+pub struct VaultExportArgs {
+    pub vault_dir: String,
+}
+
+pub fn handle_vault_export(db: &Database, args: Value) -> String {
+    let a: VaultExportArgs = serde_json::from_value(args).unwrap_or(VaultExportArgs {
+        vault_dir: "~/.mimir/vault".to_string(),
+    });
+    let dir = if a.vault_dir.starts_with("~/") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        a.vault_dir.replacen("~", &home, 1)
+    } else {
+        a.vault_dir.clone()
+    };
+    match db.vault_export(&dir) {
+        Ok(report) => serde_json::to_string(&report).unwrap_or_else(|e| {
+            json!({"error": format!("Serialization failed: {}", e)}).to_string()
+        }),
+        Err(e) => json!({"error": format!("Vault export failed: {}", e)}).to_string(),
+    }
+}
+
+pub fn handle_vault_import(db: &Database, args: Value) -> String {
+    let a: VaultExportArgs = serde_json::from_value(args).unwrap_or(VaultExportArgs {
+        vault_dir: "~/.mimir/vault".to_string(),
+    });
+    let dir = if a.vault_dir.starts_with("~/") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        a.vault_dir.replacen("~", &home, 1)
+    } else {
+        a.vault_dir.clone()
+    };
+    match db.vault_import(&dir) {
+        Ok(report) => serde_json::to_string(&report).unwrap_or_else(|e| {
+            json!({"error": format!("Serialization failed: {}", e)}).to_string()
+        }),
+        Err(e) => json!({"error": format!("Vault import failed: {}", e)}).to_string(),
+    }
+}
+
 pub fn handle_decay(db: &Database, _args: Value) -> String {
     match db.decay_tick() {
         Ok(report) => serde_json::to_string(&report).unwrap_or_else(|e| {

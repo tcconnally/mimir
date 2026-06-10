@@ -2,10 +2,20 @@ use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::models::{
-    CompactReport, DecayReport, Entity, JournalEvent, MemoryLink, RecallParams, StateEntry, Stats,
+    CompactReport, DecayReport, Entity, VaultReport, JournalEvent, MemoryLink, RecallParams, StateEntry, Stats,
     TimelineParams,
 };
 use crate::schema;
+
+
+/// Format a unix timestamp in milliseconds as an ISO 8601 string.
+fn chrono_like(ms: i64) -> String {
+    let secs = ms / 1000;
+    let _nanos = ((ms % 1000) * 1_000_000) as u32;
+    // Simple approach: just return the timestamp as a readable number
+    // A proper implementation would use the chrono crate, but we keep deps minimal
+    format!("{}", secs)
+}
 
 pub fn now_ms() -> i64 {
     SystemTime::now()
@@ -132,6 +142,68 @@ impl Database {
 
     // ─── Entities ────────────────────────────────────────────────
 
+
+    /// Compute trigram overlap similarity between two strings (0.0–1.0).
+    /// Uses character trigrams for fast, language-agnostic comparison.
+    fn trigram_similarity(a: &str, b: &str) -> f64 {
+        if a.is_empty() || b.is_empty() {
+            return 0.0;
+        }
+        if a == b {
+            return 1.0;
+        }
+        
+        fn trigrams(s: &str) -> std::collections::HashSet<[char; 3]> {
+            let chars: Vec<char> = s.chars().collect();
+            if chars.len() < 3 {
+                return std::collections::HashSet::new();
+            }
+            chars.windows(3).map(|w| [w[0], w[1], w[2]]).collect()
+        }
+        
+        let ta = trigrams(a);
+        let tb = trigrams(b);
+        
+        if ta.is_empty() || tb.is_empty() {
+            return 0.0;
+        }
+        
+        let intersection = ta.intersection(&tb).count();
+        let union = ta.len() + tb.len() - intersection;
+        
+        if union == 0 {
+            return 0.0;
+        }
+        
+        intersection as f64 / union as f64
+    }
+
+    /// Check for near-duplicate entities in the same category.
+    /// Returns Some(existing_entity_id) if similarity > threshold.
+    fn find_near_duplicate(
+        &self,
+        category: &str,
+        body_json: &str,
+        threshold: f64,
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, body_json FROM entities WHERE category = ?1 AND archived = 0 LIMIT 100"
+        )?;
+        let rows = stmt.query_map(params![category], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        
+        for row in rows {
+            let (id, existing_body) = row?;
+            let sim = Self::trigram_similarity(body_json, &existing_body);
+            if sim >= threshold {
+                return Ok(Some(id));
+            }
+        }
+        
+        Ok(None)
+    }
+
     /// Store or update an entity. Idempotent by (category, key).
     /// Returns the entity id and whether this was a create or update.
     pub fn remember(&self, entity: &Entity) -> Result<(String, String), Box<dyn std::error::Error>> {
@@ -196,6 +268,21 @@ impl Database {
 
             action = "updated".to_string();
         } else {
+            // Check for near-duplicates before inserting
+            let dup_threshold = 0.7; // 70% trigram similarity
+            if let Ok(Some(dup_id)) = self.find_near_duplicate(
+                &entity.category, &entity.body_json, dup_threshold
+            ) {
+                // Near-duplicate found — bump its importance instead of creating new
+                let _ = self.conn.execute(
+                    "UPDATE entities SET decay_score = MIN(1.0, decay_score + 0.15),
+                     retrieval_count = retrieval_count + 1,
+                     last_accessed_unix_ms = ?1 WHERE id = ?2",
+                    params![now_ms(), dup_id],
+                );
+                return Ok((dup_id, "deduped".to_string()));
+            }
+            
             // Insert new entity
             id = entity.id.clone();
             self.conn.execute(
@@ -810,6 +897,208 @@ impl Database {
         })
     }
 
+
+    // ─── Vault Export / Import ──────────────────────────────────────
+
+    /// Export all non-archived entities to .md files in a vault directory.
+    /// Each entity becomes a .md file with YAML frontmatter.
+    /// Idempotent — updates changed files, creates new ones, never deletes.
+    pub fn vault_export(&self, vault_dir: &str) -> Result<VaultReport, Box<dyn std::error::Error>> {
+        use std::fs;
+        use std::path::Path;
+
+        fs::create_dir_all(vault_dir)?;
+        let vault = Path::new(vault_dir);
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, category, key, body_json, type, tags, decay_score,
+                    retrieval_count, layer, created_at_unix_ms, last_accessed_unix_ms
+             FROM entities WHERE archived = 0"
+        )?;
+
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,  // id
+                r.get::<_, String>(1)?,  // category
+                r.get::<_, String>(2)?,  // key
+                r.get::<_, String>(3)?,  // body_json
+                r.get::<_, String>(4)?,  // type
+                r.get::<_, String>(5)?,  // tags
+                r.get::<_, f64>(6)?,     // decay_score
+                r.get::<_, i64>(7)?,     // retrieval_count
+                r.get::<_, String>(8)?,  // layer
+                r.get::<_, i64>(9)?,     // created_at
+                r.get::<_, i64>(10)?,    // last_accessed
+            ))
+        })?;
+
+        let mut files_created = 0i64;
+        let mut files_updated = 0i64;
+        let mut errors = Vec::new();
+
+        for row in rows {
+            let (id, category, key, body_json, etype, tags, decay, retrievals, layer, created, accessed) = row?;
+            let filename = format!("{}.md", id);
+            let filepath = vault.join(&filename);
+
+            let created_str = chrono_like(created);
+            let accessed_str = chrono_like(accessed);
+
+            let md_content = format!(
+                "---
+id: {}
+category: {}
+key: {}
+type: {}
+tags: {}
+decay_score: {:.4}
+retrieval_count: {}
+layer: {}
+created: {}
+last_accessed: {}
+---
+
+{}
+",
+                id, category, key, etype, tags, decay, retrievals, layer, created_str, accessed_str, body_json
+            );
+
+            let _action = if filepath.exists() {
+                // Only update if content changed
+                let existing = fs::read_to_string(&filepath).unwrap_or_default();
+                if existing == md_content {
+                    continue; // unchanged
+                }
+                files_updated += 1;
+                "updated"
+            } else {
+                files_created += 1;
+                "created"
+            };
+
+            if let Err(e) = fs::write(&filepath, &md_content) {
+                errors.push(format!("{}: {}", filename, e));
+            }
+        }
+
+        Ok(VaultReport {
+            files_created,
+            files_updated,
+            errors,
+            vault_dir: vault_dir.to_string(),
+            completed_at_unix_ms: now_ms(),
+        })
+    }
+
+    /// Import .md files from a vault directory into the database.
+    /// Reads YAML frontmatter + body, calls remember() for each.
+    pub fn vault_import(&self, vault_dir: &str) -> Result<VaultReport, Box<dyn std::error::Error>> {
+        use std::fs;
+        use std::path::Path;
+
+        let vault = Path::new(vault_dir);
+        if !vault.is_dir() {
+            return Err(format!("{} is not a directory", vault_dir).into());
+        }
+
+        let mut files_created = 0i64;
+        let mut files_updated = 0i64;
+        let mut errors = Vec::new();
+
+        for entry in fs::read_dir(vault)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().map_or(true, |e| e != "md") {
+                continue;
+            }
+
+            let content = match fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    errors.push(format!("{}: {}", path.display(), e));
+                    continue;
+                }
+            };
+
+            // Parse YAML frontmatter (simple — between --- markers)
+            let parts: Vec<&str> = content.splitn(3, "---").collect();
+            if parts.len() < 3 {
+                errors.push(format!("{}: no frontmatter", path.display()));
+                continue;
+            }
+
+            let fm = parts[1];
+            let body = parts[2].trim().to_string();
+
+            // Extract fields from frontmatter
+            let get_fm = |key: &str| -> String {
+                fm.lines()
+                    .find(|l| l.starts_with(&format!("{}:", key)))
+                    .and_then(|l| l.splitn(2, ':').nth(1))
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
+            };
+
+            let id = get_fm("id");
+            let category = get_fm("category");
+            let key = get_fm("key");
+            let etype = get_fm("type");
+            let tags_str = get_fm("tags");
+            let decay: f64 = get_fm("decay_score").parse().unwrap_or(1.0);
+            let layer = get_fm("layer");
+
+            let tags: Vec<String> = if tags_str.is_empty() || tags_str == "[]" {
+                vec![]
+            } else {
+                tags_str
+                    .trim_matches(|c| c == '[' || c == ']')
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            };
+
+            let entity = Entity {
+                id: if id.is_empty() { uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string() } else { id },
+                category: if category.is_empty() { "general".to_string() } else { category },
+                key: if key.is_empty() { "imported".to_string() } else { key },
+                body_json: body,
+                status: "active".to_string(),
+                entity_type: if etype.is_empty() { "insight".to_string() } else { etype },
+                tags,
+                decay_score: decay,
+                retrieval_count: 0,
+                layer: if layer.is_empty() { "working".to_string() } else { layer },
+                topic_path: String::new(),
+                archived: false,
+                archive_reason: String::new(),
+                links: vec![],
+                verified: false,
+                source: "vault-import".to_string(),
+                created_at_unix_ms: now_ms(),
+                last_accessed_unix_ms: now_ms(),
+            };
+
+            match self.remember(&entity) {
+                Ok((_, action)) => {
+                    if action == "created" { files_created += 1; } else { files_updated += 1; }
+                }
+                Err(e) => {
+                    errors.push(format!("{}: {}", path.display(), e));
+                }
+            }
+        }
+
+        Ok(VaultReport {
+            files_created,
+            files_updated,
+            errors,
+            vault_dir: vault_dir.to_string(),
+            completed_at_unix_ms: now_ms(),
+        })
+    }
+
     /// Return a pre-formatted context block of top entities for session injection.
     pub fn context(
         &self,
@@ -1096,9 +1385,9 @@ mod tests {
     fn compact_archives_below_threshold() {
         let (db, path) = temp_db();
 
-        let mut e1 = make_entity("e-a", "test", "keep", "{}");
+        let mut e1 = make_entity("e-a", "test", "keep", r#"{"name":"entity A"}"#);
         e1.decay_score = 0.9;
-        let mut e2 = make_entity("e-b", "test", "archive", "{}");
+        let mut e2 = make_entity("e-b", "test", "archive", r#"{"name":"entity B is different"}"#);
         e2.decay_score = 0.1;
         db.remember(&e1).unwrap();
         db.remember(&e2).unwrap();

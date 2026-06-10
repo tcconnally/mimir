@@ -165,6 +165,17 @@ pub struct MigrationReport {
 }
 
 
+
+/// Vault export/import report.
+#[derive(Debug, Clone, Serialize)]
+pub struct VaultReport {
+    pub files_created: i64,
+    pub files_updated: i64,
+    pub errors: Vec<String>,
+    pub vault_dir: String,
+    pub completed_at_unix_ms: i64,
+}
+
 /// Decay tick report.
 #[derive(Debug, Clone, Serialize)]
 pub struct DecayReport {

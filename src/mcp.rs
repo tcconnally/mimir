@@ -402,6 +402,28 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
                     }
                 },
                 {
+                    "name": "mimir_vault_export",
+                    "description": "Export all non-archived entities to .md files with YAML frontmatter in a vault directory. Human-readable, git-trackable, Obsidian-compatible.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "vault_dir": {"type": "string", "default": "~/.mimir/vault", "description": "Directory to write .md files"}
+                        },
+                        "required": []
+                    }
+                },
+                {
+                    "name": "mimir_vault_import",
+                    "description": "Import .md files from a vault directory into the database. Reads YAML frontmatter + body.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "vault_dir": {"type": "string", "default": "~/.mimir/vault", "description": "Directory to read .md files from"}
+                        },
+                        "required": []
+                    }
+                },
+                {
                     "name": "mimir_decay",
                     "description": "Recalculate Ebbinghaus decay scores for all entities and auto-archive fully decayed ones (decay < 0.05).",
                     "inputSchema": {
@@ -474,6 +496,8 @@ fn call_tool(
 
         "mimir_context" => Ok(tools::handle_context(db, args)),
 
+        "mimir_vault_export" => Ok(tools::handle_vault_export(db, args)),
+        "mimir_vault_import" => Ok(tools::handle_vault_import(db, args)),
         "mimir_decay" => Ok(tools::handle_decay(db, args)),
         "mimir_workspace_list" => Ok(tools::handle_workspace_list(db)),
 
