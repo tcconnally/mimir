@@ -332,7 +332,7 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
       }
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": true
     }
   },
   {
@@ -937,16 +937,11 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
       "required": []
     },
     "outputSchema": {
-      "type": "object",
-      "properties": {
-        "rendered": {
-          "type": "string",
-          "description": "Markdown-formatted context block with entity details"
-        }
-      }
+      "type": "string",
+      "description": "Markdown-formatted context block with entity details"
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": true
     }
   },
   {
@@ -977,14 +972,19 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     "outputSchema": {
       "type": "object",
       "properties": {
-        "chain": {
+        "entity": {
+          "type": "object",
+          "description": "Root entity with its links"
+        },
+        "traversed": {
           "type": "array",
           "items": {
             "type": "object"
           },
-          "description": "Linked entities in traversal order"
+          "description": "Linked entities traversed from root"
         }
-      }
+      },
+      "required": ["entity", "traversed"]
     },
     "annotations": {
       "readOnlyHint": true
@@ -1235,7 +1235,7 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
   }
 ]"###
     ).expect("tools JSON must be valid");
-    
+
     JsonRpcResponse {
         jsonrpc: "2.0".to_string(),
         id,
@@ -1252,38 +1252,47 @@ fn call_tool(
     id: Option<Value>,
 ) -> Result<String, JsonRpcResponse> {
     match name {
-        "mimir_remember" => tools::handle_remember(db, args)
-            .map_err(|e| error_response(id, -32603, &e)),
+        "mimir_remember" => {
+            tools::handle_remember(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
 
-        "mimir_recall" => tools::handle_recall(db, args)
-            .map_err(|e| error_response(id, -32603, &e)),
+        "mimir_recall" => {
+            tools::handle_recall(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
 
-        "mimir_forget" => tools::handle_forget(db, args)
-            .map_err(|e| error_response(id, -32603, &e)),
+        "mimir_forget" => {
+            tools::handle_forget(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
 
-        "mimir_link" => tools::handle_link(db, args)
-            .map_err(|e| error_response(id, -32603, &e)),
+        "mimir_link" => tools::handle_link(db, args).map_err(|e| error_response(id, -32603, &e)),
 
-        "mimir_unlink" => tools::handle_unlink(db, args)
-            .map_err(|e| error_response(id, -32603, &e)),
+        "mimir_unlink" => {
+            tools::handle_unlink(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
 
-        "mimir_journal" => tools::handle_journal(db, args)
-            .map_err(|e| error_response(id, -32603, &e)),
+        "mimir_journal" => {
+            tools::handle_journal(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
 
-        "mimir_timeline" => tools::handle_timeline(db, args)
-            .map_err(|e| error_response(id, -32603, &e)),
+        "mimir_timeline" => {
+            tools::handle_timeline(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
 
-        "mimir_state_set" => tools::handle_state_set(db, args)
-            .map_err(|e| error_response(id, -32603, &e)),
+        "mimir_state_set" => {
+            tools::handle_state_set(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
 
-        "mimir_state_get" => tools::handle_state_get(db, args)
-            .map_err(|e| error_response(id, -32603, &e)),
+        "mimir_state_get" => {
+            tools::handle_state_get(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
 
-        "mimir_state_delete" => tools::handle_state_delete(db, args)
-            .map_err(|e| error_response(id, -32603, &e)),
+        "mimir_state_delete" => {
+            tools::handle_state_delete(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
 
-        "mimir_state_list" => tools::handle_state_list(db, args)
-            .map_err(|e| error_response(id, -32603, &e)),
+        "mimir_state_list" => {
+            tools::handle_state_list(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
 
         "mimir_health" => Ok(tools::handle_health(db)),
 
@@ -1330,12 +1339,9 @@ mod tests {
 
     #[test]
     fn rejects_non_json_rpc_2_requests() {
-        let db_path = std::env::temp_dir().join(format!(
-            "mimir-jsonrpc-version-{}.db",
-            uuid::Uuid::new_v4()
-        ));
-        let db =
-            Database::open(db_path.to_str().expect("temp db path")).expect("open temp db");
+        let db_path =
+            std::env::temp_dir().join(format!("mimir-jsonrpc-version-{}.db", uuid::Uuid::new_v4()));
+        let db = Database::open(db_path.to_str().expect("temp db path")).expect("open temp db");
         let req = JsonRpcRequest {
             jsonrpc: "1.0".to_string(),
             id: Some(json!(1)),

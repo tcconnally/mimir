@@ -39,10 +39,13 @@ pub struct Entity {
 impl Entity {
     pub fn to_json_expanded(&self) -> serde_json::Value {
         let mut val = serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({}));
-        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&self.body_json) {
+        if let Ok(serde_json::Value::Object(map)) =
+            serde_json::from_str::<serde_json::Value>(&self.body_json)
+        {
             if let Some(obj) = val.as_object_mut() {
                 for (k, v) in map {
-                    if k != "id" && k != "category" && k != "key" && k != "body_json" && k != "type" {
+                    if k != "id" && k != "category" && k != "key" && k != "body_json" && k != "type"
+                    {
                         obj.insert(k, v);
                     }
                 }
@@ -179,8 +182,6 @@ pub struct MigrationReport {
     pub errors: Vec<String>,
     pub completed_at_unix_ms: i64,
 }
-
-
 
 /// Vault export/import report.
 #[derive(Debug, Clone, Serialize)]

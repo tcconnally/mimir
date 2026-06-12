@@ -192,7 +192,7 @@ Categories are user-defined. Common patterns:
 - **Journal events** — append-only log with evaluated/acted/forward structure
 - **State with TTL** — key-value store with automatic expiration
 - **Entity linking** — create navigable relationships between entities
-- **FTS5 keyword search** — BM25-ranked results with LIKE fallback
+- **FTS5 keyword search** — Relevance-ranked results (by retrieval count + recency) with LIKE fallback
 - **No LLM required** — stores and retrieves directly; no embeddings needed
 - **MCP-native** — standard JSON-RPC 2.0 over stdio
 - **Single-file database** — one SQLite file; easy to backup, copy, or inspect
@@ -206,30 +206,24 @@ ever. The binary never dials home. You own every byte.
 
 ---
 
-## Roadmap
+## Roadmap (v0.5.0+)
 
-**Current:** v0.2.0 — structured entity model with journal + state
+### ✅ Implemented
+- **23 MCP tools** — Full CRUD for entities, links, journal, state, vault, workspace context
+- **Ebbinghaus decay** — Time-based memory fading with retrieval boosts via `mimir_decay`
+- **Layer promotion** — Three-tier memory (buffer → working → core) based on retrieval count
+- **Vault export/import** — Export entities to Markdown files, import from vault directories
+- **Graph traversal** — Walk entity link graphs via `mimir_traverse`
+- **Workspace context** — Pre-formatted context blocks for AI agent session injection
+- **State management** — Key-value TTL state entries via `mimir_state_*` tools
+- **Conflict detection** — Near-duplicate detection via trigram similarity
+- **JSON-RPC 2.0** — Full stdio MCP server implementation
+- **FTS5 + LIKE search** — SQLite full-text search with substring fallback
 
-| Feature | Status |
-|---|---|
-| MCP JSON-RPC 2.0 stdio server | ✅ |
-| FTS5 keyword search + LIKE fallback | ✅ |
-| Structured entity model (category/key) | ✅ v0.2.0 |
-| Category-filtered recall | ✅ v0.2.0 |
-| Journal events (evaluated/acted/forward) | ✅ v0.2.0 |
-| State with TTL (key-value + expiration) | ✅ v0.2.0 |
-| Entity linking (mimir_link / mimir_unlink) | ✅ v0.2.0 |
-| Soft-delete (mimir_forget) | ✅ v0.2.0 |
-| Context injection for session start | ✅ v0.2.0 |
-| Migration from v0.1.x | ✅ v0.2.0 |
-| Ebbinghaus decay algorithm | 🔜 v0.2.1 |
-| Layer promotion (buffer → working → core) | 🔜 v0.2.1 |
-| Embedding-based vector search | 🔜 v0.3 |
-| `.md` vault export/import | 🔜 v0.3 |
-| Cross-workspace federation | 🔜 v0.4 |
-| SSE transport | 🔜 v0.4 |
-
----
+### 🚧 Planned
+- **Semantic search** — Optional embedding-based recall for fuzzy matching
+- **Cross-workspace federation** — Share entities across workspace boundaries
+- **Web dashboard** — Browser-based memory explorer and visualization
 
 ## License
 

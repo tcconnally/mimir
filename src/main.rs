@@ -51,7 +51,12 @@ enum Commands {
 }
 
 fn default_db_path() -> String {
-    std::env::var("MIMIR_DB_PATH").unwrap_or_else(|_| "mimir.db".to_string())
+    std::env::var("MIMIR_DB_PATH").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        let dir = format!("{}/.mimir/data", home);
+        let _ = std::fs::create_dir_all(&dir);
+        format!("{}/mimir.db", dir)
+    })
 }
 
 fn main() {
@@ -72,7 +77,7 @@ fn main() {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&report).unwrap_or_else(|_| {
-                            format!("Migration complete (report serialization failed)")
+                            "Migration complete (report serialization failed)".to_string()
                         })
                     );
                 }

@@ -198,7 +198,7 @@ pub fn handle_remember(db: &Database, args: Value) -> Result<String, String> {
         tags: a.tags,
         decay_score: a.importance,
         retrieval_count: 0,
-        layer: "working".to_string(),
+        layer: "buffer".to_string(),
         topic_path: a.topic_path,
         archived: false,
         archive_reason: String::new(),
@@ -240,10 +240,8 @@ pub fn handle_recall(db: &Database, args: Value) -> Result<String, String> {
         .recall(&params)
         .map_err(|e| format!("Recall failed: {}", e))?;
 
-    let items_expanded: Vec<serde_json::Value> = entities
-        .iter()
-        .map(|e| e.to_json_expanded())
-        .collect();
+    let items_expanded: Vec<serde_json::Value> =
+        entities.iter().map(|e| e.to_json_expanded()).collect();
 
     let result = json!({
         "items": items_expanded,
@@ -420,8 +418,8 @@ pub fn handle_state_get(db: &Database, args: Value) -> Result<String, String> {
 }
 
 pub fn handle_state_delete(db: &Database, args: Value) -> Result<String, String> {
-    let a: StateDeleteArgs =
-        serde_json::from_value(args).map_err(|e| format!("Invalid state_delete arguments: {}", e))?;
+    let a: StateDeleteArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid state_delete arguments: {}", e))?;
 
     let found = db
         .state_delete(&a.key)
@@ -483,9 +481,7 @@ pub fn handle_compact(db: &Database, args: Value) -> String {
 pub fn handle_migrate(db: &Database, args: Value) -> String {
     let a: MigrateArgs = match serde_json::from_value(args) {
         Ok(a) => a,
-        Err(e) => {
-            return json!({"error": format!("Invalid migrate arguments: {}", e)}).to_string()
-        }
+        Err(e) => return json!({"error": format!("Invalid migrate arguments: {}", e)}).to_string(),
     };
 
     match db.migrate_from_v0_1(&a.from_path) {
@@ -507,8 +503,6 @@ pub fn handle_context(db: &Database, args: Value) -> String {
         Err(e) => format!("Context generation failed: {}", e),
     }
 }
-
-
 
 #[derive(Debug, Deserialize)]
 pub struct VaultExportArgs {
@@ -551,7 +545,6 @@ pub fn handle_vault_import(db: &Database, args: Value) -> String {
     }
 }
 
-
 #[derive(Debug, Deserialize)]
 pub struct TraverseArgs {
     pub category: String,
@@ -560,16 +553,19 @@ pub struct TraverseArgs {
     pub max_depth: i64,
 }
 
-fn default_depth() -> i64 { 3 }
+fn default_depth() -> i64 {
+    3
+}
 
 pub fn handle_traverse(db: &Database, args: Value) -> String {
     let a: TraverseArgs = serde_json::from_value(args).unwrap_or(TraverseArgs {
-        category: "general".to_string(), key: "".to_string(), max_depth: 3,
+        category: "general".to_string(),
+        key: "".to_string(),
+        max_depth: 3,
     });
     match db.traverse_chain(&a.category, &a.key, a.max_depth) {
-        Ok(chain) => serde_json::to_string(&chain).unwrap_or_else(|e| {
-            json!({"error": format!("{}", e)}).to_string()
-        }),
+        Ok(chain) => serde_json::to_string(&chain)
+            .unwrap_or_else(|e| json!({"error": format!("{}", e)}).to_string()),
         Err(e) => json!({"error": format!("Traverse failed: {}", e)}).to_string(),
     }
 }
@@ -583,10 +579,15 @@ pub struct ScoreArgs {
 
 pub fn handle_score(db: &Database, args: Value) -> String {
     let a: ScoreArgs = serde_json::from_value(args).unwrap_or(ScoreArgs {
-        category: "".to_string(), key: "".to_string(), score: 0.5,
+        category: "".to_string(),
+        key: "".to_string(),
+        score: 0.5,
     });
     match db.score_entity(&a.category, &a.key, a.score) {
-        Ok(found) => json!({"found": found, "category": a.category, "key": a.key, "score": a.score}).to_string(),
+        Ok(found) => {
+            json!({"found": found, "category": a.category, "key": a.key, "score": a.score})
+                .to_string()
+        }
         Err(e) => json!({"error": format!("Score failed: {}", e)}).to_string(),
     }
 }
@@ -600,17 +601,22 @@ pub struct ConflictArgs {
     pub limit: i64,
 }
 
-fn default_conflict_threshold() -> f64 { 0.4 }
-fn default_conflict_limit() -> i64 { 10 }
+fn default_conflict_threshold() -> f64 {
+    0.4
+}
+fn default_conflict_limit() -> i64 {
+    10
+}
 
 pub fn handle_conflicts(db: &Database, args: Value) -> String {
     let a: ConflictArgs = serde_json::from_value(args).unwrap_or(ConflictArgs {
-        category: "general".to_string(), threshold: 0.4, limit: 10,
+        category: "general".to_string(),
+        threshold: 0.4,
+        limit: 10,
     });
     match db.detect_conflicts(&a.category, a.threshold, a.limit) {
-        Ok(report) => serde_json::to_string(&report).unwrap_or_else(|e| {
-            json!({"error": format!("{}", e)}).to_string()
-        }),
+        Ok(report) => serde_json::to_string(&report)
+            .unwrap_or_else(|e| json!({"error": format!("{}", e)}).to_string()),
         Err(e) => json!({"error": format!("Conflict detection failed: {}", e)}).to_string(),
     }
 }

@@ -2,11 +2,10 @@ use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::models::{
-    CompactReport, DecayReport, Entity, VaultReport, JournalEvent, MemoryLink, RecallParams, StateEntry, Stats,
-    TimelineParams,
+    CompactReport, DecayReport, Entity, JournalEvent, MemoryLink, RecallParams, StateEntry, Stats,
+    TimelineParams, VaultReport,
 };
 use crate::schema;
-
 
 /// Format a unix timestamp in milliseconds as an ISO 8601 string.
 fn chrono_like(ms: i64) -> String {
@@ -51,7 +50,6 @@ impl Database {
         self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
     }
 
-
     // ─── Decay & Layer Progression ──────────────────────────────────
 
     /// Ebbinghaus decay half-life in milliseconds (default: 7 days).
@@ -61,8 +59,8 @@ impl Database {
     const DECAY_BOOST: f64 = 0.25;
 
     /// Layer promotion thresholds (retrieval_count).
-    const CORE_THRESHOLD: i64 = 20;     // ≥20 retrievals → core
-    const WORKING_THRESHOLD: i64 = 5;   // ≥5 retrievals → working
+    const CORE_THRESHOLD: i64 = 20; // ≥20 retrievals → core
+    const WORKING_THRESHOLD: i64 = 5; // ≥5 retrievals → working
 
     /// Compute Ebbinghaus decay score based on time since last access.
     /// decay = e^(-elapsed_ms / half_life_ms)
@@ -97,16 +95,16 @@ impl Database {
     pub fn decay_tick(&self) -> Result<DecayReport, Box<dyn std::error::Error>> {
         let now = now_ms();
         let total: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM entities WHERE archived = 0", [], |r| r.get(0)
+            "SELECT COUNT(*) FROM entities WHERE archived = 0",
+            [],
+            |r| r.get(0),
         )?;
 
         // Update decay_score for all non-archived entities
-        let mut stmt = self.conn.prepare(
-            "SELECT id, last_accessed_unix_ms FROM entities WHERE archived = 0"
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-        })?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, last_accessed_unix_ms FROM entities WHERE archived = 0")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
 
         let mut updated = 0i64;
         let mut auto_archived = 0i64;
@@ -139,9 +137,7 @@ impl Database {
         })
     }
 
-
     // ─── Entities ────────────────────────────────────────────────
-
 
     /// Compute trigram overlap similarity between two strings (0.0–1.0).
     /// Uses character trigrams for fast, language-agnostic comparison.
@@ -152,7 +148,7 @@ impl Database {
         if a == b {
             return 1.0;
         }
-        
+
         fn trigrams(s: &str) -> std::collections::HashSet<[char; 3]> {
             let chars: Vec<char> = s.chars().collect();
             if chars.len() < 3 {
@@ -160,21 +156,21 @@ impl Database {
             }
             chars.windows(3).map(|w| [w[0], w[1], w[2]]).collect()
         }
-        
+
         let ta = trigrams(a);
         let tb = trigrams(b);
-        
+
         if ta.is_empty() || tb.is_empty() {
             return 0.0;
         }
-        
+
         let intersection = ta.intersection(&tb).count();
         let union = ta.len() + tb.len() - intersection;
-        
+
         if union == 0 {
             return 0.0;
         }
-        
+
         intersection as f64 / union as f64
     }
 
@@ -187,12 +183,12 @@ impl Database {
         threshold: f64,
     ) -> Result<Option<String>, Box<dyn std::error::Error>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, body_json FROM entities WHERE category = ?1 AND archived = 0 LIMIT 100"
+            "SELECT id, body_json FROM entities WHERE category = ?1 AND archived = 0 LIMIT 100",
         )?;
         let rows = stmt.query_map(params![category], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?;
-        
+
         for row in rows {
             let (id, existing_body) = row?;
             let sim = Self::trigram_similarity(body_json, &existing_body);
@@ -200,13 +196,16 @@ impl Database {
                 return Ok(Some(id));
             }
         }
-        
+
         Ok(None)
     }
 
     /// Store or update an entity. Idempotent by (category, key).
     /// Returns the entity id and whether this was a create or update.
-    pub fn remember(&self, entity: &Entity) -> Result<(String, String), Box<dyn std::error::Error>> {
+    pub fn remember(
+        &self,
+        entity: &Entity,
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
         let tags_json = serde_json::to_string(&entity.tags)?;
         let links_json = serde_json::to_string(&entity.links)?;
         let archived_int = if entity.archived { 1 } else { 0 };
@@ -228,10 +227,14 @@ impl Database {
             // Update existing entity — compute decay + boost (it's being remembered)
             id = ex_id;
             let now = now_ms();
-            let old_decay: f64 = self.conn.query_row(
-                "SELECT decay_score FROM entities WHERE id = ?1",
-                params![id], |r| r.get(0)
-            ).unwrap_or(1.0);
+            let old_decay: f64 = self
+                .conn
+                .query_row(
+                    "SELECT decay_score FROM entities WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(1.0);
             let boosted = Self::boost_decay(old_decay);
             let new_layer = Self::compute_layer(entity.retrieval_count + 1);
             self.conn.execute(
@@ -270,9 +273,9 @@ impl Database {
         } else {
             // Check for near-duplicates before inserting
             let dup_threshold = 0.7; // 70% trigram similarity
-            if let Ok(Some(dup_id)) = self.find_near_duplicate(
-                &entity.category, &entity.body_json, dup_threshold
-            ) {
+            if let Ok(Some(dup_id)) =
+                self.find_near_duplicate(&entity.category, &entity.body_json, dup_threshold)
+            {
                 // Near-duplicate found — bump its importance instead of creating new
                 let _ = self.conn.execute(
                     "UPDATE entities SET decay_score = MIN(1.0, decay_score + 0.15),
@@ -280,9 +283,9 @@ impl Database {
                      last_accessed_unix_ms = ?1 WHERE id = ?2",
                     params![now_ms(), dup_id],
                 );
-                return Ok((dup_id, "deduped".to_string()));
+                return Ok((dup_id, "deduped (new key not created)".to_string()));
             }
-            
+
             // Insert new entity
             id = entity.id.clone();
             self.conn.execute(
@@ -343,10 +346,29 @@ impl Database {
                 .collect();
 
             if !words.is_empty() {
-                // FTS5 query: join words with OR
+                // FTS5 query: escape special chars and quote each term
+                let escape_fts = |s: &str| -> String {
+                    s.chars()
+                        .map(|c| match c {
+                            '"' | '\'' | '+' | '-' | '*' | '^' | '(' | ')' | '[' | ']' | '{'
+                            | '}' | '~' | '!' | '@' | '#' | '$' | '%' | '&' | '/' | ':' | '<'
+                            | '>' | '=' | '|' | '?' | ',' | '.' | '`' | ';' | '\\' => ' '.into(),
+                            _ => c.to_string(),
+                        })
+                        .collect::<String>()
+                        .trim()
+                        .to_string()
+                };
                 let fts_query = words
                     .iter()
-                    .map(|w| w.replace('\'', "''"))
+                    .map(|w| {
+                        let escaped = escape_fts(w);
+                        if escaped.is_empty() {
+                            "\"\"".to_string()
+                        } else {
+                            format!("\"{}\"", escaped.replace('"', "\"\""))
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(" OR ");
                 param_values.push(Box::new(fts_query));
@@ -386,10 +408,7 @@ impl Database {
 
         // Filter by decay score
         if params.min_decay > 0.0 {
-            conditions.push(format!(
-                "decay_score >= ?{}",
-                param_values.len() + 1
-            ));
+            conditions.push(format!("decay_score >= ?{}", param_values.len() + 1));
             param_values.push(Box::new(params.min_decay));
         }
 
@@ -397,10 +416,13 @@ impl Database {
         if let Some(ref tp) = params.topic_path {
             if !tp.is_empty() {
                 conditions.push(format!(
-                    "topic_path LIKE ?{}",
+                    "topic_path LIKE ?{} ESCAPE '\\'",
                     param_values.len() + 1
                 ));
-                let escaped = tp.replace('%', "\\%").replace('_', "\\_");
+                let escaped = tp
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_");
                 param_values.push(Box::new(format!("{}%", escaped)));
             }
         }
@@ -427,23 +449,22 @@ impl Database {
         // Rank by retrieval count + recency
         sql.push_str(" ORDER BY retrieval_count DESC, last_accessed_unix_ms DESC");
 
+        let safe_limit = params.limit.clamp(0, 1000);
         sql.push_str(&format!(" LIMIT ?{}", param_values.len() + 1));
-        param_values.push(Box::new(params.limit));
+        param_values.push(Box::new(safe_limit));
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
 
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            let tags_str: String =
-                row.get::<_, String>(6).unwrap_or_else(|_| "[]".to_string());
-            let links_str: String =
-                row.get::<_, String>(13).unwrap_or_else(|_| "[]".to_string());
+            let tags_str: String = row.get::<_, String>(6).unwrap_or_else(|_| "[]".to_string());
+            let links_str: String = row
+                .get::<_, String>(13)
+                .unwrap_or_else(|_| "[]".to_string());
 
-            let tags: Vec<String> =
-                serde_json::from_str(&tags_str).unwrap_or_default();
-            let links: Vec<MemoryLink> =
-                serde_json::from_str(&links_str).unwrap_or_default();
+            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+            let links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
             let archived: i32 = row.get(11).unwrap_or(0);
             let verified: i32 = row.get(14).unwrap_or(0);
 
@@ -504,13 +525,12 @@ impl Database {
         )?;
 
         let mut rows = stmt.query_map(params![category, key], |row| {
-            let tags_str: String =
-                row.get::<_, String>(6).unwrap_or_else(|_| "[]".to_string());
-            let links_str: String =
-                row.get::<_, String>(13).unwrap_or_else(|_| "[]".to_string());
+            let tags_str: String = row.get::<_, String>(6).unwrap_or_else(|_| "[]".to_string());
+            let links_str: String = row
+                .get::<_, String>(13)
+                .unwrap_or_else(|_| "[]".to_string());
             let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            let links: Vec<MemoryLink> =
-                serde_json::from_str(&links_str).unwrap_or_default();
+            let links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
             let archived: i32 = row.get(11).unwrap_or(0);
             let verified: i32 = row.get(14).unwrap_or(0);
 
@@ -568,23 +588,29 @@ impl Database {
         relationship: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Verify both entities exist
-        let from = self.get_entity(from_category, from_key)?
+        let from = self
+            .get_entity(from_category, from_key)?
             .ok_or("Source entity not found")?;
-        let _to: String = self.conn.query_row(
-            "SELECT id FROM entities WHERE id = ?1",
-            params![to_id],
-            |r| r.get(0),
-        ).map_err(|_| "Target entity not found")?;
+        let _to: String = self
+            .conn
+            .query_row(
+                "SELECT id FROM entities WHERE id = ?1",
+                params![to_id],
+                |r| r.get(0),
+            )
+            .map_err(|_| "Target entity not found")?;
 
         // Check for duplicate link
-        let existing: Option<String> = self.conn.query_row(
-            "SELECT links FROM entities WHERE id = ?1",
-            params![from.id],
-            |r| r.get(0),
-        ).ok();
+        let existing: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT links FROM entities WHERE id = ?1",
+                params![from.id],
+                |r| r.get(0),
+            )
+            .ok();
         if let Some(links_str) = existing {
-            let mut links: Vec<MemoryLink> =
-                serde_json::from_str(&links_str).unwrap_or_default();
+            let mut links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
             // Avoid duplicates
             if !links.iter().any(|l| l.target_id == to_id) {
                 links.push(MemoryLink {
@@ -610,7 +636,8 @@ impl Database {
         from_key: &str,
         to_id: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let from = self.get_entity(from_category, from_key)?
+        let from = self
+            .get_entity(from_category, from_key)?
             .ok_or("Source entity not found")?;
 
         let links_str: String = self.conn.query_row(
@@ -619,8 +646,7 @@ impl Database {
             |r| r.get(0),
         )?;
 
-        let mut links: Vec<MemoryLink> =
-            serde_json::from_str(&links_str).unwrap_or_default();
+        let mut links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
         let before = links.len();
         links.retain(|l| l.target_id != to_id);
 
@@ -670,18 +696,12 @@ impl Database {
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
         if let Some(from) = params.from_ms {
-            conditions.push(format!(
-                "created_at_unix_ms >= ?{}",
-                param_values.len() + 1
-            ));
+            conditions.push(format!("created_at_unix_ms >= ?{}", param_values.len() + 1));
             param_values.push(Box::new(from));
         }
 
         if let Some(to) = params.to_ms {
-            conditions.push(format!(
-                "created_at_unix_ms <= ?{}",
-                param_values.len() + 1
-            ));
+            conditions.push(format!("created_at_unix_ms <= ?{}", param_values.len() + 1));
             param_values.push(Box::new(to));
         }
 
@@ -719,8 +739,9 @@ impl Database {
 
         sql.push_str(" ORDER BY created_at_unix_ms DESC");
 
+        let safe_limit = params.limit.clamp(0, 1000);
         sql.push_str(&format!(" LIMIT ?{}", param_values.len() + 1));
-        param_values.push(Box::new(params.limit));
+        param_values.push(Box::new(safe_limit));
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
@@ -771,10 +792,7 @@ impl Database {
     }
 
     /// Get a state value. Returns None if the key doesn't exist or has expired.
-    pub fn state_get(
-        &self,
-        key: &str,
-    ) -> Result<Option<StateEntry>, Box<dyn std::error::Error>> {
+    pub fn state_get(&self, key: &str) -> Result<Option<StateEntry>, Box<dyn std::error::Error>> {
         let mut stmt = self.conn.prepare(
             "SELECT key, value_json, expires_at_unix_ms, created_at_unix_ms
              FROM state WHERE key = ?1",
@@ -832,9 +850,9 @@ impl Database {
             }
             v
         } else {
-            let mut stmt = self.conn.prepare(
-                "SELECT key FROM state WHERE key LIKE ?1 ORDER BY key",
-            )?;
+            let mut stmt = self
+                .conn
+                .prepare("SELECT key FROM state WHERE key LIKE ?1 ORDER BY key")?;
             let pattern = format!("{}%", prefix);
             let rows = stmt.query_map(params![pattern], |r| r.get::<_, String>(0))?;
             let mut v = Vec::new();
@@ -862,7 +880,6 @@ impl Database {
         schema::migrate_from_v0_1(old_path, &self.conn)
     }
 
-
     // ─── Memory Synthesis ───────────────────────────────────────────
 
     /// Traverse entity links starting from a given entity.
@@ -878,69 +895,100 @@ impl Database {
             None => return Ok(serde_json::json!({"error": "entity not found"})),
         };
 
+        // Get root links
+        let links_json: String = self
+            .conn
+            .query_row(
+                "SELECT links FROM entities WHERE id = ?1",
+                params![root.id],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "[]".to_string());
+        let root_links: Vec<MemoryLink> = serde_json::from_str(&links_json).unwrap_or_default();
+        let root_links_json: Vec<serde_json::Value> = root_links
+            .iter()
+            .map(|l| serde_json::json!({"target_id": l.target_id, "relationship": l.relationship}))
+            .collect();
+
         let mut visited = std::collections::HashSet::new();
-        let mut chain = serde_json::json!({
+        let mut traversed = Vec::new();
+
+        visited.insert(root.id.clone());
+        self._traverse_links(&root.id, &mut traversed, &mut visited, max_depth, 0);
+
+        let chain = serde_json::json!({
             "entity": {
                 "id": root.id,
                 "category": root.category,
                 "key": root.key,
                 "body_json": root.body_json,
-                "links": []
+                "links": root_links_json
             },
-            "traversed": []
+            "traversed": traversed
         });
 
-        self._traverse_links(&root.id, &mut chain, &mut visited, max_depth, 0);
         Ok(chain)
     }
 
     fn _traverse_links(
         &self,
         entity_id: &str,
-        parent: &mut serde_json::Value,
+        traversed: &mut Vec<serde_json::Value>,
         visited: &mut std::collections::HashSet<String>,
         max_depth: i64,
         current_depth: i64,
     ) {
-        if current_depth >= max_depth || visited.contains(entity_id) {
+        if current_depth >= max_depth {
             return;
         }
-        visited.insert(entity_id.to_string());
 
-        // Find linked entities
-        let links_json: String = self.conn.query_row(
-            "SELECT links FROM entities WHERE id = ?1",
-            params![entity_id],
-            |r| r.get(0),
-        ).unwrap_or_else(|_| "[]".to_string());
+        let links_json: String = self
+            .conn
+            .query_row(
+                "SELECT links FROM entities WHERE id = ?1",
+                params![entity_id],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "[]".to_string());
 
         let links: Vec<MemoryLink> = serde_json::from_str(&links_json).unwrap_or_default();
 
         for link in &links {
+            if visited.contains(&link.target_id) {
+                continue;
+            }
+
             if let Ok(Some(entity)) = self.get_entity_by_id(&link.target_id) {
-                let child = serde_json::json!({
+                visited.insert(link.target_id.clone());
+
+                // Get this entity's outgoing links
+                let child_links_json: String = self
+                    .conn
+                    .query_row(
+                        "SELECT links FROM entities WHERE id = ?1",
+                        params![entity.id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or_else(|_| "[]".to_string());
+                let child_links: Vec<MemoryLink> =
+                    serde_json::from_str(&child_links_json).unwrap_or_default();
+                let child_links_json: Vec<serde_json::Value> = child_links.iter().map(|l| {
+                    serde_json::json!({"target_id": l.target_id, "relationship": l.relationship})
+                }).collect();
+
+                let node = serde_json::json!({
                     "id": entity.id,
                     "category": entity.category,
                     "key": entity.key,
                     "body_json": entity.body_json,
                     "relationship": link.relationship,
-                    "links": []
+                    "depth": current_depth + 1,
+                    "links": child_links_json
                 });
 
-                if let Some(arr) = parent["traversed"].as_array_mut() {
-                    arr.push(child.clone());
-                }
+                traversed.push(node.clone());
 
-                let next = serde_json::json!({
-                    "id": entity.id,
-                    "category": entity.category,
-                    "key": entity.key,
-                    "body_json": entity.body_json,
-                    "relationship": link.relationship,
-                    "links": []
-                });
-
-                self._traverse_links(&entity.id, &mut next.clone(), visited, max_depth, current_depth + 1);
+                self._traverse_links(&entity.id, traversed, visited, max_depth, current_depth + 1);
             }
         }
     }
@@ -952,23 +1000,36 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms
-             FROM entities WHERE id = ?1"
+             FROM entities WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
             let tags_str: String = row.get::<_, String>(6).unwrap_or_else(|_| "[]".to_string());
-            let links_str: String = row.get::<_, String>(13).unwrap_or_else(|_| "[]".to_string());
+            let links_str: String = row
+                .get::<_, String>(13)
+                .unwrap_or_else(|_| "[]".to_string());
             let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
             let links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
             let archived: i32 = row.get(11).unwrap_or(0);
             let verified: i32 = row.get(14).unwrap_or(0);
             Ok(Entity {
-                id: row.get(0)?, category: row.get(1)?, key: row.get(2)?,
-                body_json: row.get(3)?, status: row.get(4)?, entity_type: row.get(5)?,
-                tags, decay_score: row.get(7)?, retrieval_count: row.get(8)?,
-                layer: row.get(9)?, topic_path: row.get(10)?,
-                archived: archived != 0, archive_reason: row.get(12)?,
-                links, verified: verified != 0, source: row.get(15)?,
-                created_at_unix_ms: row.get(16)?, last_accessed_unix_ms: row.get(17)?,
+                id: row.get(0)?,
+                category: row.get(1)?,
+                key: row.get(2)?,
+                body_json: row.get(3)?,
+                status: row.get(4)?,
+                entity_type: row.get(5)?,
+                tags,
+                decay_score: row.get(7)?,
+                retrieval_count: row.get(8)?,
+                layer: row.get(9)?,
+                topic_path: row.get(10)?,
+                archived: archived != 0,
+                archive_reason: row.get(12)?,
+                links,
+                verified: verified != 0,
+                source: row.get(15)?,
+                created_at_unix_ms: row.get(16)?,
+                last_accessed_unix_ms: row.get(17)?,
             })
         })?;
         if let Some(row) = rows.next() {
@@ -1006,14 +1067,18 @@ impl Database {
             "SELECT id, key, body_json FROM entities WHERE category = ?1 AND archived = 0 LIMIT 200"
         )?;
         let rows = stmt.query_map(params![category], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
         })?;
 
         let entities: Vec<(String, String, String)> = rows.filter_map(|r| r.ok()).collect();
         let mut conflicts = Vec::new();
 
         for i in 0..entities.len() {
-            for j in (i+1)..entities.len() {
+            for j in (i + 1)..entities.len() {
                 let (ref id1, ref key1, ref body1) = entities[i];
                 let (ref id2, ref key2, ref body2) = entities[j];
                 let sim = Self::trigram_similarity(body1, body2);
@@ -1049,11 +1114,11 @@ impl Database {
         min_decay: f64,
         dry_run: bool,
     ) -> Result<CompactReport, Box<dyn std::error::Error>> {
-        let examined: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM entities WHERE archived = 0", [], |r| {
-                r.get(0)
-            })?;
+        let examined: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM entities WHERE archived = 0",
+            [],
+            |r| r.get(0),
+        )?;
 
         let archived = if dry_run {
             self.conn.query_row(
@@ -1078,9 +1143,6 @@ impl Database {
         })
     }
 
-
-
-
     // ─── Embedding Search (v0.3 — requires embedding feature) ───────
     // Hybrid search with cosine similarity re-ranking.
     // Enable with: cargo build --features embedding
@@ -1102,22 +1164,22 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT id, category, key, body_json, type, tags, decay_score,
                     retrieval_count, layer, created_at_unix_ms, last_accessed_unix_ms
-             FROM entities WHERE archived = 0"
+             FROM entities WHERE archived = 0",
         )?;
 
         let rows = stmt.query_map([], |r| {
             Ok((
-                r.get::<_, String>(0)?,  // id
-                r.get::<_, String>(1)?,  // category
-                r.get::<_, String>(2)?,  // key
-                r.get::<_, String>(3)?,  // body_json
-                r.get::<_, String>(4)?,  // type
-                r.get::<_, String>(5)?,  // tags
-                r.get::<_, f64>(6)?,     // decay_score
-                r.get::<_, i64>(7)?,     // retrieval_count
-                r.get::<_, String>(8)?,  // layer
-                r.get::<_, i64>(9)?,     // created_at
-                r.get::<_, i64>(10)?,    // last_accessed
+                r.get::<_, String>(0)?, // id
+                r.get::<_, String>(1)?, // category
+                r.get::<_, String>(2)?, // key
+                r.get::<_, String>(3)?, // body_json
+                r.get::<_, String>(4)?, // type
+                r.get::<_, String>(5)?, // tags
+                r.get::<_, f64>(6)?,    // decay_score
+                r.get::<_, i64>(7)?,    // retrieval_count
+                r.get::<_, String>(8)?, // layer
+                r.get::<_, i64>(9)?,    // created_at
+                r.get::<_, i64>(10)?,   // last_accessed
             ))
         })?;
 
@@ -1126,8 +1188,25 @@ impl Database {
         let mut errors = Vec::new();
 
         for row in rows {
-            let (id, category, key, body_json, etype, tags, decay, retrievals, layer, created, accessed) = row?;
-            let filename = format!("{}.md", id);
+            let (
+                id,
+                category,
+                key,
+                body_json,
+                etype,
+                tags,
+                decay,
+                retrievals,
+                layer,
+                created,
+                accessed,
+            ) = row?;
+            // Sanitize id for filesystem: replace path separators
+            let safe_id: String = id
+                .chars()
+                .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+                .collect();
+            let filename = format!("{}.md", safe_id);
             let filepath = vault.join(&filename);
 
             let created_str = chrono_like(created);
@@ -1149,7 +1228,17 @@ last_accessed: {}
 
 {}
 ",
-                id, category, key, etype, tags, decay, retrievals, layer, created_str, accessed_str, body_json
+                id,
+                category,
+                key,
+                etype,
+                tags,
+                decay,
+                retrievals,
+                layer,
+                created_str,
+                accessed_str,
+                body_json
             );
 
             let _action = if filepath.exists() {
@@ -1197,7 +1286,7 @@ last_accessed: {}
         for entry in fs::read_dir(vault)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "md") {
+            if path.extension().is_none_or(|e| e != "md") {
                 continue;
             }
 
@@ -1223,13 +1312,24 @@ last_accessed: {}
             let get_fm = |key: &str| -> String {
                 fm.lines()
                     .find(|l| l.starts_with(&format!("{}:", key)))
-                    .and_then(|l| l.splitn(2, ':').nth(1))
+                    .and_then(|l| l.split_once(':').map(|x| x.1))
                     .unwrap_or("")
                     .trim()
                     .to_string()
             };
 
-            let id = get_fm("id");
+            let raw_id = get_fm("id");
+            // Validate id: no path separators, no parent dir references
+            let id = if raw_id.contains('/')
+                || raw_id.contains('\\')
+                || raw_id == ".."
+                || raw_id.starts_with("../")
+                || raw_id.starts_with("..\\")
+            {
+                String::new() // Force UUID generation instead
+            } else {
+                raw_id
+            };
             let category = get_fm("category");
             let key = get_fm("key");
             let etype = get_fm("type");
@@ -1249,16 +1349,36 @@ last_accessed: {}
             };
 
             let entity = Entity {
-                id: if id.is_empty() { uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string() } else { id },
-                category: if category.is_empty() { "general".to_string() } else { category },
-                key: if key.is_empty() { "imported".to_string() } else { key },
+                id: if id.is_empty() {
+                    uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string()
+                } else {
+                    id
+                },
+                category: if category.is_empty() {
+                    "general".to_string()
+                } else {
+                    category
+                },
+                key: if key.is_empty() {
+                    "imported".to_string()
+                } else {
+                    key
+                },
                 body_json: body,
                 status: "active".to_string(),
-                entity_type: if etype.is_empty() { "insight".to_string() } else { etype },
+                entity_type: if etype.is_empty() {
+                    "insight".to_string()
+                } else {
+                    etype
+                },
                 tags,
                 decay_score: decay,
                 retrieval_count: 0,
-                layer: if layer.is_empty() { "working".to_string() } else { layer },
+                layer: if layer.is_empty() {
+                    "buffer".to_string()
+                } else {
+                    layer
+                },
                 topic_path: String::new(),
                 archived: false,
                 archive_reason: String::new(),
@@ -1271,7 +1391,11 @@ last_accessed: {}
 
             match self.remember(&entity) {
                 Ok((_, action)) => {
-                    if action == "created" { files_created += 1; } else { files_updated += 1; }
+                    if action == "created" {
+                        files_created += 1;
+                    } else {
+                        files_updated += 1;
+                    }
                 }
                 Err(e) => {
                     errors.push(format!("{}: {}", path.display(), e));
@@ -1334,9 +1458,9 @@ last_accessed: {}
 
     /// List all distinct categories in the entities table.
     pub fn workspace_list_categories(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT DISTINCT category FROM entities WHERE archived = 0 ORDER BY category")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT category FROM entities WHERE archived = 0 ORDER BY category",
+        )?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut cats = Vec::new();
         for row in rows {
@@ -1347,10 +1471,11 @@ last_accessed: {}
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", &s[..max_len])
+        let truncated: String = s.chars().take(max_len).collect();
+        format!("{}...", truncated)
     }
 }
 
@@ -1414,7 +1539,10 @@ mod tests {
         // Verify retrieval
         let found = db.get_entity("decision", "use-postgres").unwrap();
         assert!(found.is_some());
-        assert_eq!(found.unwrap().body_json, r#"{"decision": "Use PostgreSQL"}"#);
+        assert_eq!(
+            found.unwrap().body_json,
+            r#"{"decision": "Use PostgreSQL"}"#
+        );
 
         // Update the same entity (idempotent)
         let mut updated = entity.clone();
@@ -1466,7 +1594,9 @@ mod tests {
         let e = make_entity("e-f", "decision", "forget-me", "{}");
         db.remember(&e).unwrap();
 
-        let ok = db.forget("decision", "forget-me", "no longer relevant").unwrap();
+        let ok = db
+            .forget("decision", "forget-me", "no longer relevant")
+            .unwrap();
         assert!(ok);
 
         // Archived entity not in default recall
@@ -1576,7 +1706,12 @@ mod tests {
 
         let mut e1 = make_entity("e-a", "test", "keep", r#"{"name":"entity A"}"#);
         e1.decay_score = 0.9;
-        let mut e2 = make_entity("e-b", "test", "archive", r#"{"name":"entity B is different"}"#);
+        let mut e2 = make_entity(
+            "e-b",
+            "test",
+            "archive",
+            r#"{"name":"entity B is different"}"#,
+        );
         e2.decay_score = 0.1;
         db.remember(&e1).unwrap();
         db.remember(&e2).unwrap();

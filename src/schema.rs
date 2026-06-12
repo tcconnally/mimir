@@ -1,8 +1,8 @@
 use rusqlite::{params, Connection};
 use serde_json::json;
 
-use crate::models::{MigrationReport, Stats};
 use crate::db::now_ms;
+use crate::models::{MigrationReport, Stats};
 
 /// SQL to create the v0.2.0 schema from scratch.
 pub const DDL_V0_2_0: &str = "
@@ -120,22 +120,22 @@ pub fn migrate_from_v0_1(
 
     let old_memories = stmt.query_map([], |row| {
         Ok((
-            row.get::<_, String>(0)?,               // id
-            row.get::<_, String>(1)?,               // content
-            row.get::<_, String>(2)?,               // type
-            row.get::<_, Option<String>>(3)?,       // summary
-            row.get::<_, f64>(4)?,                  // relevance
-            row.get::<_, f64>(5)?,                  // decay_score
-            row.get::<_, i64>(6)?,                  // retrieval_count
-            row.get::<_, String>(7)?,               // layer
-            row.get::<_, String>(8)?,               // topic_path
-            row.get::<_, i64>(9)?,                  // created_at_unix_ms
-            row.get::<_, i64>(10)?,                 // last_accessed_unix_ms
-            row.get::<_, String>(11)?,              // workspace_hash
-            row.get::<_, String>(12)?,              // tags
-            row.get::<_, String>(13)?,              // links
-            row.get::<_, String>(14)?,              // source
-            row.get::<_, i32>(15)?,                 // verified
+            row.get::<_, String>(0)?,         // id
+            row.get::<_, String>(1)?,         // content
+            row.get::<_, String>(2)?,         // type
+            row.get::<_, Option<String>>(3)?, // summary
+            row.get::<_, f64>(4)?,            // relevance
+            row.get::<_, f64>(5)?,            // decay_score
+            row.get::<_, i64>(6)?,            // retrieval_count
+            row.get::<_, String>(7)?,         // layer
+            row.get::<_, String>(8)?,         // topic_path
+            row.get::<_, i64>(9)?,            // created_at_unix_ms
+            row.get::<_, i64>(10)?,           // last_accessed_unix_ms
+            row.get::<_, String>(11)?,        // workspace_hash
+            row.get::<_, String>(12)?,        // tags
+            row.get::<_, String>(13)?,        // links
+            row.get::<_, String>(14)?,        // source
+            row.get::<_, i32>(15)?,           // verified
         ))
     })?;
 
@@ -246,26 +246,18 @@ pub fn migrate_from_v0_1(
 }
 
 /// Gather database statistics across all tables.
-pub fn gather_stats(
-    conn: &Connection,
-    db_path: &str,
-) -> Result<Stats, Box<dyn std::error::Error>> {
-    let total_entities: i64 =
-        conn.query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))?;
+pub fn gather_stats(conn: &Connection, db_path: &str) -> Result<Stats, Box<dyn std::error::Error>> {
+    let total_entities: i64 = conn.query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))?;
 
     let by_category = query_grouped_counts(conn, "entities", "category")?;
     let by_type = query_grouped_counts(conn, "entities", "type")?;
     let by_layer = query_grouped_counts(conn, "entities", "layer")?;
 
-    let total_journal: i64 =
-        conn.query_row("SELECT COUNT(*) FROM journal", [], |r| r.get(0))?;
+    let total_journal: i64 = conn.query_row("SELECT COUNT(*) FROM journal", [], |r| r.get(0))?;
 
-    let total_state: i64 =
-        conn.query_row("SELECT COUNT(*) FROM state", [], |r| r.get(0))?;
+    let total_state: i64 = conn.query_row("SELECT COUNT(*) FROM state", [], |r| r.get(0))?;
 
-    let db_size = std::fs::metadata(db_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let db_size = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
 
     let oldest: Option<i64> = conn
         .query_row("SELECT MIN(created_at_unix_ms) FROM entities", [], |r| {
@@ -303,16 +295,15 @@ fn query_grouped_counts(
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], |r| {
         Ok((
-            r.get::<_, String>(0).unwrap_or_else(|_| "(null)".to_string()),
+            r.get::<_, String>(0)
+                .unwrap_or_else(|_| "(null)".to_string()),
             r.get::<_, i64>(1).unwrap_or(0),
         ))
     })?;
 
     let mut map = serde_json::Map::new();
-    for row in rows {
-        if let Ok((key, count)) = row {
-            map.insert(key, json!(count));
-        }
+    for (key, count) in rows.flatten() {
+        map.insert(key, json!(count));
     }
     Ok(serde_json::Value::Object(map))
 }
@@ -340,10 +331,8 @@ mod tests {
     #[test]
     fn detects_v0_1_memories_table() {
         let (conn, _path) = temp_db();
-        conn.execute_batch(
-            "CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT);",
-        )
-        .expect("create v0.1 memories");
+        conn.execute_batch("CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT);")
+            .expect("create v0.1 memories");
         assert!(has_v0_1_memories(&conn).unwrap());
         assert!(!is_v0_2_0(&conn).unwrap());
     }
@@ -377,8 +366,7 @@ mod tests {
         drop(old_conn);
 
         let (new_conn, _new_path) = temp_db();
-        let report =
-            migrate_from_v0_1(&old_path, &new_conn).expect("migrate");
+        let report = migrate_from_v0_1(&old_path, &new_conn).expect("migrate");
 
         assert_eq!(report.total_old_memories, 1);
         assert_eq!(report.entities_created, 1);
