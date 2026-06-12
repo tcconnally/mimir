@@ -184,7 +184,7 @@ CREATE TABLE state (
 
 ## Entity Model
 
-The core concept in Mimir v0.2.0 is the **entity**: a structured fact with a
+The core concept in Mimir v0.5.0 is the **entity**: a structured fact with a
 composite key of `(category, key)`. This makes storage idempotent — call
 `mimir_remember` with the same category and key as many times as you want,
 and it updates the existing entity instead of creating a duplicate.
