@@ -283,13 +283,14 @@ impl Database {
                      last_accessed_unix_ms = ?1 WHERE id = ?2",
                     params![now_ms(), dup_id],
                 );
-                return Ok((dup_id, "deduped".to_string()));
+                return Ok((dup_id, "deduped (new key not created)".to_string()));
             }
 
             // Insert new entity. Derive the layer from the retrieval count so the
             // stored layer is always consistent with compute_layer(). Otherwise a
             // fresh entity created as "working" would be demoted to "buffer" on its
             // first recall.
+            // Insert new entity
             id = entity.id.clone();
             let initial_layer = Self::compute_layer(entity.retrieval_count);
             self.conn.execute(
@@ -358,6 +359,29 @@ impl Database {
                 let fts_query = words
                     .iter()
                     .map(|w| format!("\"{}\"", w.replace('"', "\"\"").replace('\'', "''")))
+                // FTS5 query: escape special chars and quote each term
+                let escape_fts = |s: &str| -> String {
+                    s.chars()
+                        .map(|c| match c {
+                            '"' | '\'' | '+' | '-' | '*' | '^' | '(' | ')' | '[' | ']' | '{'
+                            | '}' | '~' | '!' | '@' | '#' | '$' | '%' | '&' | '/' | ':' | '<'
+                            | '>' | '=' | '|' | '?' | ',' | '.' | '`' | ';' | '\\' => ' '.into(),
+                            _ => c.to_string(),
+                        })
+                        .collect::<String>()
+                        .trim()
+                        .to_string()
+                };
+                let fts_query = words
+                    .iter()
+                    .map(|w| {
+                        let escaped = escape_fts(w);
+                        if escaped.is_empty() {
+                            "\"\"".to_string()
+                        } else {
+                            format!("\"{}\"", escaped.replace('"', "\"\""))
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(" OR ");
                 param_values.push(Box::new(fts_query));
@@ -410,6 +434,11 @@ impl Database {
                     param_values.len() + 1
                 ));
                 param_values.push(Box::new(format!("{}%", escape_like(tp))));
+                let escaped = tp
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_");
+                param_values.push(Box::new(format!("{}%", escaped)));
             }
         }
 
@@ -442,6 +471,9 @@ impl Database {
         let effective_limit = params.limit.clamp(1, MAX_LIMIT);
         sql.push_str(&format!(" LIMIT ?{}", param_values.len() + 1));
         param_values.push(Box::new(effective_limit));
+        let safe_limit = params.limit.clamp(0, 1000);
+        sql.push_str(&format!(" LIMIT ?{}", param_values.len() + 1));
+        param_values.push(Box::new(safe_limit));
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
@@ -737,8 +769,9 @@ impl Database {
 
         sql.push_str(" ORDER BY created_at_unix_ms DESC");
 
+        let safe_limit = params.limit.clamp(0, 1000);
         sql.push_str(&format!(" LIMIT ?{}", param_values.len() + 1));
-        param_values.push(Box::new(params.limit));
+        param_values.push(Box::new(safe_limit));
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
@@ -853,6 +886,10 @@ impl Database {
                 .conn
                 .prepare("SELECT key FROM state WHERE key LIKE ?1 ESCAPE '\\' ORDER BY key")?;
             let pattern = format!("{}%", escape_like(prefix));
+            let mut stmt = self
+                .conn
+                .prepare("SELECT key FROM state WHERE key LIKE ?1 ORDER BY key")?;
+            let pattern = format!("{}%", prefix);
             let rows = stmt.query_map(params![pattern], |r| r.get::<_, String>(0))?;
             let mut v = Vec::new();
             for row in rows {
@@ -894,6 +931,21 @@ impl Database {
             None => return Ok(serde_json::json!({"error": "entity not found"})),
         };
 
+        // Get root links
+        let links_json: String = self
+            .conn
+            .query_row(
+                "SELECT links FROM entities WHERE id = ?1",
+                params![root.id],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "[]".to_string());
+        let root_links: Vec<MemoryLink> = serde_json::from_str(&links_json).unwrap_or_default();
+        let root_links_json: Vec<serde_json::Value> = root_links
+            .iter()
+            .map(|l| serde_json::json!({"target_id": l.target_id, "relationship": l.relationship}))
+            .collect();
+
         let mut visited = std::collections::HashSet::new();
         visited.insert(root.id.clone());
 
@@ -904,6 +956,10 @@ impl Database {
         // `traversed` still see every descendant through the requested depth.
         let mut traversed = Vec::new();
         Self::flatten_links(&children, &mut traversed);
+        let mut traversed = Vec::new();
+
+        visited.insert(root.id.clone());
+        self._traverse_links(&root.id, &mut traversed, &mut visited, max_depth, 0);
 
         let chain = serde_json::json!({
             "entity": {
@@ -912,6 +968,7 @@ impl Database {
                 "key": root.key,
                 "body_json": root.body_json,
                 "links": children
+                "links": root_links_json
             },
             "traversed": traversed
         });
@@ -933,6 +990,15 @@ impl Database {
         }
 
         // Find linked entities
+        traversed: &mut Vec<serde_json::Value>,
+        visited: &mut std::collections::HashSet<String>,
+        max_depth: i64,
+        current_depth: i64,
+    ) {
+        if current_depth >= max_depth {
+            return;
+        }
+
         let links_json: String = self
             .conn
             .query_row(
@@ -954,6 +1020,26 @@ impl Database {
                 let grandchildren =
                     self._traverse_links(&entity.id, visited, max_depth, current_depth + 1);
                 children.push(serde_json::json!({
+
+            if let Ok(Some(entity)) = self.get_entity_by_id(&link.target_id) {
+                visited.insert(link.target_id.clone());
+
+                // Get this entity's outgoing links
+                let child_links_json: String = self
+                    .conn
+                    .query_row(
+                        "SELECT links FROM entities WHERE id = ?1",
+                        params![entity.id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or_else(|_| "[]".to_string());
+                let child_links: Vec<MemoryLink> =
+                    serde_json::from_str(&child_links_json).unwrap_or_default();
+                let child_links_json: Vec<serde_json::Value> = child_links.iter().map(|l| {
+                    serde_json::json!({"target_id": l.target_id, "relationship": l.relationship})
+                }).collect();
+
+                let node = serde_json::json!({
                     "id": entity.id,
                     "category": entity.category,
                     "key": entity.key,
@@ -975,6 +1061,13 @@ impl Database {
                 if let Some(child_links) = node.get("links") {
                     Self::flatten_links(child_links, out);
                 }
+                    "depth": current_depth + 1,
+                    "links": child_links_json
+                });
+
+                traversed.push(node.clone());
+
+                self._traverse_links(&entity.id, traversed, visited, max_depth, current_depth + 1);
             }
         }
     }
@@ -1206,6 +1299,12 @@ impl Database {
                 continue;
             }
             let filename = format!("{}.md", id);
+            // Sanitize id for filesystem: replace path separators
+            let safe_id: String = id
+                .chars()
+                .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+                .collect();
+            let filename = format!("{}.md", safe_id);
             let filepath = vault.join(&filename);
 
             let created_str = chrono_like(created);
@@ -1312,6 +1411,7 @@ last_accessed: {}
                 fm.lines()
                     .find(|l| l.starts_with(&format!("{}:", key)))
                     .and_then(|l| l.split_once(':').map(|(_, v)| v))
+                    .and_then(|l| l.split_once(':').map(|x| x.1))
                     .unwrap_or("")
                     .trim()
                     .to_string()
@@ -1327,6 +1427,17 @@ last_accessed: {}
                     path.display()
                 ));
                 String::new()
+            let raw_id = get_fm("id");
+            // Validate id: no path separators, no parent dir references
+            let id = if raw_id.contains('/')
+                || raw_id.contains('\\')
+                || raw_id == ".."
+                || raw_id.starts_with("../")
+                || raw_id.starts_with("..\\")
+            {
+                String::new() // Force UUID generation instead
+            } else {
+                raw_id
             };
             let category = get_fm("category");
             let key = get_fm("key");
@@ -1374,6 +1485,7 @@ last_accessed: {}
                 retrieval_count: 0,
                 layer: if layer.is_empty() {
                     "working".to_string()
+                    "buffer".to_string()
                 } else {
                     layer
                 },
@@ -1479,6 +1591,11 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
         s.to_string()
     } else {
         let truncated: String = s.chars().take(max_chars).collect();
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.chars().count() <= max_len {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_len).collect();
         format!("{}...", truncated)
     }
 }

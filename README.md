@@ -193,6 +193,7 @@ Categories are user-defined. Common patterns:
 - **State with TTL** — key-value store with automatic expiration
 - **Entity linking** — create navigable relationships between entities
 - **FTS5 keyword search** — FTS5 keyword filtering with LIKE fallback; results are ranked by retrieval count and recency (not BM25)
+- **FTS5 keyword search** — Relevance-ranked results (by retrieval count + recency) with LIKE fallback
 - **No LLM required** — stores and retrieves directly; no embeddings needed
 - **MCP-native** — standard JSON-RPC 2.0 over stdio
 - **Single-file database** — one SQLite file; easy to backup, copy, or inspect
@@ -239,6 +240,24 @@ import/export.
 BM25 relevance; embedding/vector search is not yet implemented.
 
 ---
+## Roadmap (v0.5.0+)
+
+### ✅ Implemented
+- **23 MCP tools** — Full CRUD for entities, links, journal, state, vault, workspace context
+- **Ebbinghaus decay** — Time-based memory fading with retrieval boosts via `mimir_decay`
+- **Layer promotion** — Three-tier memory (buffer → working → core) based on retrieval count
+- **Vault export/import** — Export entities to Markdown files, import from vault directories
+- **Graph traversal** — Walk entity link graphs via `mimir_traverse`
+- **Workspace context** — Pre-formatted context blocks for AI agent session injection
+- **State management** — Key-value TTL state entries via `mimir_state_*` tools
+- **Conflict detection** — Near-duplicate detection via trigram similarity
+- **JSON-RPC 2.0** — Full stdio MCP server implementation
+- **FTS5 + LIKE search** — SQLite full-text search with substring fallback
+
+### 🚧 Planned
+- **Semantic search** — Optional embedding-based recall for fuzzy matching
+- **Cross-workspace federation** — Share entities across workspace boundaries
+- **Web dashboard** — Browser-based memory explorer and visualization
 
 ## License
 

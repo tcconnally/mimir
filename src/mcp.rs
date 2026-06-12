@@ -345,6 +345,7 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     },
     "annotations": {
       "readOnlyHint": false
+      "destructiveHint": true
     }
   },
   {
@@ -953,7 +954,7 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
       "description": "Markdown-formatted context block with entity details"
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": true
     }
   },
   {
@@ -987,6 +988,7 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
         "entity": {
           "type": "object",
           "description": "The root entity, including its nested linked entities under `links`."
+          "description": "Root entity with its links"
         },
         "traversed": {
           "type": "array",
@@ -994,8 +996,10 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
             "type": "object"
           },
           "description": "All descendant entities reached during traversal, flattened depth-first."
+          "description": "Linked entities traversed from root"
         }
-      }
+      },
+      "required": ["entity", "traversed"]
     },
     "annotations": {
       "readOnlyHint": true
