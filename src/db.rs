@@ -110,6 +110,9 @@ impl Database {
         let mut auto_archived = 0i64;
         let now_val = now;
 
+        // Wrap in explicit transaction to avoid per-statement fsync
+        let _ = self.conn.execute_batch("BEGIN");
+
         for row in rows {
             let (id, last_access) = row?;
             let new_decay = Self::compute_decay(last_access, now_val);
@@ -133,6 +136,8 @@ impl Database {
                 );
             }
         }
+
+        let _ = self.conn.execute_batch("COMMIT");
 
         Ok(DecayReport {
             entities_checked: total,
@@ -396,10 +401,15 @@ impl Database {
                     param_values.push(Box::new(format!("%{}%", word.replace('\'', "''"))));
                 }
 
-                conditions.push(format!(
-                    "((rowid IN (SELECT rowid FROM entities_fts WHERE entities_fts MATCH ?1)) OR {})",
-                    like_clauses.join(" OR ")
-                ));
+                // When include_archived, skip FTS5 — archived entities have no FTS5 entries
+                if params.include_archived {
+                    conditions.push(like_clauses.join(" OR "));
+                } else {
+                    conditions.push(format!(
+                        "((rowid IN (SELECT rowid FROM entities_fts WHERE entities_fts MATCH ?1)) OR {})",
+                        like_clauses.join(" OR ")
+                    ));
+                }
             }
         }
 
@@ -471,51 +481,24 @@ impl Database {
 
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            let tags_str: String = row.get::<_, String>(6).unwrap_or_else(|_| "[]".to_string());
-            let links_str: String = row
-                .get::<_, String>(13)
-                .unwrap_or_else(|_| "[]".to_string());
-
-            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            let links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
-            let archived: i32 = row.get(11).unwrap_or(0);
-            let verified: i32 = row.get(14).unwrap_or(0);
-
-            Ok(Entity {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                key: row.get(2)?,
-                body_json: row.get(3)?,
-                status: row.get(4)?,
-                entity_type: row.get(5)?,
-                tags,
-                decay_score: row.get(7)?,
-                retrieval_count: row.get(8)?,
-                layer: row.get(9)?,
-                topic_path: row.get(10)?,
-                archived: archived != 0,
-                archive_reason: row.get(12)?,
-                links,
-                verified: verified != 0,
-                source: row.get(15)?,
-                created_at_unix_ms: row.get(16)?,
-                last_accessed_unix_ms: row.get(17)?,
-            })
+            entity_from_row(row)
         })?;
 
         let mut items = Vec::new();
         for row in rows {
             let entity = row?;
             // Update retrieval count, recency, decay boost, and layer
-            let new_count = entity.retrieval_count + 1;
-            let boosted_decay = Self::boost_decay(entity.decay_score);
-            let new_layer = Self::compute_layer(new_count);
-            let _ = self.conn.execute(
-                "UPDATE entities SET retrieval_count = ?1,
-                 last_accessed_unix_ms = ?2, decay_score = ?3, layer = ?4
-                 WHERE id = ?5",
-                params![new_count, now_ms(), boosted_decay, new_layer, entity.id],
-            );
+            if !params.skip_side_effects {
+                let new_count = entity.retrieval_count + 1;
+                let boosted_decay = Self::boost_decay(entity.decay_score);
+                let new_layer = Self::compute_layer(new_count);
+                let _ = self.conn.execute(
+                    "UPDATE entities SET retrieval_count = ?1,
+                     last_accessed_unix_ms = ?2, decay_score = ?3, layer = ?4
+                     WHERE id = ?5",
+                    params![new_count, now_ms(), boosted_decay, new_layer, entity.id],
+                );
+            }
             items.push(entity);
         }
 
@@ -538,35 +521,7 @@ impl Database {
         )?;
 
         let mut rows = stmt.query_map(params![category, key], |row| {
-            let tags_str: String = row.get::<_, String>(6).unwrap_or_else(|_| "[]".to_string());
-            let links_str: String = row
-                .get::<_, String>(13)
-                .unwrap_or_else(|_| "[]".to_string());
-            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            let links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
-            let archived: i32 = row.get(11).unwrap_or(0);
-            let verified: i32 = row.get(14).unwrap_or(0);
-
-            Ok(Entity {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                key: row.get(2)?,
-                body_json: row.get(3)?,
-                status: row.get(4)?,
-                entity_type: row.get(5)?,
-                tags,
-                decay_score: row.get(7)?,
-                retrieval_count: row.get(8)?,
-                layer: row.get(9)?,
-                topic_path: row.get(10)?,
-                archived: archived != 0,
-                archive_reason: row.get(12)?,
-                links,
-                verified: verified != 0,
-                source: row.get(15)?,
-                created_at_unix_ms: row.get(16)?,
-                last_accessed_unix_ms: row.get(17)?,
-            })
+            entity_from_row(row)
         })?;
 
         if let Some(row) = rows.next() {
@@ -908,11 +863,10 @@ impl Database {
         category: &str,
         key: &str,
         max_depth: i64,
+        max_nodes: i64,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let root = match self.get_entity(category, key)? {
-            Some(e) => e,
-            None => return Ok(serde_json::json!({"error": "entity not found"})),
-        };
+        let root = self.get_entity(category, key)?
+            .ok_or_else(|| format!("entity not found: {}/{}", category, key))?;
 
         // Get root links
         let links_json: String = self
@@ -933,7 +887,7 @@ impl Database {
         let mut traversed = Vec::new();
 
         visited.insert(root.id.clone());
-        self._traverse_links(&root.id, &mut traversed, &mut visited, max_depth, 0);
+        self._traverse_links(&root.id, &mut traversed, &mut visited, max_depth, max_nodes, 0);
 
         let chain = serde_json::json!({
             "entity": {
@@ -955,9 +909,10 @@ impl Database {
         traversed: &mut Vec<serde_json::Value>,
         visited: &mut std::collections::HashSet<String>,
         max_depth: i64,
+        max_nodes: i64,
         current_depth: i64,
     ) {
-        if current_depth >= max_depth {
+        if current_depth >= max_depth || traversed.len() as i64 >= max_nodes {
             return;
         }
 
@@ -977,7 +932,8 @@ impl Database {
                 continue;
             }
 
-            if let Ok(Some(entity)) = self.get_entity_by_id(&link.target_id) {
+            match self.get_entity_by_id(&link.target_id) {
+                Ok(Some(entity)) => {
                 visited.insert(link.target_id.clone());
 
                 // Get this entity's outgoing links
@@ -1007,7 +963,14 @@ impl Database {
 
                 traversed.push(node.clone());
 
-                self._traverse_links(&entity.id, traversed, visited, max_depth, current_depth + 1);
+                self._traverse_links(&entity.id, traversed, visited, max_depth, max_nodes, current_depth + 1);
+                }
+                Ok(None) => {
+                    // Dangling link — target entity no longer exists
+                }
+                Err(e) => {
+                    eprintln!("mimir: traverse error reading entity {}: {}", link.target_id, e);
+                }
             }
         }
     }
@@ -1022,34 +985,7 @@ impl Database {
              FROM entities WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
-            let tags_str: String = row.get::<_, String>(6).unwrap_or_else(|_| "[]".to_string());
-            let links_str: String = row
-                .get::<_, String>(13)
-                .unwrap_or_else(|_| "[]".to_string());
-            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            let links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
-            let archived: i32 = row.get(11).unwrap_or(0);
-            let verified: i32 = row.get(14).unwrap_or(0);
-            Ok(Entity {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                key: row.get(2)?,
-                body_json: row.get(3)?,
-                status: row.get(4)?,
-                entity_type: row.get(5)?,
-                tags,
-                decay_score: row.get(7)?,
-                retrieval_count: row.get(8)?,
-                layer: row.get(9)?,
-                topic_path: row.get(10)?,
-                archived: archived != 0,
-                archive_reason: row.get(12)?,
-                links,
-                verified: verified != 0,
-                source: row.get(15)?,
-                created_at_unix_ms: row.get(16)?,
-                last_accessed_unix_ms: row.get(17)?,
-            })
+            entity_from_row(row)
         })?;
         if let Some(row) = rows.next() {
             Ok(Some(row?))
@@ -1228,10 +1164,10 @@ impl Database {
                 created,
                 accessed,
             ) = row?;
-            // Sanitize id for filesystem: replace path separators
+            // Sanitize id for filesystem: only alphanumeric, hyphen, underscore
             let safe_id: String = id
                 .chars()
-                .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+                .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
                 .collect();
             let filename = format!("{}.md", safe_id);
             let filepath = vault.join(&filename);
@@ -1325,15 +1261,41 @@ last_accessed: {}
                 }
             };
 
-            // Parse YAML frontmatter (simple — between --- markers)
-            let parts: Vec<&str> = content.splitn(3, "---").collect();
-            if parts.len() < 3 {
-                errors.push(format!("{}: no frontmatter", path.display()));
+            // Parse YAML frontmatter: find opening and closing --- on their own lines
+            let mut lines = content.lines().peekable();
+            // Skip leading blank lines
+            while let Some(line) = lines.peek() {
+                if line.trim().is_empty() {
+                    lines.next();
+                } else {
+                    break;
+                }
+            }
+            // Find opening ---
+            match lines.next() {
+                Some(line) if line.trim() == "---" => {}
+                _ => {
+                    errors.push(format!("{}: no frontmatter", path.display()));
+                    continue;
+                }
+            }
+            // Read frontmatter lines until closing ---
+            let mut fm_lines = Vec::new();
+            let mut found_close = false;
+            for line in lines.by_ref() {
+                if line.trim() == "---" {
+                    found_close = true;
+                    break;
+                }
+                fm_lines.push(line);
+            }
+            if !found_close {
+                errors.push(format!("{}: unclosed frontmatter", path.display()));
                 continue;
             }
-
-            let fm = parts[1];
-            let body = parts[2].trim().to_string();
+            let fm = fm_lines.join("\n");
+            // Remaining lines are the body
+            let body: String = lines.collect::<Vec<_>>().join("\n").trim().to_string();
 
             // Extract fields from frontmatter
             let get_fm = |key: &str| -> String {
@@ -1449,9 +1411,10 @@ last_accessed: {}
         let mut all_entities = Vec::new();
 
         if categories.is_empty() {
-            // No filter — get top entities overall
+            // No filter — get top entities overall (read-only, no side effects)
             let params = RecallParams {
                 limit,
+                skip_side_effects: true,
                 ..RecallParams::default()
             };
             all_entities = self.recall(&params)?;
@@ -1460,6 +1423,7 @@ last_accessed: {}
                 let params = RecallParams {
                     category: Some(cat.clone()),
                     limit,
+                    skip_side_effects: true,
                     ..RecallParams::default()
                 };
                 let mut batch = self.recall(&params)?;
@@ -1505,6 +1469,38 @@ fn truncate_str(s: &str, max_len: usize) -> String {
         let truncated: String = s.chars().take(max_len).collect();
         format!("{}...", truncated)
     }
+}
+
+/// Extract an Entity from a SQLite row (shared across recall, get_entity, get_entity_by_id).
+fn entity_from_row(row: &rusqlite::Row) -> rusqlite::Result<crate::models::Entity> {
+    use crate::models::{Entity, MemoryLink};
+    let tags_str: String = row.get::<_, String>(6).unwrap_or_else(|_| "[]".to_string());
+    let links_str: String = row.get::<_, String>(13).unwrap_or_else(|_| "[]".to_string());
+    let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+    let links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
+    let archived: i32 = row.get(11).unwrap_or(0);
+    let verified: i32 = row.get(14).unwrap_or(0);
+
+    Ok(Entity {
+        id: row.get(0)?,
+        category: row.get(1)?,
+        key: row.get(2)?,
+        body_json: row.get(3)?,
+        status: row.get(4)?,
+        entity_type: row.get(5)?,
+        tags,
+        decay_score: row.get(7)?,
+        retrieval_count: row.get(8)?,
+        layer: row.get(9)?,
+        topic_path: row.get(10)?,
+        archived: archived != 0,
+        archive_reason: row.get(12)?,
+        links,
+        verified: verified != 0,
+        source: row.get(15)?,
+        created_at_unix_ms: row.get(16)?,
+        last_accessed_unix_ms: row.get(17)?,
+    })
 }
 
 #[cfg(test)]

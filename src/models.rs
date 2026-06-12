@@ -134,6 +134,7 @@ pub struct RecallParams {
     pub min_decay: f64,
     pub topic_path: Option<String>,
     pub include_archived: bool,
+    pub skip_side_effects: bool,
 }
 
 impl Default for RecallParams {
@@ -146,6 +147,7 @@ impl Default for RecallParams {
             min_decay: 0.0,
             topic_path: None,
             include_archived: false,
+            skip_side_effects: false,
         }
     }
 }

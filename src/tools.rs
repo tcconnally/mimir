@@ -239,6 +239,7 @@ pub fn handle_recall(db: &Database, args: Value) -> Result<String, String> {
         min_decay: a.min_decay,
         topic_path: a.topic_path,
         include_archived: a.include_archived,
+        skip_side_effects: false,
     };
 
     let entities = db
@@ -317,6 +318,18 @@ pub fn handle_unlink(db: &Database, args: Value) -> Result<String, String> {
 pub fn handle_journal(db: &Database, args: Value) -> Result<String, String> {
     let a: JournalArgs =
         serde_json::from_value(args).map_err(|e| format!("Invalid journal arguments: {}", e))?;
+
+    // Enforce size limits on journal fields
+    const MAX_FIELD_BYTES: usize = 64 * 1024; // 64KB per field
+    if a.evaluated.to_string().len() > MAX_FIELD_BYTES
+        || a.acted.to_string().len() > MAX_FIELD_BYTES
+        || a.forward.to_string().len() > MAX_FIELD_BYTES
+    {
+        return Err(format!(
+            "Journal field exceeds {}KB limit",
+            MAX_FIELD_BYTES / 1024
+        ));
+    }
 
     let raw_id = Uuid::new_v4().to_string().replace('-', "");
     let id = format!("jrn-{}", &raw_id[..12]);
@@ -559,10 +572,16 @@ pub struct TraverseArgs {
     pub key: String,
     #[serde(default = "default_depth")]
     pub max_depth: i64,
+    #[serde(default = "default_max_nodes")]
+    pub max_nodes: i64,
 }
 
 fn default_depth() -> i64 {
     3
+}
+
+fn default_max_nodes() -> i64 {
+    100
 }
 
 pub fn handle_traverse(db: &Database, args: Value) -> String {
@@ -570,8 +589,9 @@ pub fn handle_traverse(db: &Database, args: Value) -> String {
         category: "general".to_string(),
         key: "".to_string(),
         max_depth: 3,
+        max_nodes: 100,
     });
-    match db.traverse_chain(&a.category, &a.key, a.max_depth) {
+    match db.traverse_chain(&a.category, &a.key, a.max_depth, a.max_nodes) {
         Ok(chain) => serde_json::to_string(&chain)
             .unwrap_or_else(|e| json!({"error": format!("{}", e)}).to_string()),
         Err(e) => json!({"error": format!("Traverse failed: {}", e)}).to_string(),

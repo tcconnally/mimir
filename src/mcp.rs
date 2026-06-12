@@ -971,6 +971,11 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
           "type": "integer",
           "default": 3,
           "description": "Maximum traversal depth from the starting entity"
+        },
+        "max_nodes": {
+          "type": "integer",
+          "default": 100,
+          "description": "Maximum total nodes to traverse before stopping"
         }
       },
       "required": [
