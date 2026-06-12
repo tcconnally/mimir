@@ -483,10 +483,10 @@ pub fn handle_stats(db: &Database) -> String {
 }
 
 pub fn handle_compact(db: &Database, args: Value) -> String {
-    let a: CompactArgs = serde_json::from_value(args).unwrap_or(CompactArgs {
-        min_decay: 0.1,
-        dry_run: false,
-    });
+    let a: CompactArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return json!({"error": format!("Invalid compact arguments: {}", e)}).to_string(),
+    };
 
     match db.compact(a.min_decay, a.dry_run) {
         Ok(report) => serde_json::to_string(&report).unwrap_or_else(|e| {
@@ -511,10 +511,10 @@ pub fn handle_migrate(db: &Database, args: Value) -> String {
 }
 
 pub fn handle_context(db: &Database, args: Value) -> String {
-    let a: ContextArgs = serde_json::from_value(args).unwrap_or(ContextArgs {
-        categories: vec![],
-        limit: 10,
-    });
+    let a: ContextArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return json!({"error": format!("Invalid context arguments: {}", e)}).to_string(),
+    };
 
     match db.context(&a.categories, a.limit) {
         Ok(markdown) => {
@@ -531,11 +531,14 @@ pub struct VaultExportArgs {
 }
 
 pub fn handle_vault_export(db: &Database, args: Value) -> String {
-    let a: VaultExportArgs = serde_json::from_value(args).unwrap_or(VaultExportArgs {
-        vault_dir: "~/.mimir/vault".to_string(),
-    });
+    let a: VaultExportArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return json!({"error": format!("Invalid vault_export arguments: {}", e)}).to_string(),
+    };
     let dir = if a.vault_dir.starts_with("~/") {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "/root".to_string());
         a.vault_dir.replacen("~", &home, 1)
     } else {
         a.vault_dir.clone()
@@ -549,11 +552,14 @@ pub fn handle_vault_export(db: &Database, args: Value) -> String {
 }
 
 pub fn handle_vault_import(db: &Database, args: Value) -> String {
-    let a: VaultExportArgs = serde_json::from_value(args).unwrap_or(VaultExportArgs {
-        vault_dir: "~/.mimir/vault".to_string(),
-    });
+    let a: VaultExportArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return json!({"error": format!("Invalid vault_import arguments: {}", e)}).to_string(),
+    };
     let dir = if a.vault_dir.starts_with("~/") {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "/root".to_string());
         a.vault_dir.replacen("~", &home, 1)
     } else {
         a.vault_dir.clone()
@@ -585,12 +591,10 @@ fn default_max_nodes() -> i64 {
 }
 
 pub fn handle_traverse(db: &Database, args: Value) -> String {
-    let a: TraverseArgs = serde_json::from_value(args).unwrap_or(TraverseArgs {
-        category: "general".to_string(),
-        key: "".to_string(),
-        max_depth: 3,
-        max_nodes: 100,
-    });
+    let a: TraverseArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return json!({"error": format!("Invalid traverse arguments: {}", e)}).to_string(),
+    };
     match db.traverse_chain(&a.category, &a.key, a.max_depth, a.max_nodes) {
         Ok(chain) => serde_json::to_string(&chain)
             .unwrap_or_else(|e| json!({"error": format!("{}", e)}).to_string()),
@@ -606,11 +610,10 @@ pub struct ScoreArgs {
 }
 
 pub fn handle_score(db: &Database, args: Value) -> String {
-    let a: ScoreArgs = serde_json::from_value(args).unwrap_or(ScoreArgs {
-        category: "".to_string(),
-        key: "".to_string(),
-        score: 0.5,
-    });
+    let a: ScoreArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return json!({"error": format!("Invalid score arguments: {}", e)}).to_string(),
+    };
     match db.score_entity(&a.category, &a.key, a.score) {
         Ok(found) => {
             json!({"found": found, "category": a.category, "key": a.key, "score": a.score})
@@ -639,12 +642,10 @@ fn default_conflict_limit() -> i64 {
 }
 
 pub fn handle_conflicts(db: &Database, args: Value) -> String {
-    let a: ConflictArgs = serde_json::from_value(args).unwrap_or(ConflictArgs {
-        category: "general".to_string(),
-        threshold: 0.4,
-        limit: 10,
-        offset: 0,
-    });
+    let a: ConflictArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return json!({"error": format!("Invalid conflicts arguments: {}", e)}).to_string(),
+    };
     match db.detect_conflicts(&a.category, a.threshold, a.limit, a.offset) {
         Ok(report) => serde_json::to_string(&report)
             .unwrap_or_else(|e| json!({"error": format!("{}", e)}).to_string()),

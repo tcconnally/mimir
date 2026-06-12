@@ -7,13 +7,40 @@ use crate::models::{
 };
 use crate::schema;
 
-/// Format a unix timestamp in milliseconds as an ISO 8601 string.
+/// Format a unix timestamp in milliseconds as an ISO 8601 UTC string.
+/// Produces a human-readable date like "2026-06-12T10:58:00Z".
 fn chrono_like(ms: i64) -> String {
     let secs = ms / 1000;
-    let _nanos = ((ms % 1000) * 1_000_000) as u32;
-    // Simple approach: just return the timestamp as a readable number
-    // A proper implementation would use the chrono crate, but we keep deps minimal
-    format!("{}", secs)
+    // M-5: emit actual ISO 8601 UTC instead of raw epoch seconds.
+    // Avoids chrono dependency by hand-rolling a minimal formatter.
+    // Only safe for timestamps from 1970 to ~3000 (no leap-second handling).
+    if secs <= 0 {
+        return format!("{}", secs); // Unix epoch 0 or negative — return as-is
+    }
+    let days_since_epoch = secs / 86400;
+    let secs_of_day = secs % 86400;
+    // Convert days since 1970-01-01 to year/month/day
+    let mut y = 1970i64;
+    let mut d = days_since_epoch;
+    loop {
+        let days_in_year = if (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) { 366 } else { 365 };
+        if d < days_in_year { break; }
+        d -= days_in_year;
+        y += 1;
+    }
+    let leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut m = 0usize;
+    while m < 12 && d >= month_days[m] {
+        d -= month_days[m];
+        m += 1;
+    }
+    let month = m + 1;
+    let day = d + 1;
+    let h = secs_of_day / 3600;
+    let min = (secs_of_day % 3600) / 60;
+    let s = secs_of_day % 60;
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, month, day, h, min, s)
 }
 
 pub fn now_ms() -> i64 {
@@ -110,13 +137,13 @@ impl Database {
         let mut auto_archived = 0i64;
         let now_val = now;
 
-        // Wrap in explicit transaction to avoid per-statement fsync
-        let _ = self.conn.execute_batch("BEGIN");
+        // M-2: wrap in RAII transaction so error paths roll back automatically
+        let tx = self.conn.unchecked_transaction()?;
 
         for row in rows {
             let (id, last_access) = row?;
             let new_decay = Self::compute_decay(last_access, now_val);
-            self.conn.execute(
+            tx.execute(
                 "UPDATE entities SET decay_score = ?1 WHERE id = ?2",
                 params![new_decay, id],
             )?;
@@ -124,20 +151,20 @@ impl Database {
 
             // Auto-archive entities that have fully decayed (decay < 0.05)
             if new_decay < 0.05 {
-                self.conn.execute(
+                tx.execute(
                     "UPDATE entities SET archived = 1, archive_reason = 'decay threshold' WHERE id = ?1 AND archived = 0",
                     params![id],
                 )?;
                 auto_archived += 1;
                 // Clean FTS5 index for auto-archived entity
-                let _ = self.conn.execute(
+                let _ = tx.execute(
                     "DELETE FROM entities_fts WHERE rowid = (SELECT rowid FROM entities WHERE id = ?1)",
                     params![id],
                 );
             }
         }
 
-        let _ = self.conn.execute_batch("COMMIT");
+        tx.commit()?;
 
         Ok(DecayReport {
             entities_checked: total,
@@ -255,7 +282,10 @@ impl Database {
                 .unwrap_or(0);
             let boosted = Self::boost_decay(old_decay);
             let new_layer = Self::compute_layer(old_count + 1);
-            self.conn.execute(
+
+            // M-1: wrap entity UPDATE + FTS UPDATE in a transaction
+            let tx = self.conn.unchecked_transaction()?;
+            tx.execute(
                 "UPDATE entities SET
                     body_json = ?1, status = ?2, type = ?3, tags = ?4,
                     decay_score = ?5, layer = ?6, topic_path = ?7,
@@ -282,10 +312,11 @@ impl Database {
             )?;
 
             // Update FTS5 index
-            self.conn.execute(
+            tx.execute(
                 "UPDATE entities_fts SET body_json = ?1 WHERE rowid = (SELECT rowid FROM entities WHERE id = ?2)",
                 params![entity.body_json, id],
             )?;
+            tx.commit()?;
 
             action = "updated".to_string();
         } else {
@@ -306,7 +337,11 @@ impl Database {
 
             // Insert new entity
             id = entity.id.clone();
-            self.conn.execute(
+
+            // M-1: wrap entity row + FTS index write in a transaction
+            // so a failure in one doesn't leave the other orphaned.
+            let tx = self.conn.unchecked_transaction()?;
+            tx.execute(
                 "INSERT INTO entities
                  (id, category, key, body_json, status, type, tags,
                   decay_score, retrieval_count, layer, topic_path,
@@ -339,10 +374,11 @@ impl Database {
             )?;
 
             // Add to FTS5 index
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO entities_fts (rowid, body_json) VALUES (last_insert_rowid(), ?1)",
                 params![entity.body_json],
             )?;
+            tx.commit()?;
 
             action = "created".to_string();
         }
@@ -538,7 +574,9 @@ impl Database {
         key: &str,
         reason: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let affected = self.conn.execute(
+        // M-1 extended: wrap forget's entity UPDATE + FTS DELETE in a transaction
+        let tx = self.conn.unchecked_transaction()?;
+        let affected = tx.execute(
             "UPDATE entities SET archived = 1, archive_reason = ?1,
              last_accessed_unix_ms = ?2
              WHERE category = ?3 AND key = ?4 AND archived = 0",
@@ -546,11 +584,12 @@ impl Database {
         )?;
         // Clean FTS5 index for archived entity
         if affected > 0 {
-            let _ = self.conn.execute(
+            let _ = tx.execute(
                 "DELETE FROM entities_fts WHERE rowid = (SELECT rowid FROM entities WHERE category = ?1 AND key = ?2)",
                 params![category, key],
             );
         }
+        tx.commit()?;
         Ok(affected > 0)
     }
 
@@ -1084,17 +1123,20 @@ impl Database {
                 |r| r.get(0),
             )?
         } else {
-            let count = self.conn.execute(
+            // M-1 extended: wrap compact UPDATE + FTS DELETE in a transaction
+            let tx = self.conn.unchecked_transaction()?;
+            let count = tx.execute(
                 "UPDATE entities SET archived = 1, archive_reason = 'decay threshold',
                  last_accessed_unix_ms = ?1
                  WHERE archived = 0 AND decay_score < ?2",
                 params![now_ms(), min_decay],
             )? as i64;
             // Clean FTS5 index for compacted entities
-            let _ = self.conn.execute(
+            let _ = tx.execute(
                 "DELETE FROM entities_fts WHERE rowid IN (SELECT rowid FROM entities WHERE archived = 1 AND archive_reason = 'decay threshold')",
                 [],
             );
+            tx.commit()?;
             count
         };
 

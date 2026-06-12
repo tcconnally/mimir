@@ -52,7 +52,14 @@ enum Commands {
 
 fn default_db_path() -> String {
     std::env::var("MIMIR_DB_PATH").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        // M-4: use platform-appropriate home directory.
+        // On Windows, HOME is typically unset; fall back to USERPROFILE.
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| {
+                eprintln!("mimir: could not determine home directory. Set MIMIR_DB_PATH or HOME/USERPROFILE.");
+                std::process::exit(1);
+            });
         let dir = format!("{}/.mimir/data", home);
         let _ = std::fs::create_dir_all(&dir);
         format!("{}/mimir.db", dir)
