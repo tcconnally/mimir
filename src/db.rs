@@ -3,8 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::encryption::EncryptionManager;
 use crate::models::{
-    CompactReport, DecayReport, Entity, GraphEdge, GraphNode, JournalEvent, MemoryLink,
-    RecallParams, StateEntry, Stats, TimelineParams, VaultReport,
+    AskParams, AskResult, AskSource, CompactReport, DecayReport, Entity, GraphEdge, GraphNode,
+    JournalEvent, MemoryLink, RecallParams, StateEntry, Stats, TimelineParams, VaultReport,
 };
 use crate::schema;
 
@@ -55,6 +55,27 @@ pub struct Database {
     conn: Connection,
     db_path: String,
     encryption: Option<EncryptionManager>,
+    llm_config: LlmConfig,
+}
+
+/// Configuration for the LLM integration (Ollama API).
+#[derive(Clone)]
+pub struct LlmConfig {
+    pub enabled: bool,
+    pub endpoint: String,
+    pub model: String,
+    pub timeout_secs: u64,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: "http://localhost:11434/api/generate".to_string(),
+            model: "llama3".to_string(),
+            timeout_secs: 30,
+        }
+    }
 }
 
 impl Database {
@@ -72,6 +93,7 @@ impl Database {
             conn,
             db_path: path.to_string(),
             encryption: None,
+            llm_config: LlmConfig::default(),
         })
     }
 
@@ -91,6 +113,93 @@ impl Database {
     /// Returns true if encryption is enabled.
     pub fn encryption_enabled(&self) -> bool {
         self.encryption.is_some()
+    }
+
+    /// Configure LLM integration for the mimir_ask tool.
+    pub fn set_llm(&mut self, enabled: bool, endpoint: &str, model: &str) {
+        self.llm_config = LlmConfig {
+            enabled,
+            endpoint: endpoint.to_string(),
+            model: model.to_string(),
+            timeout_secs: 30,
+        };
+    }
+
+    /// Returns true if LLM integration is enabled.
+    pub fn llm_enabled(&self) -> bool {
+        self.llm_config.enabled
+    }
+
+    /// RAG: recall relevant entities, assemble context, ask Ollama for a grounded answer.
+    pub fn ask(&self, params: &AskParams) -> Result<AskResult, Box<dyn std::error::Error>> {
+        if !self.llm_config.enabled {
+            return Err("LLM is not enabled. Set --llm-endpoint to enable mimir_ask.".into());
+        }
+
+        // Step 1: Recall top-k relevant entities
+        let recall_params = RecallParams {
+            query: params.query.clone(),
+            limit: params.top_k as i64,
+            skip_side_effects: true,
+            ..Default::default()
+        };
+        let entities = self.recall(&recall_params)?;
+
+        if entities.is_empty() {
+            return Err("No matching memories found for this question.".into());
+        }
+
+        // Step 2: Assemble context (truncate bodies to ~600 chars each)
+        let mut context_parts = Vec::new();
+        let mut sources = Vec::new();
+        for e in &entities {
+            let snippet: String = e
+                .body_json
+                .chars()
+                .take(600)
+                .collect();
+            context_parts.push(format!("[key: {}] {}", e.key, snippet));
+            sources.push(AskSource {
+                key: e.key.clone(),
+                category: e.category.clone(),
+                score: e.decay_score,
+                snippet,
+            });
+        }
+        let context = context_parts.join("\n\n");
+
+        // Step 3: Build prompt
+        let prompt = format!(
+            "Answer the question based ONLY on the following context. Cite sources by their key.\n\nContext:\n{}\n\nQuestion: {}\n\nAnswer:",
+            context, params.query
+        );
+
+        // Step 4: Call Ollama
+        let body = serde_json::json!({
+            "model": self.llm_config.model,
+            "prompt": prompt,
+            "stream": false,
+        });
+
+        let body_str = serde_json::to_string(&body)?;
+        let response = ureq::post(&self.llm_config.endpoint)
+            .set("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(self.llm_config.timeout_secs))
+            .send_string(&body_str)
+            .map_err(|e| format!("Ollama API call failed: {}", e))?;
+
+        let response_body = response
+            .into_string()
+            .map_err(|e| format!("Failed to read Ollama response: {}", e))?;
+        let json: serde_json::Value = serde_json::from_str(&response_body)
+            .map_err(|e| format!("Failed to parse Ollama response: {}", e))?;
+
+        let answer = json["response"]
+            .as_str()
+            .unwrap_or("(no response from model)")
+            .to_string();
+
+        Ok(AskResult { answer, sources })
     }
 
     // ─── Decay & Layer Progression ──────────────────────────────────

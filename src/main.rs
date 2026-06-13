@@ -34,6 +34,14 @@ struct Cli {
     #[arg(long, default_value_t = 8767)]
     port: u16,
 
+    /// Ollama API endpoint for the mimir_ask RAG tool
+    #[arg(long)]
+    llm_endpoint: Option<String>,
+
+    /// Ollama model name (default: llama3)
+    #[arg(long, default_value_t = String::from("llama3"))]
+    llm_model: String,
+
     /// Deprecated compatibility flag; MCP stdio mode is always enabled
     #[arg(long = "mcp", default_value_t = false, hide = true)]
     _mcp: bool,
@@ -58,6 +66,14 @@ enum Commands {
         /// Web dashboard port (default: 8767)
         #[arg(long, default_value_t = 8767)]
         port: u16,
+
+        /// Ollama API endpoint for the mimir_ask RAG tool
+        #[arg(long)]
+        llm_endpoint: Option<String>,
+
+        /// Ollama model name (default: llama3)
+        #[arg(long, default_value_t = String::from("llama3"))]
+        llm_model: String,
 
         /// Deprecated compatibility flag; MCP stdio mode is always enabled
         #[arg(long = "mcp", default_value_t = false, hide = true)]
@@ -168,7 +184,7 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Serve { ref db, ref encryption_key, ref web, ref port, .. }) => {
+        Some(Commands::Serve { ref db, ref encryption_key, ref web, ref port, ref llm_endpoint, ref llm_model, .. }) => {
             let db_path = db.clone();
             let mut database = match db::Database::open(&db_path) {
                 Ok(db) => db,
@@ -183,6 +199,12 @@ fn main() {
                     std::process::exit(1);
                 }
                 eprintln!("mimir: encryption enabled (key: {})", key_file);
+            }
+
+            // Configure LLM for mimir_ask if endpoint is provided
+            if let Some(ref endpoint) = llm_endpoint {
+                database.set_llm(true, endpoint, llm_model);
+                eprintln!("mimir: LLM enabled (endpoint: {}, model: {})", endpoint, llm_model);
             }
 
             // Start web dashboard in background if requested
@@ -226,6 +248,11 @@ fn main() {
                     std::process::exit(1);
                 }
                 eprintln!("mimir: encryption enabled (key: {})", key_file);
+            }
+
+            if let Some(ref endpoint) = cli.llm_endpoint {
+                database.set_llm(true, endpoint, &cli.llm_model);
+                eprintln!("mimir: LLM enabled (endpoint: {}, model: {})", endpoint, cli.llm_model);
             }
 
             if cli.web {

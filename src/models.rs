@@ -268,3 +268,31 @@ pub struct GraphEdge {
     pub to: String,
     pub relationship: String,
 }
+
+/// Parameters for the mimir_ask RAG tool.
+#[derive(Debug, Deserialize)]
+pub struct AskParams {
+    pub query: String,
+    #[serde(default = "default_ask_limit")]
+    pub top_k: usize,
+}
+
+fn default_ask_limit() -> usize {
+    5
+}
+
+/// Result from mimir_ask: a grounded answer with cited sources.
+#[derive(Debug, Serialize)]
+pub struct AskResult {
+    pub answer: String,
+    pub sources: Vec<AskSource>,
+}
+
+/// A cited source entity in an ask result.
+#[derive(Debug, Serialize)]
+pub struct AskSource {
+    pub key: String,
+    pub category: String,
+    pub score: f64,
+    pub snippet: String,
+}

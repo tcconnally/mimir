@@ -3,7 +3,9 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::db::{now_ms, Database};
-use crate::models::{Entity, JournalEvent, RecallParams, StateEntry, TimelineParams};
+use crate::models::{
+    AskParams, Entity, JournalEvent, RecallParams, StateEntry, TimelineParams,
+};
 
 // ─── Deserialization structs ────────────────────────────────────
 
@@ -740,6 +742,21 @@ pub fn handle_decay(db: &Database, _args: Value) -> String {
             json!({"error": format!("Decay report serialization failed: {}", e)}).to_string()
         }),
         Err(e) => json!({"error": format!("Decay tick failed: {}", e)}).to_string(),
+    }
+}
+
+pub fn handle_ask(db: &Database, args: Value) -> Result<String, String> {
+    let params: AskParams =
+        serde_json::from_value(args).map_err(|e| format!("Invalid ask arguments: {}", e))?;
+
+    if !db.llm_enabled() {
+        return Err("LLM is not enabled. Set --llm-endpoint to enable mimir_ask.".to_string());
+    }
+
+    match db.ask(&params) {
+        Ok(result) => serde_json::to_string(&result)
+            .map_err(|e| format!("Serialization failed: {}", e)),
+        Err(e) => Err(format!("Ask failed: {}", e)),
     }
 }
 

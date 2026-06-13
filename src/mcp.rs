@@ -356,6 +356,53 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     }
   },
   {
+    "name": "mimir_ask",
+    "description": "Ask a natural language question and get a grounded answer from stored memories via RAG. Internally recalls top-k entities, assembles context, and queries the configured LLM (Ollama) for an answer with cited sources. Requires --llm-endpoint to be set.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Natural language question to answer from stored memories"
+        },
+        "top_k": {
+          "type": "integer",
+          "default": 5,
+          "description": "Number of top entities to use as context (max 20)"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string",
+          "description": "Grounded answer with cited sources"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": { "type": "string" },
+              "category": { "type": "string" },
+              "score": { "type": "number" },
+              "snippet": { "type": "string" }
+            }
+          },
+          "description": "Cited source entities used in the answer"
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false
+    }
+  },
+  {
     "name": "mimir_forget",
     "description": "Soft-delete an entity by setting archived=1. The entity is hidden from queries but recoverable. Use this to clean up stale or incorrect facts without permanent data loss.",
     "inputSchema": {
@@ -1297,6 +1344,10 @@ fn call_tool(
 
         "mimir_recall" => {
             tools::handle_recall(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
+
+        "mimir_ask" => {
+            tools::handle_ask(db, args).map_err(|e| error_response(id, -32603, &e))
         }
 
         "mimir_forget" => {
