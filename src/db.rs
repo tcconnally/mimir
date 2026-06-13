@@ -3,8 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::encryption::EncryptionManager;
 use crate::models::{
-    CompactReport, DecayReport, Entity, JournalEvent, MemoryLink, RecallParams, StateEntry, Stats,
-    TimelineParams, VaultReport,
+    CompactReport, DecayReport, Entity, GraphEdge, GraphNode, JournalEvent, MemoryLink,
+    RecallParams, StateEntry, Stats, TimelineParams, VaultReport,
 };
 use crate::schema;
 
@@ -1056,6 +1056,139 @@ impl Database {
         } else {
             Ok(None)
         }
+    }
+
+    /// Public alias for get_entity_by_id used by the web API.
+    pub fn get_entity_by_id_public(
+        &self,
+        id: &str,
+    ) -> Result<Option<Entity>, Box<dyn std::error::Error>> {
+        self.get_entity_by_id(id)
+    }
+
+    /// List entities with pagination and optional filters.
+    pub fn list_entities(
+        &self,
+        offset: i64,
+        limit: i64,
+        category: Option<&str>,
+        layer: Option<&str>,
+    ) -> Result<Vec<Entity>, Box<dyn std::error::Error>> {
+        let mut sql = String::from(
+            "SELECT id, category, key, body_json, status, type, tags,
+                    decay_score, retrieval_count, layer, topic_path,
+                    archived, archive_reason, links, verified, source,
+                    created_at_unix_ms, last_accessed_unix_ms
+             FROM entities WHERE archived = 0",
+        );
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(cat) = category {
+            if !cat.is_empty() {
+                sql.push_str(&format!(" AND category = ?{}", params.len() + 1));
+                params.push(Box::new(cat.to_string()));
+            }
+        }
+        if let Some(l) = layer {
+            if !l.is_empty() {
+                sql.push_str(&format!(" AND layer = ?{}", params.len() + 1));
+                params.push(Box::new(l.to_string()));
+            }
+        }
+
+        sql.push_str(" ORDER BY last_accessed_unix_ms DESC");
+        sql.push_str(&format!(
+            " LIMIT ?{} OFFSET ?{}",
+            params.len() + 1,
+            params.len() + 2
+        ));
+        params.push(Box::new(limit));
+        params.push(Box::new(offset));
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
+        let enc = self.encryption.as_ref();
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            entity_from_row(row, enc)
+        })?;
+
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row?);
+        }
+        Ok(items)
+    }
+
+    /// Get recent journal events.
+    pub fn get_recent_journal(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<JournalEvent>, Box<dyn std::error::Error>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, event_type, evaluated_json, acted_json, forward_json,
+                    category, key, entity_id, created_at_unix_ms
+             FROM journal ORDER BY created_at_unix_ms DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |row| {
+            Ok(JournalEvent {
+                id: row.get(0)?,
+                event_type: row.get(1)?,
+                evaluated_json: row.get::<_, String>(2).unwrap_or_default(),
+                acted_json: row.get::<_, String>(3).unwrap_or_default(),
+                forward_json: row.get::<_, String>(4).unwrap_or_default(),
+                category: row.get::<_, String>(5).unwrap_or_default(),
+                key: row.get::<_, String>(6).unwrap_or_default(),
+                entity_id: row.get::<_, String>(7).unwrap_or_default(),
+                created_at_unix_ms: row.get(8)?,
+            })
+        })?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row?);
+        }
+        Ok(items)
+    }
+
+    /// Build an entity link graph: nodes + edges for visualization.
+    pub fn get_entity_graph(
+        &self,
+    ) -> Result<(Vec<GraphNode>, Vec<GraphEdge>), Box<dyn std::error::Error>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, category, key, links FROM entities WHERE archived = 0")?;
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            let category: String = row.get(1)?;
+            let key: String = row.get(2)?;
+            let links_str: String = row.get::<_, String>(3).unwrap_or_else(|_| "[]".to_string());
+            let links: Vec<MemoryLink> =
+                serde_json::from_str(&links_str).unwrap_or_default();
+            Ok((id, category, key, links))
+        })?;
+
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
+
+        for row in rows {
+            let (id, category, key, links) = row?;
+            if seen_ids.insert(id.clone()) {
+                nodes.push(GraphNode {
+                    id: id.clone(),
+                    label: key,
+                    category,
+                });
+            }
+            for link in &links {
+                edges.push(GraphEdge {
+                    from: id.clone(),
+                    to: link.target_id.clone(),
+                    relationship: link.relationship.clone(),
+                });
+            }
+        }
+        Ok((nodes, edges))
     }
 
     /// Score an entity's quality (0.0–1.0). Agents rate memories as useful/wrong.

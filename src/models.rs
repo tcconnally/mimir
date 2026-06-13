@@ -252,3 +252,19 @@ pub struct Stats {
     pub oldest_unix_ms: Option<i64>,
     pub newest_unix_ms: Option<i64>,
 }
+
+/// Graph node for entity link visualization.
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphNode {
+    pub id: String,
+    pub label: String,
+    pub category: String,
+}
+
+/// Graph edge for entity link visualization.
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphEdge {
+    pub from: String,
+    pub to: String,
+    pub relationship: String,
+}
