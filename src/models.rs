@@ -150,6 +150,19 @@ fn default_n_variants() -> usize {
     1
 }
 
+/// Configuration for AES-256-GCM encryption at rest.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EncryptionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_key_file")]
+    pub key_file: String,
+}
+
+fn default_key_file() -> String {
+    "~/.mimir/secret.key".to_string()
+}
+
 impl Default for RecallParams {
     fn default() -> Self {
         Self {

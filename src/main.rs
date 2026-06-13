@@ -1,4 +1,5 @@
 mod db;
+mod encryption;
 mod mcp;
 mod models;
 mod schema;
@@ -20,6 +21,10 @@ struct Cli {
     #[arg(long, default_value_t = default_db_path())]
     db: String,
 
+    /// Path to AES-256-GCM encryption key file (base64-encoded, 32 bytes)
+    #[arg(long)]
+    encryption_key: Option<String>,
+
     /// Deprecated compatibility flag; MCP stdio mode is always enabled
     #[arg(long = "mcp", default_value_t = false, hide = true)]
     _mcp: bool,
@@ -32,6 +37,10 @@ enum Commands {
         /// SQLite database path
         #[arg(long, default_value_t = default_db_path())]
         db: String,
+
+        /// Path to AES-256-GCM encryption key file (base64-encoded, 32 bytes)
+        #[arg(long)]
+        encryption_key: Option<String>,
 
         /// Deprecated compatibility flag; MCP stdio mode is always enabled
         #[arg(long = "mcp", default_value_t = false, hide = true)]
@@ -48,12 +57,17 @@ enum Commands {
         #[arg(long)]
         to: String,
     },
+
+    /// Generate a new AES-256-GCM encryption key and write it to a file
+    Keygen {
+        /// Path to write the key file (default: ~/.mimir/secret.key)
+        #[arg(long, default_value_t = default_key_file())]
+        key_file: String,
+    },
 }
 
 fn default_db_path() -> String {
     std::env::var("MIMIR_DB_PATH").unwrap_or_else(|_| {
-        // M-4: use platform-appropriate home directory.
-        // On Windows, HOME is typically unset; fall back to USERPROFILE.
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| {
@@ -66,10 +80,53 @@ fn default_db_path() -> String {
     })
 }
 
+fn default_key_file() -> String {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/root".to_string());
+    format!("{}/.mimir/secret.key", home)
+}
+
 fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Some(Commands::Keygen { key_file }) => {
+            let expanded = if key_file.starts_with("~/") {
+                let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap_or_else(|_| "/root".to_string());
+                key_file.replacen("~", &home, 1)
+            } else {
+                key_file.clone()
+            };
+
+            // Create parent directory if needed
+            if let Some(parent) = std::path::Path::new(&expanded).parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    eprintln!("mimir: failed to create directory {}: {}", parent.display(), e);
+                    std::process::exit(1);
+                }
+            }
+
+            let key = crate::encryption::EncryptionManager::generate_key();
+            match std::fs::write(&expanded, &key) {
+                Ok(_) => {
+                    // Set restrictive permissions (owner read-only)
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(&expanded, std::fs::Permissions::from_mode(0o600));
+                    }
+                    println!("Key written to {}", expanded);
+                    println!("Use --encryption-key {} to enable encryption", expanded);
+                }
+                Err(e) => {
+                    eprintln!("mimir: failed to write key file {}: {}", expanded, e);
+                    std::process::exit(1);
+                }
+            }
+        }
         Some(Commands::Migrate { from, to }) => {
             let target_db = match db::Database::open(&to) {
                 Ok(db) => db,
@@ -94,26 +151,40 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Serve { ref db, .. }) => {
+        Some(Commands::Serve { ref db, ref encryption_key, .. }) => {
             let db_path = db.clone();
-            let database = match db::Database::open(&db_path) {
+            let mut database = match db::Database::open(&db_path) {
                 Ok(db) => db,
                 Err(e) => {
                     eprintln!("mimir: failed to open database at {}: {}", db_path, e);
                     std::process::exit(1);
                 }
             };
+            if let Some(ref key_file) = encryption_key {
+                if let Err(e) = database.set_encryption(key_file) {
+                    eprintln!("mimir: encryption setup failed: {}", e);
+                    std::process::exit(1);
+                }
+                eprintln!("mimir: encryption enabled (key: {})", key_file);
+            }
             mcp::run_server(database);
         }
         None => {
             let db_path = cli.db.clone();
-            let database = match db::Database::open(&db_path) {
+            let mut database = match db::Database::open(&db_path) {
                 Ok(db) => db,
                 Err(e) => {
                     eprintln!("mimir: failed to open database at {}: {}", db_path, e);
                     std::process::exit(1);
                 }
             };
+            if let Some(ref key_file) = cli.encryption_key {
+                if let Err(e) = database.set_encryption(key_file) {
+                    eprintln!("mimir: encryption setup failed: {}", e);
+                    std::process::exit(1);
+                }
+                eprintln!("mimir: encryption enabled (key: {})", key_file);
+            }
             mcp::run_server(database);
         }
     }
