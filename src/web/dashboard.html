@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mimir Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent-dim: #1f6feb;
+    --green: #3fb950;
+    --orange: #d2991d;
+    --red: #f85149;
+    --radius: 8px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  header h1 { font-size: 20px; font-weight: 600; color: var(--accent); }
+  header .version { color: var(--text-dim); font-size: 13px; }
+  .search-bar {
+    flex: 1;
+    position: relative;
+  }
+  .search-bar input {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+  }
+  .search-bar input:focus { outline: none; border-color: var(--accent); }
+  main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+  }
+  .stat-card .label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+  .tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tabs button {
+    padding: 8px 16px;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 14px;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+  .tabs button:hover { color: var(--text); }
+  .tabs button.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  #graph-container {
+    width: 100%;
+    height: 500px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  th { color: var(--text-dim); font-weight: 500; font-size: 12px; text-transform: uppercase; }
+  tr:hover { background: rgba(88, 166, 255, 0.05); }
+  tr { cursor: pointer; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .badge-decision { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .badge-architecture { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-convention { background: rgba(210,153,29,0.15); color: var(--orange); }
+  .badge-insight { background: rgba(139,148,158,0.15); color: var(--text-dim); }
+  .expanded-row { background: var(--surface); }
+  .expanded-row td { padding: 16px 24px; }
+  .expanded-row pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 13px;
+    color: var(--text-dim);
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  #loading { text-align: center; padding: 48px; color: var(--text-dim); }
+  .hidden { display: none !important; }
+  #loading.hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mimir</h1>
+  <span class="version">dashboard</span>
+  <div class="search-bar">
+    <input type="text" id="search-input" placeholder="Search memories..." autofocus>
+  </div>
+</header>
+<main>
+  <div class="stats-row" id="stats-row">
+    <div class="stat-card"><div class="label">Entities</div><div class="value" id="stat-total">—</div></div>
+    <div class="stat-card"><div class="label">Journal</div><div class="value" id="stat-journal">—</div></div>
+    <div class="stat-card"><div class="label">State</div><div class="value" id="stat-state">—</div></div>
+    <div class="stat-card"><div class="label">DB Size</div><div class="value" id="stat-size">—</div></div>
+  </div>
+  <div class="tabs">
+    <button class="active" data-tab="entities">Entities</button>
+    <button data-tab="graph">Graph</button>
+    <button data-tab="timeline">Timeline</button>
+  </div>
+  <div id="loading">Loading...</div>
+  <div class="tab-content active" id="tab-entities">
+    <table id="entities-table">
+      <thead><tr><th>Key</th><th>Category</th><th>Layer</th><th>Score</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="tab-content" id="tab-graph">
+    <div id="graph-container"></div>
+  </div>
+  <div class="tab-content" id="tab-timeline">
+    <table id="timeline-table">
+      <thead><tr><th>When</th><th>Type</th><th>Category</th><th>Key</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.6/dist/vis-network.min.js"></script>
+<script>
+const state = { entities: [], expandedId: null };
+
+async function api(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}
+
+async function loadStats() {
+  const s = await api('/api/stats');
+  document.getElementById('stat-total').textContent = s.total_entities || 0;
+  document.getElementById('stat-journal').textContent = s.total_journal_events || 0;
+  document.getElementById('stat-state').textContent = s.total_state_entries || 0;
+  const bytes = s.db_file_size_bytes || 0;
+  document.getElementById('stat-size').textContent = bytes < 1048576
+    ? (bytes / 1024).toFixed(1) + ' KB'
+    : (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+async function loadEntities() {
+  const data = await api('/api/entities?limit=200');
+  state.entities = data.items || [];
+  renderEntities();
+  document.getElementById('loading').classList.add('hidden');
+}
+
+function renderEntities() {
+  const tbody = document.querySelector('#entities-table tbody');
+  tbody.innerHTML = '';
+  state.entities.forEach(e => {
+    const tr = document.createElement('tr');
+    tr.onclick = () => toggleExpand(e.id);
+    tr.innerHTML = `
+      <td><strong>${esc(e.key)}</strong></td>
+      <td><span class="badge badge-${e.category || 'insight'}">${esc(e.category)}</span></td>
+      <td>${esc(e.layer)}</td>
+      <td>${(e.decay_score || 0).toFixed(2)}</td>
+    `;
+    tbody.appendChild(tr);
+
+    if (state.expandedId === e.id) {
+      const exp = document.createElement('tr');
+      exp.className = 'expanded-row';
+      exp.innerHTML = `<td colspan="4"><pre>${esc(JSON.stringify(e, null, 2))}</pre></td>`;
+      tbody.appendChild(exp);
+    }
+  });
+}
+
+function toggleExpand(id) {
+  state.expandedId = state.expandedId === id ? null : id;
+  renderEntities();
+}
+
+async function search() {
+  const q = document.getElementById('search-input').value.trim();
+  if (!q) return loadEntities();
+  const data = await api(`/api/search?q=${encodeURIComponent(q)}&limit=100`);
+  state.entities = data.items || [];
+  renderEntities();
+}
+
+async function loadTimeline() {
+  const data = await api('/api/journal?limit=100');
+  const tbody = document.querySelector('#timeline-table tbody');
+  tbody.innerHTML = '';
+  (data.items || []).forEach(e => {
+    const tr = document.createElement('tr');
+    const when = e.created_at_unix_ms
+      ? new Date(e.created_at_unix_ms).toISOString().replace('T', ' ').substring(0, 19)
+      : '—';
+    tr.innerHTML = `
+      <td>${esc(when)}</td>
+      <td>${esc(e.event_type)}</td>
+      <td>${esc(e.category)}</td>
+      <td>${esc(e.key)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+let graphNetwork = null;
+async function loadGraph() {
+  const data = await api('/api/graph');
+  const nodes = new vis.DataSet((data.nodes || []).map(n => ({
+    id: n.id, label: n.label || n.key || n.id, title: n.category,
+    color: { background: '#58a6ff', border: '#1f6feb' }
+  })));
+  const edges = new vis.DataSet((data.edges || []).map(e => ({
+    from: e.from, to: e.to, label: e.relationship || ''
+  })));
+  const container = document.getElementById('graph-container');
+  if (graphNetwork) graphNetwork.destroy();
+  graphNetwork = new vis.Network(container, { nodes, edges }, {
+    physics: { solver: 'forceAtlas2Based' },
+    edges: { color: '#30363d', arrows: { to: { enabled: true } } },
+    interaction: { hover: true },
+  });
+}
+
+// Tab switching
+document.querySelectorAll('.tabs button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    const tabId = 'tab-' + btn.dataset.tab;
+    document.getElementById(tabId).classList.add('active');
+    if (btn.dataset.tab === 'graph') loadGraph();
+    if (btn.dataset.tab === 'timeline') loadTimeline();
+  });
+});
+
+// Search on Enter
+document.getElementById('search-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') search();
+});
+
+function esc(str) {
+  if (!str) return '';
+  const div = document.createElement('div');
+  div.textContent = String(str);
+  return div.innerHTML;
+}
+
+// Init
+loadStats();
+loadEntities();
+</script>
+</body>
+</html>

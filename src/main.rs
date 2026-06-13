@@ -4,6 +4,7 @@ mod mcp;
 mod models;
 mod schema;
 mod tools;
+mod web;
 
 use clap::{Parser, Subcommand};
 
@@ -25,6 +26,14 @@ struct Cli {
     #[arg(long)]
     encryption_key: Option<String>,
 
+    /// Start the web dashboard HTTP server alongside the MCP stdio server
+    #[arg(long)]
+    web: bool,
+
+    /// Web dashboard port (default: 8767)
+    #[arg(long, default_value_t = 8767)]
+    port: u16,
+
     /// Deprecated compatibility flag; MCP stdio mode is always enabled
     #[arg(long = "mcp", default_value_t = false, hide = true)]
     _mcp: bool,
@@ -41,6 +50,14 @@ enum Commands {
         /// Path to AES-256-GCM encryption key file (base64-encoded, 32 bytes)
         #[arg(long)]
         encryption_key: Option<String>,
+
+        /// Start the web dashboard HTTP server alongside the MCP stdio server
+        #[arg(long)]
+        web: bool,
+
+        /// Web dashboard port (default: 8767)
+        #[arg(long, default_value_t = 8767)]
+        port: u16,
 
         /// Deprecated compatibility flag; MCP stdio mode is always enabled
         #[arg(long = "mcp", default_value_t = false, hide = true)]
@@ -151,7 +168,7 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Serve { ref db, ref encryption_key, .. }) => {
+        Some(Commands::Serve { ref db, ref encryption_key, ref web, ref port, .. }) => {
             let db_path = db.clone();
             let mut database = match db::Database::open(&db_path) {
                 Ok(db) => db,
@@ -167,6 +184,31 @@ fn main() {
                 }
                 eprintln!("mimir: encryption enabled (key: {})", key_file);
             }
+
+            // Start web dashboard in background if requested
+            if *web {
+                let web_port = *port;
+                let web_db = match db::Database::open(&db_path) {
+                    Ok(db) => db,
+                    Err(e) => {
+                        eprintln!("mimir: failed to open web database: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+                let web_db = std::sync::Arc::new(std::sync::Mutex::new(web_db));
+                let router = crate::web::build_router(web_db);
+                let addr = format!("0.0.0.0:{}", web_port);
+                eprintln!("mimir: web dashboard starting on http://{}", addr);
+
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+                        axum::serve(listener, router).await.unwrap();
+                    });
+                });
+            }
+
             mcp::run_server(database);
         }
         None => {
@@ -185,6 +227,30 @@ fn main() {
                 }
                 eprintln!("mimir: encryption enabled (key: {})", key_file);
             }
+
+            if cli.web {
+                let web_port = cli.port;
+                let web_db = match db::Database::open(&db_path) {
+                    Ok(db) => db,
+                    Err(e) => {
+                        eprintln!("mimir: failed to open web database: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+                let web_db = std::sync::Arc::new(std::sync::Mutex::new(web_db));
+                let router = crate::web::build_router(web_db);
+                let addr = format!("0.0.0.0:{}", web_port);
+                eprintln!("mimir: web dashboard starting on http://{}", addr);
+
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+                        axum::serve(listener, router).await.unwrap();
+                    });
+                });
+            }
+
             mcp::run_server(database);
         }
     }
