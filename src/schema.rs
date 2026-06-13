@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS entities (
     verified INTEGER DEFAULT 0,
     source TEXT DEFAULT 'agent',
     created_at_unix_ms INTEGER NOT NULL,
-    last_accessed_unix_ms INTEGER NOT NULL
+    last_accessed_unix_ms INTEGER NOT NULL,
+    embedding BLOB
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_category_key ON entities(category, key);
@@ -57,6 +58,15 @@ CREATE TABLE IF NOT EXISTS state (
 /// Initialize the v0.2.0 schema on a fresh database.
 pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute_batch(DDL_V0_2_0)?;
+
+    // Add embedding column if it doesn't exist (migration from v0.2.0)
+    let has_embedding: bool = conn
+        .prepare("SELECT embedding FROM entities LIMIT 1")
+        .is_ok();
+    if !has_embedding {
+        conn.execute_batch("ALTER TABLE entities ADD COLUMN embedding BLOB;")?;
+    }
+
     Ok(())
 }
 

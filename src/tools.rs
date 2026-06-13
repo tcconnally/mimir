@@ -4,7 +4,8 @@ use uuid::Uuid;
 
 use crate::db::{now_ms, Database};
 use crate::models::{
-    AskParams, Entity, IngestParams, JournalEvent, RecallParams, StateEntry, TimelineParams,
+    AskParams, Entity, IngestParams, JournalEvent, RecallParams, SearchMode, StateEntry,
+    TimelineParams,
 };
 
 // ─── Deserialization structs ────────────────────────────────────
@@ -57,6 +58,8 @@ pub struct RecallArgs {
     pub include_archived: bool,
     #[serde(default)]
     pub expansion: crate::models::QueryExpansionConfig,
+    #[serde(default)]
+    pub mode: String, // "fts5", "dense", or "hybrid"
 }
 
 fn default_limit() -> i64 {
@@ -216,6 +219,7 @@ pub fn handle_remember(db: &Database, args: Value) -> Result<String, String> {
         source: "agent".to_string(),
         created_at_unix_ms: now,
         last_accessed_unix_ms: now,
+        embedding: None,
     };
 
     let (eid, action) = db
@@ -235,8 +239,14 @@ pub fn handle_recall(db: &Database, args: Value) -> Result<String, String> {
     let a: RecallArgs =
         serde_json::from_value(args).map_err(|e| format!("Invalid recall arguments: {}", e))?;
 
+    let mode = match a.mode.as_str() {
+        "dense" => SearchMode::Dense,
+        "hybrid" => SearchMode::Hybrid,
+        _ => SearchMode::Fts5,
+    };
+
     // If query expansion is enabled, generate stemming variants and merge results
-    if a.expansion.enabled && !a.query.is_empty() {
+    if a.expansion.enabled && !a.query.is_empty() && mode == SearchMode::Fts5 {
         return handle_recall_with_expansion(db, &a);
     }
 
@@ -249,6 +259,8 @@ pub fn handle_recall(db: &Database, args: Value) -> Result<String, String> {
         topic_path: a.topic_path,
         include_archived: a.include_archived,
         skip_side_effects: false,
+        mode,
+        embedding: None,
     };
 
     let entities = db
@@ -304,6 +316,8 @@ fn handle_recall_with_expansion(db: &Database, a: &RecallArgs) -> Result<String,
             topic_path: a.topic_path.clone(),
             include_archived: a.include_archived,
             skip_side_effects: false,
+            mode: SearchMode::Fts5,
+            embedding: None,
         };
 
         if let Ok(entities) = db.recall(&params) {

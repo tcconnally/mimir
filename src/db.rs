@@ -252,6 +252,7 @@ impl Database {
                             source: format!("connector:{}", name),
                             created_at_unix_ms: now,
                             last_accessed_unix_ms: now,
+                            embedding: None,
                         };
                         match self.remember(&entity) {
                             Ok(_) => ingested += 1,
@@ -270,6 +271,61 @@ impl Database {
             "errors": errors,
         });
         Ok(result)
+    }
+
+    /// Store a dense vector embedding for an entity.
+    pub fn store_embedding(
+        &self,
+        id: &str,
+        embedding: &[f32],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let blob: Vec<u8> = embedding
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        self.conn.execute(
+            "UPDATE entities SET embedding = ?1 WHERE id = ?2",
+            params![blob, id],
+        )?;
+        Ok(())
+    }
+
+    /// Dense vector search: brute-force cosine similarity over all entities with embeddings.
+    /// Returns top-k entities sorted by similarity (highest first).
+    pub fn dense_search(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+    ) -> Result<Vec<(Entity, f64)>, Box<dyn std::error::Error>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, category, key, body_json, status, type, tags,
+                    decay_score, retrieval_count, layer, topic_path,
+                    archived, archive_reason, links, verified, source,
+                    created_at_unix_ms, last_accessed_unix_ms, embedding
+             FROM entities WHERE archived = 0 AND embedding IS NOT NULL",
+        )?;
+
+        let enc = self.encryption.as_ref();
+        let rows = stmt.query_map([], |row| {
+            let entity = entity_from_row(row, enc)?;
+            let emb_blob: Vec<u8> = row.get(18)?;
+            let emb: Vec<f32> = emb_blob
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            Ok((entity, emb))
+        })?;
+
+        let mut scored: Vec<(Entity, f64)> = Vec::new();
+        for row in rows {
+            let (entity, emb) = row?;
+            let sim = cosine_similarity(query_vec, &emb);
+            scored.push((entity, sim));
+        }
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+        Ok(scored)
     }
 
     // ─── Decay & Layer Progression ──────────────────────────────────
@@ -591,6 +647,39 @@ impl Database {
 
     /// Search entities with FTS5 + LIKE fallback and optional filters.
     pub fn recall(&self, params: &RecallParams) -> Result<Vec<Entity>, Box<dyn std::error::Error>> {
+        // Dense vector search path
+        if params.mode == crate::models::SearchMode::Dense || params.mode == crate::models::SearchMode::Hybrid {
+            if let Some(ref query_vec) = params.embedding {
+                let dense_results = self.dense_search(query_vec, params.limit as usize)?;
+
+                if params.mode == crate::models::SearchMode::Dense {
+                    return Ok(dense_results.into_iter().map(|(e, _)| e).collect());
+                }
+
+                // Hybrid: run FTS5 sparse search too, then fuse via RRF
+                let sparse = self.fts5_search(params)?;
+                let dense_ids: Vec<(String, f64)> = dense_results
+                    .iter()
+                    .map(|(e, score)| (e.id.clone(), *score))
+                    .collect();
+                let sparse_scored: Vec<(Entity, f64)> = sparse
+                    .into_iter()
+                    .map(|e| {
+                        let score = e.decay_score;
+                        (e, score)
+                    })
+                    .collect();
+                let fused = crate::db::reciprocal_rank_fusion(&dense_ids, &sparse_scored, 60.0, params.limit as usize);
+                return Ok(fused.into_iter().map(|(e, _)| e).collect());
+            }
+            // Fall through to FTS5 if no embedding vector provided
+        }
+
+        self.fts5_search(params)
+    }
+
+    /// Core FTS5 + LIKE keyword search (extracted for reuse by recall and hybrid).
+    fn fts5_search(&self, params: &RecallParams) -> Result<Vec<Entity>, Box<dyn std::error::Error>> {
         let mut conditions: Vec<String> = Vec::new();
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -1756,6 +1845,7 @@ last_accessed: {}
                 source: "vault-import".to_string(),
                 created_at_unix_ms: now_ms(),
                 last_accessed_unix_ms: now_ms(),
+                embedding: None,
             };
 
             match self.remember(&entity) {
@@ -1841,6 +1931,65 @@ last_accessed: {}
     }
 }
 
+/// Compute cosine similarity between two vectors.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0f64;
+    let mut norm_a = 0.0f64;
+    let mut norm_b = 0.0f64;
+    for i in 0..a.len() {
+        let va = a[i] as f64;
+        let vb = b[i] as f64;
+        dot += va * vb;
+        norm_a += va * va;
+        norm_b += vb * vb;
+    }
+    let denom = (norm_a * norm_b).sqrt();
+    if denom < 1e-12 {
+        0.0
+    } else {
+        dot / denom
+    }
+}
+
+/// Reciprocal Rank Fusion: combine dense and sparse result sets.
+/// k controls the rank penalty (higher k = less penalty for lower ranks).
+pub fn reciprocal_rank_fusion(
+    dense_results: &[(String, f64)],
+    sparse_results: &[(crate::models::Entity, f64)],
+    k: f64,
+    limit: usize,
+) -> Vec<(crate::models::Entity, f64)> {
+    use std::collections::HashMap;
+
+    let mut scores: HashMap<String, f64> = HashMap::new();
+    let mut entities: HashMap<String, crate::models::Entity> = HashMap::new();
+
+    for (rank, (id, _)) in dense_results.iter().enumerate() {
+        let rrf = 1.0 / (k + (rank + 1) as f64);
+        *scores.entry(id.clone()).or_insert(0.0) += rrf;
+    }
+
+    for (rank, (entity, _)) in sparse_results.iter().enumerate() {
+        let rrf = 1.0 / (k + (rank + 1) as f64);
+        *scores.entry(entity.id.clone()).or_insert(0.0) += rrf;
+        entities.entry(entity.id.clone()).or_insert_with(|| entity.clone());
+    }
+
+    let mut fused: Vec<_> = scores
+        .into_iter()
+        .filter_map(|(id, score)| {
+            entities.remove(&id).map(|entity| (entity, score))
+        })
+        .collect();
+
+    fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    fused.truncate(limit);
+    fused
+}
+
 fn truncate_str(s: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {
         s.to_string()
@@ -1890,6 +2039,7 @@ fn entity_from_row(
         source: row.get(15)?,
         created_at_unix_ms: row.get(16)?,
         last_accessed_unix_ms: row.get(17)?,
+        embedding: None,
     })
 }
 
@@ -1926,6 +2076,7 @@ mod tests {
             source: "test".to_string(),
             created_at_unix_ms: now_ms(),
             last_accessed_unix_ms: now_ms(),
+            embedding: None,
         }
     }
 

@@ -34,6 +34,8 @@ pub struct Entity {
     pub source: String,
     pub created_at_unix_ms: i64,
     pub last_accessed_unix_ms: i64,
+    #[serde(skip)]
+    pub embedding: Option<Vec<f32>>,
 }
 
 impl Entity {
@@ -135,6 +137,17 @@ pub struct RecallParams {
     pub topic_path: Option<String>,
     pub include_archived: bool,
     pub skip_side_effects: bool,
+    pub mode: SearchMode,
+    pub embedding: Option<Vec<f32>>,
+}
+
+/// Search mode for recall: FTS5 keyword, dense vector, or hybrid fusion.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+pub enum SearchMode {
+    #[default]
+    Fts5,
+    Dense,
+    Hybrid,
 }
 
 /// Configuration for FTS5 query expansion using stemming variants.
@@ -174,6 +187,8 @@ impl Default for RecallParams {
             topic_path: None,
             include_archived: false,
             skip_side_effects: false,
+            mode: SearchMode::Fts5,
+            embedding: None,
         }
     }
 }

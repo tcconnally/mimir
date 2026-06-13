@@ -305,6 +305,12 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
           "type": "string",
           "description": "Filter by topic path prefix, e.g. 'architecture/'"
         },
+        "mode": {
+          "type": "string",
+          "default": "fts5",
+          "description": "Search mode: 'fts5' (keyword), 'dense' (vector), or 'hybrid' (fused via RRF)",
+          "enum": ["fts5", "dense", "hybrid"]
+        },
         "include_archived": {
           "type": "boolean",
           "default": false,
