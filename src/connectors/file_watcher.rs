@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::AtomicI64;
 use std::sync::Mutex;
 
-use crate::connectors::{now_ms, Connector};
+use crate::connectors::Connector;
 use crate::models::RawDocument;
 
 /// Configuration for the filesystem watcher connector.
@@ -13,6 +13,7 @@ pub struct FileWatcherConfig {
     pub enabled: bool,
     pub paths: Vec<String>,
     pub extensions: Vec<String>,
+    #[allow(dead_code)]
     pub debounce_ms: u64,
 }
 

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::AtomicI64;
 use std::time::Duration;
 
 use crate::connectors::{now_ms, Connector};

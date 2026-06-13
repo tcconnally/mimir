@@ -35,6 +35,7 @@ pub struct Entity {
     pub created_at_unix_ms: i64,
     pub last_accessed_unix_ms: i64,
     #[serde(skip)]
+    #[allow(dead_code)]
     pub embedding: Option<Vec<f32>>,
 }
 
@@ -165,6 +166,7 @@ fn default_n_variants() -> usize {
 
 /// Configuration for AES-256-GCM encryption at rest.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct EncryptionConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -172,6 +174,7 @@ pub struct EncryptionConfig {
     pub key_file: String,
 }
 
+#[allow(dead_code)]
 fn default_key_file() -> String {
     "~/.mimir/secret.key".to_string()
 }

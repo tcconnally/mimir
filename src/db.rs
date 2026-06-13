@@ -84,6 +84,8 @@ impl Database {
     }
 
     /// Returns true if encryption is enabled.
+    #[allow(dead_code)]
+    #[allow(dead_code)]
     pub fn encryption_enabled(&self) -> bool {
         self.encryption.is_some()
     }
@@ -251,6 +253,7 @@ impl Database {
     }
 
     /// Store a dense vector embedding for an entity.
+    #[allow(dead_code)]
     pub fn store_embedding(
         &self,
         id: &str,
