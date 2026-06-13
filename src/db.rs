@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::encryption::EncryptionManager;
 use crate::models::{
     CompactReport, DecayReport, Entity, JournalEvent, MemoryLink, RecallParams, StateEntry, Stats,
     TimelineParams, VaultReport,
@@ -53,6 +54,7 @@ pub fn now_ms() -> i64 {
 pub struct Database {
     conn: Connection,
     db_path: String,
+    encryption: Option<EncryptionManager>,
 }
 
 impl Database {
@@ -69,12 +71,26 @@ impl Database {
         Ok(Database {
             conn,
             db_path: path.to_string(),
+            encryption: None,
         })
     }
 
     /// Simple health check — verify the DB responds.
     pub fn health_check(&self) -> bool {
         self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
+    }
+
+    /// Enable encryption by loading the AES-256-GCM key from `key_file`.
+    /// Returns an error if the key file cannot be read or is invalid.
+    pub fn set_encryption(&mut self, key_file: &str) -> Result<(), String> {
+        let mgr = EncryptionManager::from_key_file(key_file)?;
+        self.encryption = Some(mgr);
+        Ok(())
+    }
+
+    /// Returns true if encryption is enabled.
+    pub fn encryption_enabled(&self) -> bool {
+        self.encryption.is_some()
     }
 
     // ─── Decay & Layer Progression ──────────────────────────────────
@@ -248,6 +264,14 @@ impl Database {
         let archived_int = if entity.archived { 1 } else { 0 };
         let verified_int = if entity.verified { 1 } else { 0 };
 
+        // Encrypt body_json if encryption is enabled
+        let body_encrypted = if let Some(ref enc) = self.encryption {
+            enc.encrypt(&entity.body_json)
+                .map_err(|e| format!("Encryption error in remember: {}", e))?
+        } else {
+            entity.body_json.clone()
+        };
+
         let existing_id: Option<String> = self
             .conn
             .query_row(
@@ -294,7 +318,7 @@ impl Database {
                     retrieval_count = retrieval_count + 1
                  WHERE id = ?14",
                 params![
-                    entity.body_json,
+                    body_encrypted,
                     entity.status,
                     entity.entity_type,
                     tags_json,
@@ -355,7 +379,7 @@ impl Database {
                     id,
                     entity.category,
                     entity.key,
-                    entity.body_json,
+                    body_encrypted,
                     entity.status,
                     entity.entity_type,
                     tags_json,
@@ -516,8 +540,9 @@ impl Database {
             param_values.iter().map(|p| p.as_ref()).collect();
 
         let mut stmt = self.conn.prepare(&sql)?;
+        let enc = self.encryption.as_ref();
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            entity_from_row(row)
+            entity_from_row(row, enc)
         })?;
 
         let mut items = Vec::new();
@@ -557,7 +582,7 @@ impl Database {
         )?;
 
         let mut rows = stmt.query_map(params![category, key], |row| {
-            entity_from_row(row)
+            entity_from_row(row, self.encryption.as_ref())
         })?;
 
         if let Some(row) = rows.next() {
@@ -1024,7 +1049,7 @@ impl Database {
              FROM entities WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
-            entity_from_row(row)
+            entity_from_row(row, self.encryption.as_ref())
         })?;
         if let Some(row) = rows.next() {
             Ok(Some(row?))
@@ -1513,8 +1538,11 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     }
 }
 
-/// Extract an Entity from a SQLite row (shared across recall, get_entity, get_entity_by_id).
-fn entity_from_row(row: &rusqlite::Row) -> rusqlite::Result<crate::models::Entity> {
+/// Extract an Entity from a SQLite row, decrypting body_json if encryption is enabled.
+fn entity_from_row(
+    row: &rusqlite::Row,
+    encryption: Option<&EncryptionManager>,
+) -> rusqlite::Result<crate::models::Entity> {
     use crate::models::{Entity, MemoryLink};
     let tags_str: String = row.get::<_, String>(6).unwrap_or_else(|_| "[]".to_string());
     let links_str: String = row.get::<_, String>(13).unwrap_or_else(|_| "[]".to_string());
@@ -1522,12 +1550,20 @@ fn entity_from_row(row: &rusqlite::Row) -> rusqlite::Result<crate::models::Entit
     let links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
     let archived: i32 = row.get(11).unwrap_or(0);
     let verified: i32 = row.get(14).unwrap_or(0);
+    let raw_body_json: String = row.get(3)?;
+
+    let body_json = if let Some(enc) = encryption {
+        enc.decrypt(&raw_body_json)
+            .unwrap_or_else(|_| raw_body_json) // Fall back to raw if decryption fails (unencrypted DB)
+    } else {
+        raw_body_json
+    };
 
     Ok(Entity {
         id: row.get(0)?,
         category: row.get(1)?,
         key: row.get(2)?,
-        body_json: row.get(3)?,
+        body_json,
         status: row.get(4)?,
         entity_type: row.get(5)?,
         tags,
@@ -1861,5 +1897,62 @@ mod tests {
         );
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn encryption_roundtrip() {
+        use crate::encryption::EncryptionManager;
+        use std::io::Write;
+
+        let (mut db, path) = temp_db();
+
+        // Create a temp key file with a generated key
+        let key = EncryptionManager::generate_key();
+        let key_dir = std::env::temp_dir();
+        let key_path = key_dir.join(format!("mimir-test-key-{}.key", uuid::Uuid::new_v4()));
+        let key_path_str = key_path.to_str().unwrap().to_string();
+
+        let mut f = std::fs::File::create(&key_path).unwrap();
+        f.write_all(key.as_bytes()).unwrap();
+        drop(f);
+
+        // Enable encryption
+        db.set_encryption(&key_path_str).unwrap();
+        assert!(db.encryption_enabled());
+
+        // Store an entity — body should be encrypted at rest
+        let entity = make_entity("e-enc", "insight", "secret-note", r#"{"content": "top secret data"}"#);
+        db.remember(&entity).unwrap();
+
+        // Retrieve and verify round-trip
+        let found = db.get_entity("insight", "secret-note").unwrap().unwrap();
+        assert_eq!(found.body_json, r#"{"content": "top secret data"}"#);
+
+        // Verify the raw DB column is encrypted (not plaintext)
+        let raw_body: String = db.conn
+            .query_row(
+                "SELECT body_json FROM entities WHERE category = ?1 AND key = ?2",
+                rusqlite::params!["insight", "secret-note"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!raw_body.contains("top secret"), "Raw DB column should be encrypted, got: {}", &raw_body[..raw_body.len().min(60)]);
+
+        // Test that a Database without encryption sees the garbled text
+        let (db2, path2) = temp_db();
+        // Copy the raw encrypted row into db2 (without setting encryption)
+        db2.conn.execute(
+            "INSERT INTO entities (id, category, key, body_json, status, type, tags, decay_score, retrieval_count, layer, topic_path, archived, archive_reason, links, verified, source, created_at_unix_ms, last_accessed_unix_ms) VALUES (?1, ?2, ?3, ?4, 'active', 'insight', '[]', 1.0, 0, 'working', '', 0, '', '[]', 0, 'agent', 0, 0)",
+            rusqlite::params!["e-enc", "insight", "secret-note", raw_body],
+        ).unwrap();
+
+        // Without encryption, the body_json should be the raw encrypted blob
+        let found2 = db2.get_entity("insight", "secret-note").unwrap().unwrap();
+        assert_ne!(found2.body_json, r#"{"content": "top secret data"}"#);
+
+        // Cleanup
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&path2);
+        let _ = fs::remove_file(&key_path);
     }
 }

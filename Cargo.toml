@@ -18,3 +18,6 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
 rust-stemmers = "1.2"
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"
