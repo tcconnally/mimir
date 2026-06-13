@@ -332,3 +332,53 @@ pub struct RawDocument {
     pub body_json: String,
     pub tags: Vec<String>,
 }
+
+/// Parameters for the mimir_embed tool — generate and store dense embeddings.
+#[derive(Debug, Deserialize)]
+pub struct EmbedParams {
+    /// Text to embed and store on the entity (uses entity's body_json if omitted).
+    pub text: Option<String>,
+    /// Entity category (required).
+    pub category: Option<String>,
+    /// Entity key (required).
+    pub key: Option<String>,
+    /// Embed all entities matching this category that lack embeddings.
+    #[serde(default)]
+    pub batch_category: Option<String>,
+    /// Max entities to embed in batch mode (default: 100).
+    #[serde(default = "default_batch_limit")]
+    pub batch_limit: usize,
+}
+
+fn default_batch_limit() -> usize {
+    100
+}
+
+/// Parameters for the mimir_prune tool — bulk archive entities.
+#[derive(Debug, Deserialize)]
+pub struct PruneParams {
+    /// Archive entities in this category.
+    pub category: Option<String>,
+    /// Archive entities with decay_score below this threshold.
+    pub min_decay: Option<f64>,
+    /// Archive entities older than this many days.
+    pub older_than_days: Option<u32>,
+    /// Max entities to prune (default: 100, use 0 for unlimited).
+    #[serde(default = "default_prune_limit")]
+    pub limit: usize,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+fn default_prune_limit() -> usize {
+    100
+}
+
+/// Report from mimir_prune.
+#[derive(Debug, Serialize)]
+pub struct PruneReport {
+    pub archived: usize,
+    pub examined: usize,
+    pub dry_run: bool,
+    pub reason: String,
+}

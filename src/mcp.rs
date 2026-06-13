@@ -494,6 +494,52 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     }
   },
   {
+    "name": "mimir_embed",
+    "description": "Generate and store dense vector embeddings for entities via Ollama /api/embed. Supports single entity (category+key) or batch mode (batch_category). Requires --llm-endpoint to be set.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "description": "Text to embed (omit to use entity body_json)" },
+        "category": { "type": "string", "description": "Entity category for single mode" },
+        "key": { "type": "string", "description": "Entity key for single mode" },
+        "batch_category": { "type": "string", "description": "Embed all entities in this category lacking embeddings" },
+        "batch_limit": { "type": "integer", "default": 100, "description": "Max entities in batch mode" }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "embedded": { "type": "integer", "description": "Number of entities embedded" },
+        "dimensions": { "type": "integer", "description": "Vector dimensions" }
+      }
+    },
+    "annotations": { "destructiveHint": false, "readOnlyHint": false }
+  },
+  {
+    "name": "mimir_prune",
+    "description": "Bulk archive entities by category, decay threshold, or age. Use dry_run=true to preview without archiving. Useful for cleaning stale or low-quality memories.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "category": { "type": "string", "description": "Archive entities in this category" },
+        "min_decay": { "type": "number", "description": "Archive entities with decay_score below this threshold" },
+        "older_than_days": { "type": "integer", "description": "Archive entities older than this many days" },
+        "limit": { "type": "integer", "default": 100, "description": "Max entities to prune (0 = unlimited)" },
+        "dry_run": { "type": "boolean", "default": false, "description": "Preview without archiving" }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "archived": { "type": "integer" },
+        "examined": { "type": "integer" },
+        "dry_run": { "type": "boolean" },
+        "reason": { "type": "string" }
+      }
+    },
+    "annotations": { "destructiveHint": true }
+  },
+  {
     "name": "mimir_link",
     "description": "Create a relationship link from one entity to another. Builds a knowledge graph that mimir_traverse can walk. Use 'depends_on', 'implements', 'extends', 'references', or custom relationships.",
     "inputSchema": {
@@ -1401,6 +1447,14 @@ fn call_tool(
 
         "mimir_ingest" => {
             tools::handle_ingest(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
+
+        "mimir_embed" => {
+            tools::handle_embed(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
+
+        "mimir_prune" => {
+            tools::handle_prune(db, args).map_err(|e| error_response(id, -32603, &e))
         }
 
         "mimir_link" => tools::handle_link(db, args).map_err(|e| error_response(id, -32603, &e)),

@@ -4,8 +4,8 @@ use uuid::Uuid;
 
 use crate::db::{now_ms, Database};
 use crate::models::{
-    AskParams, Entity, IngestParams, JournalEvent, RecallParams, SearchMode, StateEntry,
-    TimelineParams,
+    AskParams, EmbedParams, Entity, IngestParams, JournalEvent, PruneParams, RecallParams,
+    SearchMode, StateEntry, TimelineParams,
 };
 
 // ─── Deserialization structs ────────────────────────────────────
@@ -781,6 +781,25 @@ pub fn handle_ingest(db: &Database, args: Value) -> Result<String, String> {
     match db.ingest(&params) {
         Ok(result) => Ok(result.to_string()),
         Err(e) => Err(format!("Ingest failed: {}", e)),
+    }
+}
+
+pub fn handle_embed(db: &Database, args: Value) -> Result<String, String> {
+    let params: EmbedParams =
+        serde_json::from_value(args).map_err(|e| format!("Invalid embed arguments: {}", e))?;
+    match db.embed_entity(&params) {
+        Ok(result) => Ok(result.to_string()),
+        Err(e) => Err(format!("Embed failed: {}", e)),
+    }
+}
+
+pub fn handle_prune(db: &Database, args: Value) -> Result<String, String> {
+    let params: PruneParams =
+        serde_json::from_value(args).map_err(|e| format!("Invalid prune arguments: {}", e))?;
+    match db.prune(&params) {
+        Ok(report) => serde_json::to_string(&report)
+            .map_err(|e| format!("Serialization failed: {}", e)),
+        Err(e) => Err(format!("Prune failed: {}", e)),
     }
 }
 

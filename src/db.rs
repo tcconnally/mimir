@@ -4,9 +4,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::connectors::Connector;
 use crate::encryption::EncryptionManager;
 use crate::models::{
-    AskParams, AskResult, AskSource, CompactReport, DecayReport, Entity, GraphEdge, GraphNode,
-    IngestParams, JournalEvent, MemoryLink, RecallParams, StateEntry, Stats,
-    TimelineParams, VaultReport,
+    AskParams, AskResult, AskSource, CompactReport, DecayReport, EmbedParams, Entity, GraphEdge,
+    GraphNode, IngestParams, JournalEvent, MemoryLink, PruneParams, PruneReport, RecallParams,
+    StateEntry, Stats, TimelineParams, VaultReport,
 };
 use crate::schema;
 
@@ -268,6 +268,149 @@ impl Database {
             params![blob, id],
         )?;
         Ok(())
+    }
+
+    /// Generate and store embeddings for entities via Ollama /api/embed.
+    pub fn embed_entity(
+        &self,
+        params: &EmbedParams,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        // Batch mode: embed all entities in a category that lack embeddings
+        if let Some(ref cat) = params.batch_category {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, body_json FROM entities WHERE category = ?1 AND archived = 0 AND embedding IS NULL LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![cat, params.batch_limit as i64], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+
+            let mut embedded = 0usize;
+            let mut errors = Vec::new();
+            for row in rows {
+                let (id, body) = row?;
+                match self.call_ollama_embed(&body) {
+                    Ok(vec) => {
+                        self.store_embedding(&id, &vec)?;
+                        embedded += 1;
+                    }
+                    Err(e) => errors.push(format!("{}: {}", id, e)),
+                }
+            }
+            return Ok(serde_json::json!({
+                "embedded": embedded,
+                "batch_category": cat,
+                "errors": errors,
+            }));
+        }
+
+        // Single entity mode: require category + key
+        let category = params.category.as_ref().ok_or("category is required")?;
+        let key = params.key.as_ref().ok_or("key is required")?;
+        let entity = self
+            .get_entity(category, key)?
+            .ok_or_else(|| format!("entity not found: {}/{}", category, key))?;
+
+        let text = params.text.as_ref().unwrap_or(&entity.body_json);
+        let embedding = self.call_ollama_embed(text)?;
+        self.store_embedding(&entity.id, &embedding)?;
+
+        Ok(serde_json::json!({
+            "embedded": 1,
+            "id": entity.id,
+            "dimensions": embedding.len(),
+        }))
+    }
+
+    /// Call Ollama /api/embed endpoint to get a dense vector for a text.
+    fn call_ollama_embed(&self, text: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        if !self.llm_config.enabled {
+            return Err("LLM is not enabled. Set --llm-endpoint to use embedding.".into());
+        }
+        let endpoint = self.llm_config.endpoint.replace("/api/generate", "/api/embed");
+        let body = serde_json::json!({
+            "model": self.llm_config.model,
+            "input": text,
+        });
+        let body_str = serde_json::to_string(&body)?;
+        let response = ureq::post(&endpoint)
+            .set("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(self.llm_config.timeout_secs))
+            .send_string(&body_str)
+            .map_err(|e| format!("Ollama embed API call failed: {}", e))?;
+        let response_body = response
+            .into_string()
+            .map_err(|e| format!("Failed to read embed response: {}", e))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&response_body).map_err(|e| format!("Invalid embed response: {}", e))?;
+
+        let embeddings = json["embeddings"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_array())
+            .ok_or("No embeddings in Ollama response")?;
+
+        let vec: Vec<f32> = embeddings
+            .iter()
+            .filter_map(|v| v.as_f64().map(|f| f as f32))
+            .collect();
+        Ok(vec)
+    }
+
+    /// Bulk archive entities matching criteria (category, decay threshold, age).
+    pub fn prune(&self, params: &PruneParams) -> Result<PruneReport, Box<dyn std::error::Error>> {
+        let mut conditions = vec!["archived = 0".to_string()];
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(ref cat) = params.category {
+            conditions.push(format!("category = ?{}", param_values.len() + 1));
+            param_values.push(Box::new(cat.clone()));
+        }
+        if let Some(min_d) = params.min_decay {
+            conditions.push(format!("decay_score < ?{}", param_values.len() + 1));
+            param_values.push(Box::new(min_d));
+        }
+        if let Some(days) = params.older_than_days {
+            let cutoff = crate::db::now_ms() - (days as i64 * 86400 * 1000);
+            conditions.push(format!("created_at_unix_ms < ?{}", param_values.len() + 1));
+            param_values.push(Box::new(cutoff));
+        }
+
+        let reason = format!(
+            "prune: cat={:?} decay<{:?} age>{:?}d",
+            params.category, params.min_decay, params.older_than_days
+        );
+
+        // Count matching
+        let count_sql = format!("SELECT COUNT(*) FROM entities WHERE {}", conditions.join(" AND "));
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+        let examined: usize = self
+            .conn
+            .query_row(&count_sql, param_refs.as_slice(), |r| r.get::<_, i64>(0))?
+            as usize;
+
+        if params.dry_run {
+            return Ok(PruneReport { archived: 0, examined, dry_run: true, reason });
+        }
+
+        let limit = if params.limit == 0 { String::new() } else { format!(" LIMIT {}", params.limit) };
+        let sql = format!(
+            "UPDATE entities SET archived = 1, archive_reason = ?1 WHERE {} {}",
+            conditions.join(" AND "), limit
+        );
+        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(reason.clone())];
+        all_params.extend(param_values);
+        let all_refs: Vec<&dyn rusqlite::types::ToSql> =
+            all_params.iter().map(|p| p.as_ref()).collect();
+        let archived = self.conn.execute(&sql, all_refs.as_slice())?;
+
+        // Clean FTS5 for archived entities
+        let _ = self.conn.execute(
+            "DELETE FROM entities_fts WHERE rowid IN (SELECT rowid FROM entities WHERE archive_reason = ?1)",
+            params![reason],
+        );
+
+        Ok(PruneReport { archived, examined, dry_run: false, reason })
     }
 
     /// Dense vector search: brute-force cosine similarity over all entities with embeddings.
