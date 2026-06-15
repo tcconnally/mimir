@@ -518,7 +518,7 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
         "dimensions": { "type": "integer", "description": "Vector dimensions" }
       }
     },
-    "annotations": { "destructiveHint": false, "readOnlyHint": false }
+    "annotations": { "destructiveHint": true }
   },
   {
     "name": "mimir_prune",
