@@ -1,14 +1,16 @@
-# Glama-compatible Dockerfile for Mimir
-# Builds a static musl binary for Firecracker microVM sandbox execution
-FROM rust:1.96-alpine AS builder
-RUN apk add --no-cache musl-dev sqlite-dev
-WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
-COPY src/ ./src/
-RUN cargo build --release && strip target/release/mimir
+# Mimir — persistent memory for AI agents
+# Single binary, zero runtime deps, < 15 MB image
 
-FROM alpine:3.21
-RUN apk add --no-cache sqlite-libs
-COPY --from=builder /app/target/release/mimir /usr/local/bin/mimir
-ENTRYPOINT ["/usr/local/bin/mimir"]
-CMD ["--db", "/data/mimir.db"]
+FROM rust:1.85-alpine AS builder
+RUN apk add --no-cache musl-dev sqlite-dev
+WORKDIR /build
+COPY . .
+RUN cargo build --release --target x86_64-unknown-linux-musl \
+    && strip target/x86_64-unknown-linux-musl/release/mimir
+
+FROM scratch
+COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/mimir /mimir
+VOLUME /data
+EXPOSE 8080
+ENTRYPOINT ["/mimir"]
+CMD ["--db", "/data/mimir.db", "--web", "--web-port", "8080"]

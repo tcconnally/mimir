@@ -1,0 +1,14 @@
+version: "3.8"
+services:
+  mimir:
+    build: .
+    image: tcconnally/mimir:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - mimir_data:/data
+    command: --db /data/mimir.db --web --web-port 8080
+    restart: unless-stopped
+
+volumes:
+  mimir_data:
