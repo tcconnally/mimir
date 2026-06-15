@@ -40,6 +40,44 @@ chmod +x mimir && mv mimir ~/.local/bin/
 
 ---
 
+## Install
+
+```bash
+# Python client
+pip install mimir
+
+# Or download the standalone binary (no Python needed)
+curl -L https://github.com/tcconnally/mimir/releases/latest/download/mimir-linux-x86_64 -o mimir
+chmod +x mimir
+./mimir --db ./memory.db
+```
+
+## Quickstart
+
+```python
+from mimir import MimirClient
+
+client = MimirClient("./memory.db")
+client.remember("Hello world — my first persistent memory!", category="demo")
+results = client.recall("first memory")
+print(results[0].content)
+# "Hello world — my first persistent memory!"
+```
+
+## Why Mimir vs Alternatives
+
+| | Mimir | Mem0 | Letta | Zep |
+|---|---|---|---|---|
+| **Deployment** | Single binary | Cloud + self-host | Docker/Postgres | Docker/Postgres |
+| **Dependencies** | None (SQLite embedded) | Python + vector DB | Postgres + Python | Postgres + Go |
+| **Encryption** | AES-256-GCM ✅ | ❌ | ❌ | ❌ |
+| **Hybrid Search** | BM25 + Dense + RRF | Vector only | Vector only | Vector + Graph |
+| **MCP Tools** | 23 | 5 | 8 | 0 |
+| **Offline/Local** | ✅ Fully local | Cloud-dependent | Docker needed | Docker needed |
+| **License** | MIT | Apache 2.0 | Apache 2.0 | Apache 2.0 |
+
+Mimir is for teams that want **production memory without infrastructure** — no Postgres, no Docker, no cloud services. Just one binary.
+
 ## Features
 
 ### Hybrid Search
