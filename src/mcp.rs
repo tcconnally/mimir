@@ -166,17 +166,26 @@ fn handle_request(
             let result_text = call_tool(tool_name, db, tool_args, id.clone());
 
             match result_text {
-                Ok(text) => Some(JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id,
-                    result: Some(json!({
+                Ok(text) => {
+                    // Try to parse the result as JSON for structuredContent
+                    let structured: Option<serde_json::Value> =
+                        serde_json::from_str(&text).ok();
+                    let mut result = json!({
                         "content": [{
                             "type": "text",
                             "text": text
                         }]
-                    })),
-                    error: None,
-                }),
+                    });
+                    if let Some(s) = structured {
+                        result["structuredContent"] = s;
+                    }
+                    Some(JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id,
+                        result: Some(result),
+                        error: None,
+                    })
+                },
                 Err(error_response) => Some(error_response),
             }
         }
