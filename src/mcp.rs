@@ -207,7 +207,7 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
         r###"[
   {
     "name": "mimir_remember",
-    "description": "Store or update an entity by (category, key). Idempotent \u2014 call as often as you want, same key returns an update. Use this for saving facts, decisions, architecture notes, and conventions. When encryption is enabled, body_json is encrypted at rest with AES-256-GCM.",
+    "description": "Store or update an entity by (category, key). Idempotent \u2014 call as often as you want, same key returns an update. Optional always_on=true injects entity into every mimir_context. Optional certainty (0.0-1.0) is used by mimir_conflicts for typed-entity conflict detection. Use this for saving facts, decisions, architecture notes, and conventions. When encryption is enabled, body_json is encrypted at rest with AES-256-GCM.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -303,7 +303,12 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
         "limit": {
           "type": "integer",
           "default": 10,
-          "description": "Maximum number of results to return"
+          "description": "Maximum number of results to return (max 1000)"
+        },
+        "offset": {
+          "type": "integer",
+          "default": 0,
+          "description": "Number of results to skip for pagination"
         },
         "min_decay": {
           "type": "number",
@@ -340,6 +345,24 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
             }
           },
           "description": "Configuration for FTS5 query expansion using Porter stemming"
+        },
+        "preview_cap": {
+          "type": "integer",
+          "description": "If set, truncate body_json at N chars and append drill-down footer. Use mimir_get_entity to read full body."
+        },
+        "content_weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0,
+          "description": "Additive boost for content witness — rewards entities whose body text literally contains query terms. Damped by body length. Never penalizes."
+        },
+        "diversity_halving": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1,
+          "description": "Per-keyword diversity quota factor (1.0=disabled). Each distinct matched keyword gets ceil(N x halving^n) slots — first keyword N, second N/2, etc."
         }
       },
       "required": [
@@ -415,6 +438,41 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false
+    }
+  },
+  {
+    "name": "mimir_get_entity",
+    "description": "Get an entity by ID with its full body_json content. Use after mimir_recall with preview_cap to read the complete body of a truncated result. The drill-down footer embedded in preview-capped results references this tool with the entity ID to use.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Entity ID to retrieve (from recall result id field or preview cap footer)"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "category": { "type": "string" },
+        "key": { "type": "string" },
+        "body_json": { "type": "string", "description": "Full entity body content" },
+        "status": { "type": "string" },
+        "entity_type": { "type": "string" },
+        "decay_score": { "type": "number" },
+        "retrieval_count": { "type": "integer" },
+        "layer": { "type": "string" },
+        "always_on": { "type": "boolean" },
+        "certainty": { "type": "number" }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true
     }
   },
   {
@@ -501,6 +559,52 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     "annotations": {
       "destructiveHint": true
     }
+  },
+  {
+    "name": "mimir_embed",
+    "description": "Generate and store dense vector embeddings for entities via Ollama /api/embed. Supports single entity (category+key) or batch mode (batch_category). Requires --llm-endpoint to be set.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "description": "Text to embed (omit to use entity body_json)" },
+        "category": { "type": "string", "description": "Entity category for single mode" },
+        "key": { "type": "string", "description": "Entity key for single mode" },
+        "batch_category": { "type": "string", "description": "Embed all entities in this category lacking embeddings" },
+        "batch_limit": { "type": "integer", "default": 100, "description": "Max entities in batch mode" }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "embedded": { "type": "integer", "description": "Number of entities embedded" },
+        "dimensions": { "type": "integer", "description": "Vector dimensions" }
+      }
+    },
+    "annotations": { "destructiveHint": true }
+  },
+  {
+    "name": "mimir_prune",
+    "description": "Bulk archive entities by category, decay threshold, or age. Use dry_run=true to preview without archiving. Useful for cleaning stale or low-quality memories.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "category": { "type": "string", "description": "Archive entities in this category" },
+        "min_decay": { "type": "number", "description": "Archive entities with decay_score below this threshold" },
+        "older_than_days": { "type": "integer", "description": "Archive entities older than this many days" },
+        "limit": { "type": "integer", "default": 100, "description": "Max entities to prune (0 = unlimited)" },
+        "dry_run": { "type": "boolean", "default": false, "description": "Preview without archiving" }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "archived": { "type": "integer" },
+        "examined": { "type": "integer" },
+        "dry_run": { "type": "boolean" },
+        "reason": { "type": "string" }
+      }
+    },
+    "annotations": { "destructiveHint": true }
   },
   {
     "name": "mimir_link",
@@ -689,7 +793,12 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
         "limit": {
           "type": "integer",
           "default": 50,
-          "description": "Maximum number of events to return"
+          "description": "Maximum number of events to return (max 1000)"
+        },
+        "offset": {
+          "type": "integer",
+          "default": 0,
+          "description": "Number of events to skip for pagination"
         }
       },
       "required": []
@@ -1372,6 +1481,80 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     "annotations": {
       "readOnlyHint": true
     }
+  },
+  {
+    "name": "mimir_recall_when",
+    "description": "Search entities whose recall_when triggers match a given context. Use this for proactive just-in-time memory injection \u2014 before writing code, before plans, at session start. Pass the current task description as context and get back memories that declared they should be recalled in similar situations.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "context": {
+          "type": "string",
+          "description": "The current task or context description to match against recall_when triggers"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum entities to return (default 10, max 100)",
+          "default": 10
+        }
+      },
+      "required": ["context"]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "items": {"type": "array", "items": {"type": "object"}},
+        "total": {"type": "integer"},
+        "context": {"type": "string"}
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "mimir_cohere",
+    "description": "Run an autonomous coherence grooming pass over the memory. Promotes buffer entities to working layer, applies decay, auto-links related entities, and archives stale ones below the decay threshold. Use dry_run=true to preview without making changes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "dry_run": {
+          "type": "boolean",
+          "description": "If true, count what would be done without making changes",
+          "default": false
+        },
+        "max_links": {
+          "type": "integer",
+          "description": "Maximum auto-links to create (default 20, max 100)",
+          "default": 20
+        },
+        "promote_threshold": {
+          "type": "integer",
+          "description": "Retrieval count threshold for buffer to working promotion (default 3)",
+          "default": 3
+        },
+        "archive_threshold": {
+          "type": "number",
+          "description": "Decay score below which entities are auto-archived (default 0.05)",
+          "default": 0.05
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "promoted": {"type": "integer", "description": "Number of entities promoted from buffer to working"},
+        "decayed": {"type": "integer", "description": "Number of entities whose decay score was reduced"},
+        "linked": {"type": "integer", "description": "Number of auto-links created"},
+        "archived": {"type": "integer", "description": "Number of entities archived due to low decay"},
+        "entities_examined": {"type": "integer", "description": "Total non-archived entities examined"},
+        "dry_run": {"type": "boolean"},
+        "completed_at_unix_ms": {"type": "integer"}
+      }
+    },
+    "annotations": {
+      "destructiveHint": true
+    }
   }
 ]"###
     ).expect("tools JSON must be valid");
@@ -1404,12 +1587,23 @@ fn call_tool(
             tools::handle_ask(db, args).map_err(|e| error_response(id, -32603, &e))
         }
 
+        "mimir_get_entity" => {
+            tools::handle_get_entity(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
         "mimir_forget" => {
             tools::handle_forget(db, args).map_err(|e| error_response(id, -32603, &e))
         }
 
         "mimir_ingest" => {
             tools::handle_ingest(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
+
+        "mimir_embed" => {
+            tools::handle_embed(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
+
+        "mimir_prune" => {
+            tools::handle_prune(db, args).map_err(|e| error_response(id, -32603, &e))
         }
 
         "mimir_link" => tools::handle_link(db, args).map_err(|e| error_response(id, -32603, &e)),
@@ -1459,6 +1653,8 @@ fn call_tool(
         "mimir_vault_import" => Ok(tools::handle_vault_import(db, args)),
         "mimir_decay" => Ok(tools::handle_decay(db, args)),
         "mimir_workspace_list" => Ok(tools::handle_workspace_list(db)),
+        "mimir_recall_when" => tools::handle_recall_when(db, args).map_err(|e| error_response(id, -32603, &e)),
+        "mimir_cohere" => tools::handle_cohere(db, args).map_err(|e| error_response(id, -32603, &e)),
 
         _ => Err(error_response(
             id,

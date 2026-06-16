@@ -25,7 +25,9 @@ CREATE TABLE IF NOT EXISTS entities (
     source TEXT DEFAULT 'agent',
     created_at_unix_ms INTEGER NOT NULL,
     last_accessed_unix_ms INTEGER NOT NULL,
-    embedding BLOB
+    embedding BLOB,
+    always_on INTEGER DEFAULT 0,
+    certainty REAL DEFAULT 0.5
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_category_key ON entities(category, key);
@@ -65,6 +67,22 @@ pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Er
         .is_ok();
     if !has_embedding {
         conn.execute_batch("ALTER TABLE entities ADD COLUMN embedding BLOB;")?;
+    }
+
+    // Add always_on column (v1.x migration)
+    let has_always_on: bool = conn
+        .prepare("SELECT always_on FROM entities LIMIT 1")
+        .is_ok();
+    if !has_always_on {
+        conn.execute_batch("ALTER TABLE entities ADD COLUMN always_on INTEGER DEFAULT 0;")?;
+    }
+
+    // Add certainty column (v1.x migration)
+    let has_certainty: bool = conn
+        .prepare("SELECT certainty FROM entities LIMIT 1")
+        .is_ok();
+    if !has_certainty {
+        conn.execute_batch("ALTER TABLE entities ADD COLUMN certainty REAL DEFAULT 0.5;")?;
     }
 
     Ok(())

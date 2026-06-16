@@ -32,9 +32,16 @@ pub struct Entity {
     pub verified: bool,
     #[serde(default = "default_source")]
     pub source: String,
+    #[serde(default)]
+    pub always_on: bool,
+    /// Certainty for typed entities (0.0-1.0). Used by mimir_conflicts:
+    /// low-certainty entities on the same topic are a conflict signal.
+    #[serde(default = "default_certainty")]
+    pub certainty: f64,
     pub created_at_unix_ms: i64,
     pub last_accessed_unix_ms: i64,
     #[serde(skip)]
+    #[allow(dead_code)]
     pub embedding: Option<Vec<f32>>,
 }
 
@@ -75,6 +82,10 @@ fn default_layer() -> String {
 
 fn default_source() -> String {
     "agent".to_string()
+}
+
+fn default_certainty() -> f64 {
+    0.5
 }
 
 /// A link between two entities. Stored as JSON array in entities.links.
@@ -133,12 +144,26 @@ pub struct RecallParams {
     pub category: Option<String>,
     pub entity_type: Option<String>,
     pub limit: i64,
+    pub offset: i64,
     pub min_decay: f64,
     pub topic_path: Option<String>,
     pub include_archived: bool,
     pub skip_side_effects: bool,
     pub mode: SearchMode,
     pub embedding: Option<Vec<f32>>,
+    /// If set, truncate body_json at this many chars and append drill-down footer.
+    /// BrainDB-inspired: prevents large bodies from silently flooding context.
+    pub preview_cap: Option<i64>,
+    /// If Some, only return entities where always_on matches (for context injection).
+    pub always_on: Option<bool>,
+    /// Additive boost weight for content witness signal (0.0 = disabled).
+    /// Computes substring-match score against body_json, damped by body length.
+    pub content_weight: f64,
+    /// Per-keyword halving quota for result diversity (1.0 = disabled).
+    /// Each distinct matched keyword gets ceil(max_results × halving^n) slots.
+    pub diversity_halving: f64,
+    /// Per-query reservation share for multi-query diversity (0.0 = disabled).
+    pub diversity_per_query_share: f64,
 }
 
 /// Search mode for recall: FTS5 keyword, dense vector, or hybrid fusion.
@@ -165,6 +190,7 @@ fn default_n_variants() -> usize {
 
 /// Configuration for AES-256-GCM encryption at rest.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct EncryptionConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -172,6 +198,7 @@ pub struct EncryptionConfig {
     pub key_file: String,
 }
 
+#[allow(dead_code)]
 fn default_key_file() -> String {
     "~/.mimir/secret.key".to_string()
 }
@@ -183,12 +210,18 @@ impl Default for RecallParams {
             category: None,
             entity_type: None,
             limit: 10,
+            offset: 0,
             min_decay: 0.0,
             topic_path: None,
             include_archived: false,
             skip_side_effects: false,
             mode: SearchMode::Fts5,
             embedding: None,
+            preview_cap: None,
+            always_on: None,
+            content_weight: 0.0,
+            diversity_halving: 1.0,
+            diversity_per_query_share: 0.0,
         }
     }
 }
@@ -201,6 +234,7 @@ pub struct TimelineParams {
     pub category: Option<String>,
     pub entity_id: Option<String>,
     pub limit: i64,
+    pub offset: i64,
 }
 
 impl Default for TimelineParams {
@@ -212,6 +246,7 @@ impl Default for TimelineParams {
             category: None,
             entity_id: None,
             limit: 50,
+            offset: 0,
         }
     }
 }
@@ -249,6 +284,35 @@ pub struct DecayReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct CompactReport {
     pub entities_archived: i64,
+    pub entities_examined: i64,
+    pub dry_run: bool,
+    pub completed_at_unix_ms: i64,
+}
+
+/// Parameters for the coherence daemon pass.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct CohereParams {
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default = "default_max_links")]
+    pub max_links: usize,
+    #[serde(default)]
+    pub promote_threshold: i64,
+    #[serde(default = "default_archive_threshold")]
+    pub archive_threshold: f64,
+}
+
+fn default_max_links() -> usize { 20 }
+fn default_archive_threshold() -> f64 { 0.05 }
+fn default_promote_threshold() -> i64 { 3 }
+
+/// Coherence daemon report — results of an auto-grooming pass.
+#[derive(Debug, Clone, Serialize)]
+pub struct CohereReport {
+    pub promoted: i64,
+    pub decayed: i64,
+    pub linked: i64,
+    pub archived: i64,
     pub entities_examined: i64,
     pub dry_run: bool,
     pub completed_at_unix_ms: i64,
@@ -328,4 +392,54 @@ pub struct RawDocument {
     pub category: String,
     pub body_json: String,
     pub tags: Vec<String>,
+}
+
+/// Parameters for the mimir_embed tool — generate and store dense embeddings.
+#[derive(Debug, Deserialize)]
+pub struct EmbedParams {
+    /// Text to embed and store on the entity (uses entity's body_json if omitted).
+    pub text: Option<String>,
+    /// Entity category (required).
+    pub category: Option<String>,
+    /// Entity key (required).
+    pub key: Option<String>,
+    /// Embed all entities matching this category that lack embeddings.
+    #[serde(default)]
+    pub batch_category: Option<String>,
+    /// Max entities to embed in batch mode (default: 100).
+    #[serde(default = "default_batch_limit")]
+    pub batch_limit: usize,
+}
+
+fn default_batch_limit() -> usize {
+    100
+}
+
+/// Parameters for the mimir_prune tool — bulk archive entities.
+#[derive(Debug, Deserialize)]
+pub struct PruneParams {
+    /// Archive entities in this category.
+    pub category: Option<String>,
+    /// Archive entities with decay_score below this threshold.
+    pub min_decay: Option<f64>,
+    /// Archive entities older than this many days.
+    pub older_than_days: Option<u32>,
+    /// Max entities to prune (default: 100, use 0 for unlimited).
+    #[serde(default = "default_prune_limit")]
+    pub limit: usize,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+fn default_prune_limit() -> usize {
+    100
+}
+
+/// Report from mimir_prune.
+#[derive(Debug, Serialize)]
+pub struct PruneReport {
+    pub archived: usize,
+    pub examined: usize,
+    pub dry_run: bool,
+    pub reason: String,
 }

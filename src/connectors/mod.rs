@@ -2,7 +2,7 @@ pub mod file_watcher;
 pub mod github;
 
 use crate::models::RawDocument;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::AtomicI64;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Trait for external data connectors that ingest documents into Mimir.
@@ -21,6 +21,7 @@ fn now_ms() -> i64 {
 }
 
 /// Simple connector that produces a fixed set of documents (useful for tests).
+#[allow(dead_code)]
 pub struct StaticConnector {
     name_str: String,
     docs: Vec<RawDocument>,
@@ -28,6 +29,7 @@ pub struct StaticConnector {
 }
 
 impl StaticConnector {
+    #[allow(dead_code)]
     pub fn new(name: &str, docs: Vec<RawDocument>) -> Self {
         Self {
             name_str: name.to_string(),

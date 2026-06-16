@@ -5,6 +5,7 @@ mod mcp;
 mod models;
 mod schema;
 mod tools;
+mod util;
 mod web;
 
 use clap::{Parser, Subcommand};
@@ -34,6 +35,10 @@ struct Cli {
     /// Web dashboard port (default: 8767)
     #[arg(long, default_value_t = 8767)]
     port: u16,
+
+    /// Web dashboard bind address (default: 127.0.0.1 — use 0.0.0.0 to expose)
+    #[arg(long, default_value_t = String::from("127.0.0.1"))]
+    web_bind: String,
 
     /// Ollama API endpoint for the mimir_ask RAG tool
     #[arg(long)]
@@ -71,6 +76,10 @@ enum Commands {
         /// Web dashboard port (default: 8767)
         #[arg(long, default_value_t = 8767)]
         port: u16,
+
+        /// Web dashboard bind address (default: 127.0.0.1 — use 0.0.0.0 to expose)
+        #[arg(long, default_value_t = String::from("127.0.0.1"))]
+        web_bind: String,
 
         /// Ollama API endpoint for the mimir_ask RAG tool
         #[arg(long)]
@@ -193,7 +202,7 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Serve { ref db, ref encryption_key, ref web, ref port, ref llm_endpoint, ref llm_model, ref connectors_config, .. }) => {
+        Some(Commands::Serve { ref db, ref encryption_key, ref web, ref port, ref web_bind, ref llm_endpoint, ref llm_model, ref connectors_config, .. }) => {
             let db_path = db.clone();
             let mut database = match db::Database::open(&db_path) {
                 Ok(db) => db,
@@ -221,33 +230,59 @@ fn main() {
                 match load_connectors(config_path) {
                     Ok(connectors) => {
                         let count = connectors.len();
-                        database.connectors = connectors;
+                        database.set_connectors(connectors);
                         eprintln!("mimir: loaded {} connector(s) from {}", count, config_path);
                     }
-                    Err(e) => eprintln!("mimir: failed to load connectors: {}", e),
+                    Err(e) => {
+                        eprintln!("mimir: fatal — failed to load connectors: {}", e);
+                        std::process::exit(1);
+                    }
                 }
             }
 
             // Start web dashboard in background if requested
             if *web {
                 let web_port = *port;
-                let web_db = match db::Database::open(&db_path) {
+                let web_bind_addr = web_bind.clone();
+                let web_key = encryption_key.clone();
+                let mut web_db = match db::Database::open(&db_path) {
                     Ok(db) => db,
                     Err(e) => {
                         eprintln!("mimir: failed to open web database: {}", e);
                         std::process::exit(1);
                     }
                 };
+                // Propagate encryption key to web dashboard DB
+                if let Some(ref key_file) = web_key {
+                    if let Err(e) = web_db.set_encryption(key_file) {
+                        eprintln!("mimir: web dashboard encryption setup failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
                 let web_db = std::sync::Arc::new(std::sync::Mutex::new(web_db));
                 let router = crate::web::build_router(web_db);
-                let addr = format!("0.0.0.0:{}", web_port);
+                let addr = format!("{}:{}", web_bind_addr, web_port);
                 eprintln!("mimir: web dashboard starting on http://{}", addr);
 
                 std::thread::spawn(move || {
-                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    let rt = match tokio::runtime::Runtime::new() {
+                        Ok(rt) => rt,
+                        Err(e) => {
+                            eprintln!("mimir: web dashboard runtime error: {}", e);
+                            return;
+                        }
+                    };
                     rt.block_on(async {
-                        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-                        axum::serve(listener, router).await.unwrap();
+                        let listener = match tokio::net::TcpListener::bind(&addr).await {
+                            Ok(l) => l,
+                            Err(e) => {
+                                eprintln!("mimir: web dashboard bind error: {}", e);
+                                return;
+                            }
+                        };
+                        if let Err(e) = axum::serve(listener, router).await {
+                            eprintln!("mimir: web dashboard error: {}", e);
+                        }
                     });
                 });
             }
@@ -280,32 +315,57 @@ fn main() {
                 match load_connectors(config_path) {
                     Ok(connectors) => {
                         let count = connectors.len();
-                        database.connectors = connectors;
+                        database.set_connectors(connectors);
                         eprintln!("mimir: loaded {} connector(s) from {}", count, config_path);
                     }
-                    Err(e) => eprintln!("mimir: failed to load connectors: {}", e),
+                    Err(e) => {
+                        eprintln!("mimir: fatal — failed to load connectors: {}", e);
+                        std::process::exit(1);
+                    }
                 }
             }
 
             if cli.web {
                 let web_port = cli.port;
-                let web_db = match db::Database::open(&db_path) {
+                let web_bind_addr = cli.web_bind.clone();
+                let web_key = cli.encryption_key.clone();
+                let mut web_db = match db::Database::open(&db_path) {
                     Ok(db) => db,
                     Err(e) => {
                         eprintln!("mimir: failed to open web database: {}", e);
                         std::process::exit(1);
                     }
                 };
+                if let Some(ref key_file) = web_key {
+                    if let Err(e) = web_db.set_encryption(key_file) {
+                        eprintln!("mimir: web dashboard encryption setup failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
                 let web_db = std::sync::Arc::new(std::sync::Mutex::new(web_db));
                 let router = crate::web::build_router(web_db);
-                let addr = format!("0.0.0.0:{}", web_port);
+                let addr = format!("{}:{}", web_bind_addr, web_port);
                 eprintln!("mimir: web dashboard starting on http://{}", addr);
 
                 std::thread::spawn(move || {
-                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    let rt = match tokio::runtime::Runtime::new() {
+                        Ok(rt) => rt,
+                        Err(e) => {
+                            eprintln!("mimir: web dashboard runtime error: {}", e);
+                            return;
+                        }
+                    };
                     rt.block_on(async {
-                        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-                        axum::serve(listener, router).await.unwrap();
+                        let listener = match tokio::net::TcpListener::bind(&addr).await {
+                            Ok(l) => l,
+                            Err(e) => {
+                                eprintln!("mimir: web dashboard bind error: {}", e);
+                                return;
+                            }
+                        };
+                        if let Err(e) = axum::serve(listener, router).await {
+                            eprintln!("mimir: web dashboard error: {}", e);
+                        }
                     });
                 });
             }

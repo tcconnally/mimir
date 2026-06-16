@@ -1,0 +1,5 @@
+langgraph>=0.2.0
+
+[dev]
+pytest
+pytest-asyncio

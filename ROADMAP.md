@@ -29,9 +29,6 @@ Zero runtime dependencies. Structured entity model with journal events and state
 
 **Status:** ✅ Shipped (2026-06-10)
 
-This release makes Mimir competitive with structured memory systems (Sibyl, Mem0)
-by adding an entity model with composite keys, journal events, and state management.
-
 ### Three-table schema
 - **entities** — idempotent by UNIQUE(category, key), FTS5-indexed
 - **journal** — append-only event log with evaluated/acted/forward structure
@@ -66,72 +63,124 @@ by adding an entity model with composite keys, journal events, and state managem
 
 ---
 
-## v0.2.1 — Decay & Layers
+## v1.0.0 — Intelligence & Distribution
 
-**Target:** "Memories that get stronger with use, fade with neglect."
+**Status:** ✅ Shipped (2026-06-15)
 
-### Ebbinghaus decay algorithm
-The `decay_score` column already exists (always 1.0 today). v0.2.1 wires up
-actual decay: scores drop over time when memories aren't retrieved, reset on
-recall. Low-decay entities can be auto-archived.
+This release transforms Mimir from a storage engine into an intelligent memory system.
+Every v0.2.x and v0.5 goal was absorbed into this release (the intermediate version numbers
+were skipped — v1.0.0 includes everything planned through v0.5 plus more).
 
-### Layer progression
-Entities progress through buffer → working → core based on retrieval patterns.
-Auto-promotion when retrieval_count crosses thresholds. Core entities are
-permanent; buffer entities are volatile.
+### Confidence decay (was v0.2.1)
+- Ebbinghaus decay algorithm: scores degrade over time, reset on recall
+- Layer progression: buffer → working → core based on retrieval_count
+- Near-duplicate detection via trigram similarity at store time
+- `mimir_decay` tool for manual decay recalculation
+- Auto-archive of stale entities via `mimir_compact`
 
-### Near-duplicate detection
-Trigram or Levenshtein similarity check on body_json at store time. Bump
-importance on existing entity instead of creating near-duplicates.
+### Semantic search (was v0.3)
+- Hybrid search: FTS5 keyword + dense embeddings + RRF (Reciprocal Rank Fusion)
+- Bundled embedding model via Ollama `/api/embed`
+- Query expansion with Porter stemming for morphological variants
+- `mimir_recall` with `search_mode`: fts5, dense, hybrid
+- `mimir_embed` tool for explicit embedding generation
+
+### Memory synthesis (was v0.5)
+- Memory chain traversal via `mimir_traverse` (follow entity relationships)
+- Quality scoring via `mimir_score` (agents rate memories 0-1)
+- Conflict detection via `mimir_conflicts` (contradictory facts flagged)
+- RAG via `mimir_ask` — NL Q&A with Ollama + cited sources
+
+### Vault & portability
+- `.md` vault export/import via `mimir_vault_export` / `mimir_vault_import`
+- Human-readable, git-trackable, Obsidian-compatible markdown files
+- SQLite remains the operational store; vault is the portable representation
+
+### External connectors
+- GitHub issues connector via `mimir_ingest`
+- File watcher connector for watching directories
+- Extensible connector framework for third-party data sources
+
+### Security & operations
+- AES-256-GCM encryption at rest for `body_json`
+- `mimir migrate` subcommand for key generation
+- Web dashboard (Axum HTTP server) with `--web --port` flags
+- Entity graph visualization, search, stats in dashboard
+- Smithery + Glama marketplace listings with full tool metadata
+
+### Quality & polish
+- Deep-dive code review (11 issues resolved)
+- Second-pass review (10 issues resolved)
+- Compiler warnings eliminated
+- CI smoke-test workflow
+- Claims audit against codebase
+- Glama TDQS improvements (outputSchema + annotations)
+
+**Total tools: 28 MCP tools**
 
 ---
 
-## v0.3 — Semantic Search + `.md` Vault
+## v1.1.0 — Distribution & Ecosystem (current)
 
-**Target:** "Find what I mean, not what I typed."
+**Target:** "Mimir everywhere."
 
-### Embedding-based vector search
-- Bundled small embedding model (all-MiniLM-L6-v2 via `ort` or `candle`)
-- Optional: point at any OpenAI-compatible embedding endpoint
-- Hybrid search: FTS5 keyword + cosine similarity, merged and ranked
-- New `mimir_search` tool with `mode` parameter: keyword, semantic, hybrid
+### Integration guides (in progress)
+- Claude Code integration guide
+- Cursor integration guide
+- LangGraph MimirStore adapter
+- CrewAI MimirMemory provider
+- AutoGen MimirContext plugin
 
-### `.md` vault storage
-Memories stored as individual `.md` files with YAML frontmatter in `~/.mimir/vault/`.
-SQLite becomes a search index, not the source of truth.
+### Transport expansion
+- SSE/HTTP transport for non-stdio MCP hosts
+- Docker image with pre-built binary (Alpine multi-stage)
+- One-line install: `curl | bash` bootstrap verified on macOS, Linux, WSL
 
-```
-~/.mimir/vault/
-├── mem-2026-06-09-a1b2c3.md
-└── mem-2026-06-10-d4e5f6.md
-```
+### Quality
+- Glama TDQS score improvement (outputSchema + annotations on remaining tools)
+- Smithery capability discovery fix (ensure all 28 tools appear)
+- Windows CI in GitHub Actions
+- Stress tests at 100K+ entity scale
 
-- Human-readable, git-trackable, Obsidian-compatible
-- `mimir_vault_export` / `mimir_vault_import` tools
-- Existing tools work unchanged (store writes to SQLite, export syncs to `.md`)
+### Discovery
+- Submit to curated MCP server directories
+- Appear in "awesome-mcp" lists
+- Write comparison page vs Mem0, Sibyl, Holographic
 
 ---
 
-## v0.4 — Multi-Agent & Federation
+## v1.2.0 — Multi-Agent & Federation
 
 **Target:** "One memory engine, many agents, many workspaces."
 
 - Workspace scoping with `workspace_hash`
 - Agent identity tracking on stored memories
 - Cross-workspace federation via vault sync
-- SSE/HTTP transport for non-stdio MCP hosts
+- Merge conflict resolution for concurrent writes
+- Per-workspace access controls and visibility rules
 
 ---
 
-## v0.5 — Memory Synthesis
+## v1.3.0 — Offline Embeddings
 
-**Target:** "Summarize what we know."
+**Target:** "Truly zero-dependency semantic search."
 
-- Topic clustering using embedding model
-- Memory chain traversal via entity links
-- Auto-summarization of topic clusters
-- Memory quality scoring (agents rate memories)
-- Conflict detection (contradictory facts flagged)
+- Bundle all-MiniLM-L6-v2 via `ort` (ONNX Runtime) or `candle`
+- Remove Ollama dependency for hybrid search
+- Optional: still support external embedding endpoints
+- 80MB binary size increase, zero network calls
+
+---
+
+## v2.0 — Platform
+
+**Target:** "Mimir as infrastructure."
+
+- gRPC transport alongside MCP
+- Clustering with leader election
+- Read replicas for high-availability deployments
+- Audit log with cryptographic chaining
+- Managed cloud option (Mimir Cloud)
 
 ---
 
@@ -142,3 +191,4 @@ SQLite becomes a search index, not the source of truth.
 3. **MCP-native.** Every feature ships as an MCP tool.
 4. **Agent-first, not human-first.** Tools are designed for AI agents.
 5. **Compose, don't integrate.** Mimir does persistent memory; composes with Perseus, Obsidian, Git.
+6. **Local-first, cloud-optional.** Run it anywhere; cloud features are additive.

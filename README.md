@@ -1,20 +1,22 @@
 # Mimir
 
-> Persistent memory for AI agents. Structured entity model. SQLite + FTS5. MCP-native. Fully local.
+> Persistent memory for AI agents. Structured entity model. SQLite + FTS5 + hybrid vector search. MCP-native. Fully local.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://rust-lang.org)
+[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](https://github.com/tcconnally/mimir/releases)
 
 ## What is Mimir?
 
 Mimir is a lightweight **MCP JSON-RPC 2.0 stdio server** that gives AI agents durable
 memory across sessions. Agents store structured entities, journal their decisions,
-and manage transient state — all through standard MCP tools.
+manage transient state, generate embeddings, query with hybrid search, and ingest
+external data — all through **27 MCP tools**.
 
-It uses **SQLite with full-text search (FTS5)** across three tables: entities
+It uses **SQLite with FTS5 + dense vector search** across three tables: entities
 (structured, idempotent), journal (append-only event log), and state (key-value
-with TTL). No API keys, no embeddings model, no LLM required. The binary makes
-zero network calls at runtime. You own the database.
+with TTL). Optional Ollama integration enables RAG (`mimir_ask`) and embedding
+generation (`mimir_embed`). A built-in web dashboard provides visual exploration.
 
 Works with any MCP host: Claude Desktop, Cursor, OpenClaw, Hermes Agent, Perseus, etc.
 
@@ -22,32 +24,183 @@ Works with any MCP host: Claude Desktop, Cursor, OpenClaw, Hermes Agent, Perseus
 
 ## Quick Start
 
-### Option 1: One-shot bootstrap
-
 ```bash
-curl -sSL https://raw.githubusercontent.com/tcconnally/mimir/main/scripts/bootstrap.sh | bash
-```
-
-Idempotent — safe to re-run. Set `FORCE=1` to force a rebuild.
-
-### Option 2: Build from source
-
-```bash
+# Build from source
 git clone https://github.com/tcconnally/mimir.git
 cd mimir
 cargo build --release
 cp target/release/mimir ~/.local/bin/
+
+# Or download the binary
+curl -sSL https://github.com/tcconnally/mimir/releases/download/v1.0.0/mimir-v1.0.0-linux-x86_64 -o mimir
+chmod +x mimir && mv mimir ~/.local/bin/
 ```
 
 **Requirements:** Rust 1.70+ (stable), a C compiler (rusqlite bundles SQLite).
 
 ---
 
+## Install
+
+```bash
+# Python client
+pip install mimir
+
+# Or download the standalone binary (no Python needed)
+curl -L https://github.com/tcconnally/mimir/releases/latest/download/mimir-linux-x86_64 -o mimir
+chmod +x mimir
+./mimir --db ./memory.db
+```
+
+## Quickstart
+
+```python
+from mimir import MimirClient
+
+client = MimirClient("./memory.db")
+client.remember("Hello world — my first persistent memory!", category="demo")
+results = client.recall("first memory")
+print(results[0].content)
+# "Hello world — my first persistent memory!"
+```
+
+## Why Mimir vs Alternatives
+
+| | Mimir | Mem0 | Letta | Zep |
+|---|---|---|---|---|
+| **Deployment** | Single binary | Cloud + self-host | Docker/Postgres | Docker/Postgres |
+| **Dependencies** | None (SQLite embedded) | Python + vector DB | Postgres + Python | Postgres + Go |
+| **Encryption** | AES-256-GCM ✅ | ❌ | ❌ | ❌ |
+| **Hybrid Search** | BM25 + Dense + RRF | Vector only | Vector only | Vector + Graph |
+| **MCP Tools** | 23 | 5 | 8 | 0 |
+| **Offline/Local** | ✅ Fully local | Cloud-dependent | Docker needed | Docker needed |
+| **License** | MIT | Apache 2.0 | Apache 2.0 | Apache 2.0 |
+
+Mimir is for teams that want **production memory without infrastructure** — no Postgres, no Docker, no cloud services. Just one binary.
+
+## Features
+
+### Hybrid Search
+- **FTS5 keyword search** with LIKE fallback and stemming expansion
+- **Dense vector search** via cosine similarity on stored embeddings
+- **Reciprocal Rank Fusion (RRF)** — combine keyword + vector results
+- **Query expansion** — Porter stemming variants for broader recall
+
+### RAG & Embeddings
+- **`mimir_ask`** — natural language Q&A over stored memories via Ollama
+- **`mimir_embed`** — generate and store dense vectors via Ollama `/api/embed`
+- Supports single-entity and batch-category embedding
+
+### Encryption
+- **AES-256-GCM** transparent encryption for entity `body_json`
+- Opt-in via `--encryption-key` flag
+- `mimir keygen` subcommand for key generation
+- FTS5 index stays plaintext for search
+
+### Web Dashboard
+- Built-in Axum HTTP server (`mimir serve --web --port 8767`)
+- Dark-themed dashboard with search, entity table, vis.js graph, timeline
+- Default bind: `127.0.0.1` (use `--web-bind 0.0.0.0` to expose)
+- Separate SQLite connection in WAL mode for concurrent reads
+
+### External Connectors
+- **GitHub issues connector** — ingest issues/PRs by repo, rate-limit aware
+- **File watcher** — scan directories for `.md`/`.txt`/`.json` files with content-hash dedup
+- **`mimir_ingest`** — trigger connector syncs, dry-run preview
+- YAML-based connector config via `--connectors-config`
+
+### Data Lifecycle
+- **`mimir_prune`** — bulk archive by category, decay threshold, or age
+- **Ebbinghaus decay** with retrieval boosts and configurable archiving
+- **Near-duplicate detection** via trigram similarity
+- **Vault export/import** — markdown files with YAML frontmatter
+
+---
+
+## MCP Tools (v1.0.0 — 27 tools)
+
+### Entity tools
+| Tool | Description |
+|---|---|
+| `mimir_remember` | Store/update entity. Idempotent by (category, key). |
+| `mimir_recall` | Search with FTS5/dense/hybrid modes, filters, stemming expansion. |
+| `mimir_forget` | Soft-delete (archived=1). |
+| `mimir_link` | Create relationship links between entities. |
+| `mimir_unlink` | Remove entity links. |
+
+### Search & RAG
+| Tool | Description |
+|---|---|
+| `mimir_ask` | RAG: recall context, query Ollama, return grounded answer with sources. |
+| `mimir_embed` | Generate dense vectors via Ollama `/api/embed`. Single or batch. |
+| `mimir_ingest` | Trigger connector syncs (GitHub, file watcher). |
+
+### Journal tools
+| Tool | Description |
+|---|---|
+| `mimir_journal` | Append journal event with evaluated/acted/forward structure. |
+| `mimir_timeline` | Query journal by time range with optional filters. |
+
+### State tools
+| Tool | Description |
+|---|---|
+| `mimir_state_set` | Set key-value state with optional TTL. |
+| `mimir_state_get` | Get state value. Returns null if expired/missing. |
+| `mimir_state_delete` | Delete state entry. |
+| `mimir_state_list` | List state keys, optionally filtered by prefix. |
+
+### Management
+| Tool | Description |
+|---|---|
+| `mimir_health` | Server and DB health check. |
+| `mimir_stats` | Full DB statistics across all tables. |
+| `mimir_compact` | Archive entities below decay threshold (supports dry-run). |
+| `mimir_migrate` | Migrate v0.1.x DB to v0.2.0 schema. |
+| `mimir_context` | Pre-formatted markdown context for session injection. |
+| `mimir_workspace_list` | List all distinct entity categories. |
+| `mimir_prune` | Bulk archive by category, decay, or age. |
+
+### Graph & analysis
+| Tool | Description |
+|---|---|
+| `mimir_traverse` | Walk entity link graph up to configurable depth. |
+| `mimir_score` | Assign quality score (0.0-1.0). |
+| `mimir_conflicts` | Detect near-duplicate entities via trigram similarity. |
+| `mimir_decay` | Recalculate Ebbinghaus decay scores. |
+
+### Vault
+| Tool | Description |
+|---|---|
+| `mimir_vault_export` | Export entities to .md files with YAML frontmatter. |
+| `mimir_vault_import` | Import from .md vault directory (idempotent). |
+
+---
+
+## CLI
+
+```
+mimir serve --db /data/mimir.db
+mimir serve --web --port 8767 --encryption-key ~/.mimir/secret.key
+mimir serve --llm-endpoint http://localhost:11434/api/generate --llm-model llama3
+mimir serve --connectors-config ~/.mimir/connectors.yaml
+mimir keygen --key-file ~/.mimir/secret.key
+mimir migrate --from old.db --to new.db
+```
+
+### Flags
+| Flag | Description |
+|---|---|
+| `--db` | SQLite database path (default: `~/.mimir/data/mimir.db`) |
+| `--web` | Start web dashboard |
+| `--port` | Dashboard port (default: 8767) |
+| `--web-bind` | Dashboard bind address (default: 127.0.0.1) |
+| `--encryption-key` | AES-256-GCM key file path |
+| `--llm-endpoint` | Ollama API endpoint for `mimir_ask` and `mimir_embed` |
+| `--llm-model` | Ollama model name (default: llama3) |
+| `--connectors-config` | Path to connectors.yaml |
+
+
 ## MCP Configuration
-
-Add Mimir as an MCP server in your host's config:
-
-### Claude Desktop / Cursor / OpenClaw
 
 ```json
 {
@@ -60,15 +213,6 @@ Add Mimir as an MCP server in your host's config:
 }
 ```
 
-### Hermes Agent
-
-```yaml
-mcp_servers:
-  mimir:
-    command: "mimir"
-    args: ["--db", "~/.mimir/data/mimir.db"]
-```
-
 ### Perseus
 
 ```yaml
@@ -79,180 +223,49 @@ mimir:
   timeout_s: 30.0
   merge_strategy: "local_first"
   fallback_to_local: true
-  circuit_breaker:
-    threshold: 3
-    cooldown: 120
   context_categories: ["decision", "architecture", "convention"]
   context_limit: 10
 ```
 
 ---
 
-## MCP Tools (v0.5.0)
+## Connector Config
 
-### Entity tools
-
-| Tool | Description |
-|---|---|
-| `mimir_remember` | Store or update an entity. Idempotent by (category, key). |
-| `mimir_recall` | Search entities with FTS5 + LIKE fallback, filtered by category/type/topic. |
-| `mimir_forget` | Soft-delete an entity (sets archived=1). Recoverable. |
-| `mimir_link` | Create a relationship link from one entity to another. |
-| `mimir_unlink` | Remove a link between entities. |
-
-### Journal tools
-
-| Tool | Description |
-|---|---|
-| `mimir_journal` | Append a journal event (decision/observation/action) with evaluated/acted/forward. |
-| `mimir_timeline` | Query journal events by time range with optional filters. |
-
-### State tools
-
-| Tool | Description |
-|---|---|
-| `mimir_state_set` | Set a key-value state entry with optional TTL (auto-expires). |
-| `mimir_state_get` | Get a state value. Returns null if expired or missing. |
-| `mimir_state_delete` | Delete a state entry. |
-| `mimir_state_list` | List state keys, optionally filtered by prefix. |
-
-### Management tools
-
-| Tool | Description |
-|---|---|
-| `mimir_health` | Check server and database health. |
-| `mimir_stats` | Full database statistics across all three tables. |
-| `mimir_compact` | Archive entities below a decay threshold (supports dry-run). |
-| `mimir_migrate` | Migrate a v0.1.x database to v0.2.0 schema. |
-| `mimir_context` | Return pre-formatted markdown context block for session injection. |
-| `mimir_workspace_list` | List all distinct entity categories. |
-
-### Graph & analysis tools
-
-| Tool | Description |
-|---|---|
-| `mimir_traverse` | Walk entity link graph from a starting entity up to configurable depth. |
-| `mimir_score` | Assign a quality score (0.0–1.0) to an entity to resist decay. |
-| `mimir_conflicts` | Detect conflicting entities in the same category using trigram similarity. |
-| `mimir_decay` | Recalculate Ebbinghaus decay scores and auto-archive fully decayed entities. |
-
-### Vault tools
-
-| Tool | Description |
-|---|---|
-| `mimir_vault_export` | Export all non-archived entities to .md files with YAML frontmatter. |
-| `mimir_vault_import` | Import entities from .md files in a vault directory (idempotent). |
-
----
-
-## Database Schema
-
-```sql
--- Entities: structured, idempotent by UNIQUE(category, key)
-CREATE TABLE entities (
-    id TEXT PRIMARY KEY, category TEXT NOT NULL, key TEXT NOT NULL,
-    body_json TEXT NOT NULL DEFAULT '{}', status TEXT DEFAULT 'active',
-    type TEXT DEFAULT 'insight', tags TEXT DEFAULT '[]',
-    decay_score REAL DEFAULT 1.0, retrieval_count INTEGER DEFAULT 0,
-    layer TEXT DEFAULT 'working', topic_path TEXT DEFAULT '',
-    archived INTEGER DEFAULT 0, archive_reason TEXT DEFAULT '',
-    links TEXT DEFAULT '[]', verified INTEGER DEFAULT 0,
-    source TEXT DEFAULT 'agent',
-    created_at_unix_ms INTEGER NOT NULL,
-    last_accessed_unix_ms INTEGER NOT NULL,
-    UNIQUE(category, key)
-);
-CREATE VIRTUAL TABLE entities_fts USING fts5(body_json, content_rowid='rowid');
-
--- Journal: append-only event log with time-range access
-CREATE TABLE journal (
-    id TEXT PRIMARY KEY, event_type TEXT NOT NULL DEFAULT 'decision',
-    evaluated_json TEXT DEFAULT '{}', acted_json TEXT DEFAULT '{}',
-    forward_json TEXT DEFAULT '{}', category TEXT DEFAULT '',
-    key TEXT DEFAULT '', entity_id TEXT DEFAULT '',
-    created_at_unix_ms INTEGER NOT NULL
-);
-
--- State: key-value with optional TTL
-CREATE TABLE state (
-    key TEXT PRIMARY KEY, value_json TEXT NOT NULL DEFAULT '{}',
-    expires_at_unix_ms INTEGER, created_at_unix_ms INTEGER NOT NULL
-);
+```yaml
+connectors:
+  github:
+    enabled: true
+    token: "${GITHUB_TOKEN}"
+    repos:
+      - tcconnally/mimir
+      - tcconnally/perseus
+    days_past: 90
+    max_items_per_repo: 500
+  file_watcher:
+    enabled: true
+    paths:
+      - ~/Documents/notes
+      - ~/projects
+    extensions:
+      - .md
+      - .txt
+    debounce_ms: 1500
 ```
-
----
-
-## Entity Model
-
-The core concept in Mimir v0.5.0 is the **entity**: a structured fact with a
-composite key of `(category, key)`. This makes storage idempotent — call
-`mimir_remember` with the same category and key as many times as you want,
-and it updates the existing entity instead of creating a duplicate.
-
-Categories are user-defined. Common patterns:
-
-| Category | Example key | Body |
-|---|---|---|
-| `decision` | `use-postgres-16` | `{"decision": "Use PostgreSQL 16", "rationale": "..."}` |
-| `architecture` | `auth-module` | `{"component": "Auth", "stack": "JWT + SQLite"}` |
-| `convention` | `pr-review-required` | `{"rule": "All PRs require review before merge"}` |
-| `project` | `perseus` | `{"name": "Perseus", "repo": "tcconnally/perseus", "version": "1.0.7"}` |
-
----
-
-## Confidence Decay (Ebbinghaus Model)
-
-Mimir implements a simplified version of the Ebbinghaus forgetting curve to manage memory salience over time. Every entity has a `decay_score` from 1.0 (max confidence) down to 0.0.
-
--   **Decay:** The `mimir_decay` tool recalculates scores based on the time since an entity was last accessed. Older, unused memories fade.
--   **Reinforcement:** Calling `mimir_recall` and accessing an entity boosts its score and resets the decay clock.
--   **Archival:** Entities that fall below a certain threshold (e.g., 0.1) can be automatically archived by `mimir_compact` or `mimir_decay`, moving them out of the active set.
--   **Pinning:** You can manually assign a high score to an entity using `mimir_score` to "pin" it and prevent it from decaying.
-
-This system ensures that the agent's working memory stays relevant, surfacing frequently used information while gracefully archiving stale context.
 
 ---
 
 ## Key Properties
 
-- **Zero runtime deps** — static binary with bundled SQLite, no network needed
-- **Structured entity model** — idempotent upsert by (category, key)
-- **Category-filtered search** — narrow recall to specific categories
-- **Journal events** — append-only log with evaluated/acted/forward structure
-- **State with TTL** — key-value store with automatic expiration
-- **Entity linking** — create navigable relationships between entities
-- **FTS5 keyword search** — Relevance-ranked results (by retrieval count + recency) with LIKE fallback
-- **No LLM required** — stores and retrieves directly; no embeddings needed
-- **MCP-native** — standard JSON-RPC 2.0 over stdio
-- **Single-file database** — one SQLite file; easy to backup, copy, or inspect
+- **27 MCP tools** — full CRUD, search, RAG, embeddings, connectors, lifecycle
+- **Hybrid search** — FTS5 + dense vectors + RRF fusion
+- **Encryption at rest** — AES-256-GCM, opt-in, transparent
+- **Web dashboard** — built-in, browser-based, dark theme
+- **Zero runtime deps** — static binary with bundled SQLite
+- **No LLM required** — core operations work offline; Ollama optional for RAG/embeddings
+- **Single-file database** — easy backup, copy, inspect
+- **Fully offline** — no telemetry, no API calls, no network by default
 
 ---
-
-## Offline
-
-Mimir is fully offline after build. No telemetry, no API calls, no network requests —
-ever. The binary never dials home. You own every byte.
-
----
-
-## Roadmap (v0.5.0+)
-
-### ✅ Implemented
-- **23 MCP tools** — Full CRUD for entities, links, journal, state, vault, workspace context
-- **Ebbinghaus decay** — Time-based memory fading with retrieval boosts via `mimir_decay`
-- **Layer promotion** — Three-tier memory (buffer → working → core) based on retrieval count
-- **Vault export/import** — Export entities to Markdown files, import from vault directories
-- **Graph traversal** — Walk entity link graphs via `mimir_traverse`
-- **Workspace context** — Pre-formatted context blocks for AI agent session injection
-- **State management** — Key-value TTL state entries via `mimir_state_*` tools
-- **Conflict detection** — Near-duplicate detection via trigram similarity
-- **JSON-RPC 2.0** — Full stdio MCP server implementation
-- **FTS5 + LIKE search** — SQLite full-text search with substring fallback
-
-### 🚧 Planned
-- **Semantic search** — Optional embedding-based recall for fuzzy matching
-- **Cross-workspace federation** — Share entities across workspace boundaries
-- **Web dashboard** — Browser-based memory explorer and visualization
 
 ## License
 

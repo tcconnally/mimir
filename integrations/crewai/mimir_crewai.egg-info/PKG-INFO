@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: mimir-crewai
+Version: 0.1.0
+Summary: Mimir persistent memory tool for CrewAI agents
+Requires-Python: >=3.10
+Requires-Dist: crewai>=0.30.0

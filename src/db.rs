@@ -4,46 +4,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::connectors::Connector;
 use crate::encryption::EncryptionManager;
 use crate::models::{
-    AskParams, AskResult, AskSource, CompactReport, DecayReport, Entity, GraphEdge, GraphNode,
-    IngestParams, JournalEvent, MemoryLink, RecallParams, StateEntry, Stats,
-    TimelineParams, VaultReport,
+    AskParams, AskResult, AskSource, CompactReport, DecayReport, EmbedParams, Entity, GraphEdge,
+    GraphNode, IngestParams, JournalEvent, MemoryLink, PruneParams, PruneReport, RecallParams,
+    StateEntry, Stats, TimelineParams, VaultReport,
 };
 use crate::schema;
 
 /// Format a unix timestamp in milliseconds as an ISO 8601 UTC string.
-/// Produces a human-readable date like "2026-06-12T10:58:00Z".
 fn chrono_like(ms: i64) -> String {
-    let secs = ms / 1000;
-    // M-5: emit actual ISO 8601 UTC instead of raw epoch seconds.
-    // Avoids chrono dependency by hand-rolling a minimal formatter.
-    // Only safe for timestamps from 1970 to ~3000 (no leap-second handling).
-    if secs <= 0 {
-        return format!("{}", secs); // Unix epoch 0 or negative — return as-is
-    }
-    let days_since_epoch = secs / 86400;
-    let secs_of_day = secs % 86400;
-    // Convert days since 1970-01-01 to year/month/day
-    let mut y = 1970i64;
-    let mut d = days_since_epoch;
-    loop {
-        let days_in_year = if (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) { 366 } else { 365 };
-        if d < days_in_year { break; }
-        d -= days_in_year;
-        y += 1;
-    }
-    let leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
-    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut m = 0usize;
-    while m < 12 && d >= month_days[m] {
-        d -= month_days[m];
-        m += 1;
-    }
-    let month = m + 1;
-    let day = d + 1;
-    let h = secs_of_day / 3600;
-    let min = (secs_of_day % 3600) / 60;
-    let s = secs_of_day % 60;
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, month, day, h, min, s)
+    crate::util::format_iso8601(ms / 1000)
 }
 
 pub fn now_ms() -> i64 {
@@ -58,7 +27,7 @@ pub struct Database {
     db_path: String,
     encryption: Option<EncryptionManager>,
     llm_config: LlmConfig,
-    pub connectors: Vec<Box<dyn Connector>>,
+    connectors: Vec<Box<dyn Connector>>,
 }
 
 /// Configuration for the LLM integration (Ollama API).
@@ -115,8 +84,15 @@ impl Database {
     }
 
     /// Returns true if encryption is enabled.
+    #[allow(dead_code)]
+    #[allow(dead_code)]
     pub fn encryption_enabled(&self) -> bool {
         self.encryption.is_some()
+    }
+
+    /// Replace the connector list (used at startup to load configured connectors).
+    pub fn set_connectors(&mut self, connectors: Vec<Box<dyn Connector>>) {
+        self.connectors = connectors;
     }
 
     /// Configure LLM integration for the mimir_ask tool.
@@ -234,7 +210,10 @@ impl Database {
                     }
                     for doc in docs {
                         let entity = Entity {
-                            id: format!("ingest-{}", uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string()),
+                            id: {
+                                let raw = uuid::Uuid::new_v4().to_string().replace('-', "");
+                                format!("ingest-{}", &raw[..12.min(raw.len())])
+                            },
                             category: doc.category,
                             key: doc.key,
                             body_json: doc.body_json,
@@ -243,6 +222,8 @@ impl Database {
                             tags: doc.tags,
                             decay_score: 1.0,
                             retrieval_count: 0,
+                            always_on: false,
+                            certainty: 0.5,
                             layer: "buffer".to_string(),
                             topic_path: String::new(),
                             archived: false,
@@ -274,6 +255,7 @@ impl Database {
     }
 
     /// Store a dense vector embedding for an entity.
+    #[allow(dead_code)]
     pub fn store_embedding(
         &self,
         id: &str,
@@ -290,6 +272,149 @@ impl Database {
         Ok(())
     }
 
+    /// Generate and store embeddings for entities via Ollama /api/embed.
+    pub fn embed_entity(
+        &self,
+        params: &EmbedParams,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        // Batch mode: embed all entities in a category that lack embeddings
+        if let Some(ref cat) = params.batch_category {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, body_json FROM entities WHERE category = ?1 AND archived = 0 AND embedding IS NULL LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![cat, params.batch_limit as i64], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+
+            let mut embedded = 0usize;
+            let mut errors = Vec::new();
+            for row in rows {
+                let (id, body) = row?;
+                match self.call_ollama_embed(&body) {
+                    Ok(vec) => {
+                        self.store_embedding(&id, &vec)?;
+                        embedded += 1;
+                    }
+                    Err(e) => errors.push(format!("{}: {}", id, e)),
+                }
+            }
+            return Ok(serde_json::json!({
+                "embedded": embedded,
+                "batch_category": cat,
+                "errors": errors,
+            }));
+        }
+
+        // Single entity mode: require category + key
+        let category = params.category.as_ref().ok_or("category is required")?;
+        let key = params.key.as_ref().ok_or("key is required")?;
+        let entity = self
+            .get_entity(category, key)?
+            .ok_or_else(|| format!("entity not found: {}/{}", category, key))?;
+
+        let text = params.text.as_ref().unwrap_or(&entity.body_json);
+        let embedding = self.call_ollama_embed(text)?;
+        self.store_embedding(&entity.id, &embedding)?;
+
+        Ok(serde_json::json!({
+            "embedded": 1,
+            "id": entity.id,
+            "dimensions": embedding.len(),
+        }))
+    }
+
+    /// Call Ollama /api/embed endpoint to get a dense vector for a text.
+    fn call_ollama_embed(&self, text: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        if !self.llm_config.enabled {
+            return Err("LLM is not enabled. Set --llm-endpoint to use embedding.".into());
+        }
+        let endpoint = self.llm_config.endpoint.replace("/api/generate", "/api/embed");
+        let body = serde_json::json!({
+            "model": self.llm_config.model,
+            "input": text,
+        });
+        let body_str = serde_json::to_string(&body)?;
+        let response = ureq::post(&endpoint)
+            .set("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(self.llm_config.timeout_secs))
+            .send_string(&body_str)
+            .map_err(|e| format!("Ollama embed API call failed: {}", e))?;
+        let response_body = response
+            .into_string()
+            .map_err(|e| format!("Failed to read embed response: {}", e))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&response_body).map_err(|e| format!("Invalid embed response: {}", e))?;
+
+        let embeddings = json["embeddings"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_array())
+            .ok_or("No embeddings in Ollama response")?;
+
+        let vec: Vec<f32> = embeddings
+            .iter()
+            .filter_map(|v| v.as_f64().map(|f| f as f32))
+            .collect();
+        Ok(vec)
+    }
+
+    /// Bulk archive entities matching criteria (category, decay threshold, age).
+    pub fn prune(&self, params: &PruneParams) -> Result<PruneReport, Box<dyn std::error::Error>> {
+        let mut conditions = vec!["archived = 0".to_string()];
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(ref cat) = params.category {
+            conditions.push(format!("category = ?{}", param_values.len() + 1));
+            param_values.push(Box::new(cat.clone()));
+        }
+        if let Some(min_d) = params.min_decay {
+            conditions.push(format!("decay_score < ?{}", param_values.len() + 1));
+            param_values.push(Box::new(min_d));
+        }
+        if let Some(days) = params.older_than_days {
+            let cutoff = crate::db::now_ms() - (days as i64 * 86400 * 1000);
+            conditions.push(format!("created_at_unix_ms < ?{}", param_values.len() + 1));
+            param_values.push(Box::new(cutoff));
+        }
+
+        let reason = format!(
+            "prune: cat={:?} decay<{:?} age>{:?}d",
+            params.category, params.min_decay, params.older_than_days
+        );
+
+        // Count matching
+        let count_sql = format!("SELECT COUNT(*) FROM entities WHERE {}", conditions.join(" AND "));
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+        let examined: usize = self
+            .conn
+            .query_row(&count_sql, param_refs.as_slice(), |r| r.get::<_, i64>(0))?
+            as usize;
+
+        if params.dry_run {
+            return Ok(PruneReport { archived: 0, examined, dry_run: true, reason });
+        }
+
+        let limit = if params.limit == 0 { String::new() } else { format!(" LIMIT {}", params.limit) };
+        let sql = format!(
+            "UPDATE entities SET archived = 1, archive_reason = ?1 WHERE {} {}",
+            conditions.join(" AND "), limit
+        );
+        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(reason.clone())];
+        all_params.extend(param_values);
+        let all_refs: Vec<&dyn rusqlite::types::ToSql> =
+            all_params.iter().map(|p| p.as_ref()).collect();
+        let archived = self.conn.execute(&sql, all_refs.as_slice())?;
+
+        // Clean FTS5 for archived entities
+        let _ = self.conn.execute(
+            "DELETE FROM entities_fts WHERE rowid IN (SELECT rowid FROM entities WHERE archive_reason = ?1)",
+            params![reason],
+        );
+
+        Ok(PruneReport { archived, examined, dry_run: false, reason })
+    }
+
     /// Dense vector search: brute-force cosine similarity over all entities with embeddings.
     /// Returns top-k entities sorted by similarity (highest first).
     pub fn dense_search(
@@ -297,12 +422,16 @@ impl Database {
         query_vec: &[f32],
         limit: usize,
     ) -> Result<Vec<(Entity, f64)>, Box<dyn std::error::Error>> {
+        let max_scan = 50_000; // safety ceiling — databases beyond this should use HNSW
         let mut stmt = self.conn.prepare(
-            "SELECT id, category, key, body_json, status, type, tags,
+            &format!(
+                "SELECT id, category, key, body_json, status, type, tags,
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding
-             FROM entities WHERE archived = 0 AND embedding IS NOT NULL",
+             FROM entities WHERE archived = 0 AND embedding IS NOT NULL LIMIT {}",
+                max_scan
+            ),
         )?;
 
         let enc = self.encryption.as_ref();
@@ -371,6 +500,14 @@ impl Database {
     /// Recalculate decay scores for all non-archived entities.
     /// Called periodically or via mimir_decay tool.
     pub fn decay_tick(&self) -> Result<DecayReport, Box<dyn std::error::Error>> {
+        self.decay_tick_with_limit(None)
+    }
+
+    /// Like decay_tick but with an optional max entities to process per call.
+    fn decay_tick_with_limit(
+        &self,
+        max_entities: Option<i64>,
+    ) -> Result<DecayReport, Box<dyn std::error::Error>> {
         let now = now_ms();
         let total: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM entities WHERE archived = 0",
@@ -378,10 +515,16 @@ impl Database {
             |r| r.get(0),
         )?;
 
-        // Update decay_score for all non-archived entities
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, last_accessed_unix_ms FROM entities WHERE archived = 0")?;
+        // Update decay_score for non-archived entities, optionally capped
+        let sql = if let Some(max) = max_entities {
+            format!(
+                "SELECT id, last_accessed_unix_ms FROM entities WHERE archived = 0 LIMIT {}",
+                max
+            )
+        } else {
+            "SELECT id, last_accessed_unix_ms FROM entities WHERE archived = 0".to_string()
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
 
         let mut updated = 0i64;
@@ -471,7 +614,7 @@ impl Database {
         threshold: f64,
     ) -> Result<Option<String>, Box<dyn std::error::Error>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, body_json FROM entities WHERE category = ?1 AND archived = 0 LIMIT 100",
+            "SELECT id, body_json FROM entities WHERE category = ?1 AND archived = 0",
         )?;
         let rows = stmt.query_map(params![category], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -550,8 +693,9 @@ impl Database {
                     decay_score = ?5, layer = ?6, topic_path = ?7,
                     archived = ?8, archive_reason = ?9, links = ?10,
                     verified = ?11, source = ?12, last_accessed_unix_ms = ?13,
+                    always_on = ?14, certainty = ?15,
                     retrieval_count = retrieval_count + 1
-                 WHERE id = ?14",
+                 WHERE id = ?16",
                 params![
                     body_encrypted,
                     entity.status,
@@ -566,6 +710,8 @@ impl Database {
                     verified_int,
                     entity.source,
                     now,
+                    entity.always_on as i32,
+                    entity.certainty,
                     id,
                 ],
             )?;
@@ -605,11 +751,11 @@ impl Database {
                  (id, category, key, body_json, status, type, tags,
                   decay_score, retrieval_count, layer, topic_path,
                   archived, archive_reason, links, verified, source,
-                  created_at_unix_ms, last_accessed_unix_ms)
+                  always_on, certainty, created_at_unix_ms, last_accessed_unix_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                          ?8, ?9, ?10, ?11,
                          ?12, ?13, ?14, ?15, ?16,
-                         ?17, ?18)",
+                         ?17, ?18, ?19, ?20)",
                 params![
                     id,
                     entity.category,
@@ -627,6 +773,8 @@ impl Database {
                     links_json,
                     verified_int,
                     entity.source,
+                    entity.always_on as i32,
+                    entity.certainty,
                     entity.created_at_unix_ms,
                     entity.last_accessed_unix_ms,
                 ],
@@ -692,18 +840,10 @@ impl Database {
                 .collect();
 
             if !words.is_empty() {
-                // FTS5 query: escape special chars and quote each term
+                // FTS5 query: wrap each term in double-quotes to treat special chars literally
                 let escape_fts = |s: &str| -> String {
-                    s.chars()
-                        .map(|c| match c {
-                            '"' | '\'' | '+' | '-' | '*' | '^' | '(' | ')' | '[' | ']' | '{'
-                            | '}' | '~' | '!' | '@' | '#' | '$' | '%' | '&' | '/' | ':' | '<'
-                            | '>' | '=' | '|' | '?' | ',' | '.' | '`' | ';' | '\\' => ' '.into(),
-                            _ => c.to_string(),
-                        })
-                        .collect::<String>()
-                        .trim()
-                        .to_string()
+                    // Double any double-quotes within the term (FTS5 escaping)
+                    s.replace('"', "\"\"")
                 };
                 let fts_query = words
                     .iter()
@@ -712,7 +852,7 @@ impl Database {
                         if escaped.is_empty() {
                             "\"\"".to_string()
                         } else {
-                            format!("\"{}\"", escaped.replace('"', "\"\""))
+                            format!("\"{}\"", escaped)
                         }
                     })
                     .collect::<Vec<_>>()
@@ -778,6 +918,15 @@ impl Database {
             }
         }
 
+        // Filter by always_on flag
+        if let Some(ao) = params.always_on {
+            conditions.push(format!(
+                "always_on = ?{}",
+                param_values.len() + 1
+            ));
+            param_values.push(Box::new(ao as i32));
+        }
+
         // Exclude archived unless explicitly requested
         if !params.include_archived {
             conditions.push("archived = 0".to_string());
@@ -804,6 +953,12 @@ impl Database {
         sql.push_str(&format!(" LIMIT ?{}", param_values.len() + 1));
         param_values.push(Box::new(safe_limit));
 
+        if params.offset > 0 {
+            let safe_offset = params.offset.clamp(0, 10000);
+            sql.push_str(&format!(" OFFSET ?{}", param_values.len() + 1));
+            param_values.push(Box::new(safe_offset));
+        }
+
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
 
@@ -815,7 +970,7 @@ impl Database {
 
         let mut items = Vec::new();
         for row in rows {
-            let entity = row?;
+            let mut entity = row?;
             // Update retrieval count, recency, decay boost, and layer
             if !params.skip_side_effects {
                 let new_count = entity.retrieval_count + 1;
@@ -828,10 +983,98 @@ impl Database {
                     params![new_count, now_ms(), boosted_decay, new_layer, entity.id],
                 );
             }
+
+            // #103: Apply preview cap with drill-down footer (BrainDB-inspired)
+            if let Some(cap) = params.preview_cap {
+                let cap = cap as usize;
+                if entity.body_json.len() > cap {
+                    let extra = entity.body_json.len() - cap;
+                    let truncated = entity.body_json[..cap].to_string();
+                    let footer = format!(
+                        "\n--truncated ({} more chars)-- full body: get_entity(\"{}\"). If large, delegate_to_subagent to read/extract it without polluting this context.",
+                        extra, entity.id
+                    );
+                    entity.body_json = format!("{}{}", truncated, footer);
+                    items.push(entity);
+                    continue;
+                }
+            }
             items.push(entity);
         }
 
+        // #106: Content witness signal (additive boost, never penalizes)
+        if params.content_weight > 0.0 && !params.query.is_empty() {
+            let query_lower = params.query.to_lowercase();
+            let size_pivot: f64 = 5000.0;
+            for entity in &mut items {
+                let body_lower = entity.body_json.to_lowercase();
+                if body_lower.contains(&query_lower) {
+                    let content_len = entity.body_json.len() as f64;
+                    let damper = 1.0 / (1.0 + (1.0 + content_len / size_pivot.max(1.0)).log10());
+                    // Boost decay_score as a proxy for ranking (additive, never penalizes)
+                    entity.decay_score = (entity.decay_score + params.content_weight * damper).min(1.0);
+                }
+            }
+            // Re-sort after content witness boost
+            items.sort_by(|a, b| b.decay_score.partial_cmp(&a.decay_score).unwrap_or(std::cmp::Ordering::Equal));
+        }
+
+        // #105: Two-level diversity quota (BrainDB-inspired)
+        // Per-keyword halving: each distinct keyword gets ceil(max_results x halving^n) slots
+        if params.diversity_halving < 1.0 && params.diversity_halving > 0.0 && !items.is_empty() {
+            items = Self::apply_diversity_quota(items, params.limit as usize, params.diversity_halving, &params.query);
+        }
+
         Ok(items)
+    }
+
+    /// #105: Apply per-keyword halving diversity quota.
+    /// Each distinct matched keyword gets ceil(max_results x halving^n) slots,
+    /// preventing a single popular keyword from monopolizing results.
+    fn apply_diversity_quota(
+        mut items: Vec<Entity>,
+        max_results: usize,
+        halving: f64,
+        query: &str,
+    ) -> Vec<Entity> {
+        // Extract the dominant matched keyword for each entity
+        // (the first query word that appears in the entity body)
+        let query_words: Vec<&str> = query.split_whitespace().filter(|w| w.len() >= 3).collect();
+        let mut kw_slots: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        let mut kw_order: Vec<String> = Vec::new();
+        let mut out: Vec<Entity> = Vec::new();
+        let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for entity in items.drain(..) {
+            if out.len() >= max_results {
+                break;
+            }
+            if taken.contains(&entity.id) {
+                continue;
+            }
+
+            // Find dominant keyword: first query word found in body_json
+            let body_lower = entity.body_json.to_lowercase();
+            let dom_kw = query_words.iter().find(|w| body_lower.contains(&w.to_lowercase())).map(|w| w.to_string());
+
+            if let Some(ref kw) = dom_kw {
+                if !kw_slots.contains_key(kw) {
+                    let n = kw_slots.len();
+                    kw_slots.insert(kw.clone(), (max_results as f64 * halving.powi(n as i32)).ceil() as i64);
+                    kw_order.push(kw.clone());
+                }
+                let remaining = kw_slots.get_mut(kw).unwrap();
+                if *remaining <= 0 {
+                    continue; // This keyword's quota exhausted
+                }
+                *remaining -= 1;
+            }
+
+            taken.insert(entity.id.clone());
+            out.push(entity);
+        }
+
+        out
     }
 
     /// Get a single entity by category and key.
@@ -1048,6 +1291,12 @@ impl Database {
         let safe_limit = params.limit.clamp(0, 1000);
         sql.push_str(&format!(" LIMIT ?{}", param_values.len() + 1));
         param_values.push(Box::new(safe_limit));
+
+        if params.offset > 0 {
+            let safe_offset = params.offset.clamp(0, 10000);
+            sql.push_str(&format!(" OFFSET ?{}", param_values.len() + 1));
+            param_values.push(Box::new(safe_offset));
+        }
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
@@ -1477,6 +1726,9 @@ impl Database {
 
     /// Detect conflicting entities — entities in the same category with very different body_json.
     /// Returns pairs of entities with low trigram similarity (potential conflicts).
+    /// #107: Also factors in certainty — low-certainty entities on the same topic
+    /// amplify the conflict signal. Two entities with certainty < 0.4 on similar
+    /// topics are flagged even at higher similarity thresholds.
     pub fn detect_conflicts(
         &self,
         category: &str,
@@ -1485,7 +1737,7 @@ impl Database {
         offset: i64,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, key, body_json FROM entities WHERE category = ?1 AND archived = 0
+            "SELECT id, key, body_json, certainty FROM entities WHERE category = ?1 AND archived = 0
              ORDER BY last_accessed_unix_ms DESC LIMIT 200 OFFSET ?2"
         )?;
         let rows = stmt.query_map(params![category, offset], |r| {
@@ -1493,23 +1745,32 @@ impl Database {
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
+                r.get::<_, f64>(3).unwrap_or(0.5),
             ))
         })?;
 
-        let entities: Vec<(String, String, String)> = rows.filter_map(|r| r.ok()).collect();
+        let entities: Vec<(String, String, String, f64)> = rows.filter_map(|r| r.ok()).collect();
         let mut conflicts = Vec::new();
 
         for i in 0..entities.len() {
             for j in (i + 1)..entities.len() {
-                let (ref id1, ref key1, ref body1) = entities[i];
-                let (ref id2, ref key2, ref body2) = entities[j];
+                let (ref id1, ref key1, ref body1, cert1) = entities[i];
+                let (ref id2, ref key2, ref body2, cert2) = entities[j];
                 let sim = Self::trigram_similarity(body1, body2);
-                if sim < threshold {
+                // #107: Certainty-adjusted threshold — low-certainty pairs need less trigram overlap to flag
+                let min_cert = cert1.min(cert2);
+                let adj_threshold = if min_cert < 0.4 {
+                    threshold * 1.5 // Relaxed threshold: catch more potential conflicts when certainty is low
+                } else {
+                    threshold
+                };
+                if sim < adj_threshold {
                     conflicts.push(serde_json::json!({
-                        "entity_a": {"id": id1, "key": key1},
-                        "entity_b": {"id": id2, "key": key2},
+                        "entity_a": {"id": id1, "key": key1, "certainty": cert1},
+                        "entity_b": {"id": id2, "key": key2, "certainty": cert2},
                         "similarity": sim,
-                        "conflict_likely": sim < 0.3
+                        "conflict_likely": sim < 0.3 || min_cert < 0.3,
+                        "certainty_boosted": min_cert < 0.4
                     }));
                     if conflicts.len() as i64 >= limit {
                         break;
@@ -1808,7 +2069,7 @@ last_accessed: {}
             let entity = Entity {
                 id: if id.is_empty() {
                     let raw = uuid::Uuid::new_v4().to_string().replace('-', "");
-                    format!("mem-{}", &raw[..12])
+                    format!("mem-{}", &raw[..12.min(raw.len())])
                 } else {
                     id
                 },
@@ -1843,6 +2104,8 @@ last_accessed: {}
                 links: vec![],
                 verified: false,
                 source: "vault-import".to_string(),
+                always_on: false,
+                certainty: 0.5,
                 created_at_unix_ms: now_ms(),
                 last_accessed_unix_ms: now_ms(),
                 embedding: None,
@@ -1879,6 +2142,15 @@ last_accessed: {}
     ) -> Result<String, Box<dyn std::error::Error>> {
         let mut all_entities = Vec::new();
 
+        // #104: Always-on entities — injected unconditionally, before query results
+        let always_on_params = RecallParams {
+            always_on: Some(true),
+            limit: 50,
+            skip_side_effects: true,
+            ..RecallParams::default()
+        };
+        let always_on_entities = self.recall(&always_on_params)?;
+
         if categories.is_empty() {
             // No filter — get top entities overall (read-only, no side effects)
             let params = RecallParams {
@@ -1902,6 +2174,23 @@ last_accessed: {}
 
         // Format as markdown
         let mut ctx = String::from("## Mimir Context\n\n");
+
+        // Always-on entities first, visually distinct
+        if !always_on_entities.is_empty() {
+            ctx.push_str("### Always On\n\n");
+            for entity in &always_on_entities {
+                ctx.push_str(&format!(
+                    "- [always-on] [{}] **{}** — {} (retrievals: {}, decay: {:.2})\n",
+                    entity.category,
+                    entity.key,
+                    truncate_str(&entity.body_json, 100),
+                    entity.retrieval_count,
+                    entity.decay_score,
+                ));
+            }
+            ctx.push_str("\n");
+        }
+
         for entity in &all_entities {
             ctx.push_str(&format!(
                 "- [{}] **{}** — {} (retrievals: {}, decay: {:.2})\n",
@@ -1912,7 +2201,7 @@ last_accessed: {}
                 entity.decay_score,
             ));
         }
-        ctx.push_str(&format!("\n> {} entities recalled\n", all_entities.len()));
+        ctx.push_str(&format!("\n> {} entities recalled\n", all_entities.len() + always_on_entities.len()));
 
         Ok(ctx)
     }
@@ -1928,6 +2217,184 @@ last_accessed: {}
             cats.push(row?);
         }
         Ok(cats)
+    }
+
+    /// recall_when search: match a trigger context against entities' recall_when fields.
+    /// Searches body_json for `"recall_when": ["...trigger..."]` patterns that contain
+    /// any substring match against the given context text.
+    pub fn recall_when(
+        &self,
+        context: &str,
+        limit: i64,
+    ) -> Result<Vec<Entity>, Box<dyn std::error::Error>> {
+        let words: Vec<&str> = context
+            .split_whitespace()
+            .filter(|w| w.len() >= 3)
+            .collect();
+
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build LIKE clauses for each significant word in the context
+        // matching against body_json which should contain "recall_when" array entries
+        let mut like_parts = Vec::new();
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        for (i, word) in words.iter().enumerate() {
+            let param_idx = i + 1;
+            like_parts.push(format!("body_json LIKE ?{}", param_idx));
+            params_vec.push(Box::new(format!("%recall_when%{}%", word.replace('\'', "''"))));
+        }
+
+        let sql = format!(
+            "SELECT id, category, key, body_json, status, type, tags,
+                    decay_score, retrieval_count, layer, topic_path,
+                    archived, archive_reason, links, verified, source,
+                    created_at_unix_ms, last_accessed_unix_ms
+             FROM entities
+             WHERE archived = 0 AND ({})
+             ORDER BY decay_score DESC, retrieval_count DESC
+             LIMIT ?{}",
+            like_parts.join(" OR "),
+            params_vec.len() + 1
+        );
+
+        let safe_limit = limit.clamp(0, 100);
+        params_vec.push(Box::new(safe_limit));
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let enc = self.encryption.as_ref();
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            entity_from_row(row, enc)
+        })?;
+
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row?);
+        }
+        Ok(items)
+    }
+
+    /// Coherence daemon: auto-groom the memory with promote, decay, link, archive.
+    pub fn cohere(
+        &self,
+        params: &crate::models::CohereParams,
+    ) -> Result<crate::models::CohereReport, Box<dyn std::error::Error>> {
+        let now = now_ms();
+        let mut promoted: i64 = 0;
+        let mut decayed: i64 = 0;
+        let mut linked: i64 = 0;
+        let mut archived: i64 = 0;
+
+        // Count total examined
+        let examined: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM entities WHERE archived = 0",
+            [],
+            |r| r.get(0),
+        )?;
+
+        if params.dry_run {
+            return Ok(crate::models::CohereReport {
+                promoted: 0,
+                decayed: 0,
+                linked: 0,
+                archived: 0,
+                entities_examined: examined,
+                dry_run: true,
+                completed_at_unix_ms: now,
+            });
+        }
+
+        // 1. Promote: buffer layer entities with retrieval_count >= threshold → working
+        let promote_threshold = if params.promote_threshold > 0 {
+            params.promote_threshold
+        } else {
+            3
+        };
+        promoted = self.conn.execute(
+            "UPDATE entities SET layer = 'working' WHERE layer = 'buffer' AND retrieval_count >= ?1",
+            params![promote_threshold],
+        )? as i64;
+
+        // 2. Decay: apply Ebbinghaus decay to all non-archived entities
+        // Formula: new_score = current_score * 0.95 (gentle decay)
+        let decayed_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM entities WHERE archived = 0 AND decay_score > 0.01",
+            [],
+            |r| r.get(0),
+        )?;
+        self.conn.execute(
+            "UPDATE entities SET decay_score = decay_score * 0.95 WHERE archived = 0 AND decay_score > 0.01",
+            [],
+        )?;
+        decayed = decayed_count;
+
+        // 3. Link: auto-link entities with shared tags within same category
+        // Find entities with overlapping tags who aren't already linked
+        let mut stmt = self.conn.prepare(
+            "SELECT e1.id, e1.category, e1.key, e1.tags, e2.id as e2_id
+             FROM entities e1
+             JOIN entities e2 ON e1.category = e2.category AND e1.id < e2.id
+             WHERE e1.archived = 0 AND e2.archived = 0
+             AND e1.tags != '[]' AND e2.tags != '[]'
+             LIMIT ?1",
+        )?;
+
+        let max_links = params.max_links.clamp(0, 100) as i64;
+        let rows = stmt.query_map(params![max_links], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+
+        for row in rows {
+            let (e1_id, cat, key, _tags1_str, e2_id) = row?;
+
+            // Create a simple "related" link from e1 to e2
+            if let Err(e) = self.link(&cat, &key, &e2_id, "auto-related") {
+                eprintln!("mimir: cohere link error: {}", e);
+                continue;
+            }
+            linked += 1;
+        }
+
+        // 4. Archive: entities below decay threshold
+        let archive_threshold = if params.archive_threshold > 0.0 {
+            params.archive_threshold
+        } else {
+            0.05
+        };
+        archived = self.conn.execute(
+            "UPDATE entities SET archived = 1, archive_reason = 'auto-archived by coherence daemon (decay < threshold)'
+             WHERE archived = 0 AND decay_score < ?1",
+            params![archive_threshold],
+        )? as i64;
+
+        // Clean FTS5 entries for archived entities
+        if archived > 0 {
+            self.conn.execute(
+                "DELETE FROM entities_fts WHERE rowid IN (SELECT rowid FROM entities WHERE archived = 1)",
+                [],
+            )?;
+        }
+
+        Ok(crate::models::CohereReport {
+            promoted,
+            decayed,
+            linked,
+            archived,
+            entities_examined: examined,
+            dry_run: false,
+            completed_at_unix_ms: now,
+        })
     }
 }
 
@@ -2037,6 +2504,8 @@ fn entity_from_row(
         links,
         verified: verified != 0,
         source: row.get(15)?,
+        always_on: row.get::<_, i32>(19).unwrap_or(0) != 0,
+        certainty: row.get::<_, f64>(20).unwrap_or(0.5),
         created_at_unix_ms: row.get(16)?,
         last_accessed_unix_ms: row.get(17)?,
         embedding: None,
@@ -2074,6 +2543,8 @@ mod tests {
             links: vec![],
             verified: false,
             source: "test".to_string(),
+            always_on: false,
+            certainty: 0.5,
             created_at_unix_ms: now_ms(),
             last_accessed_unix_ms: now_ms(),
             embedding: None,
