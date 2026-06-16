@@ -1,0 +1,10 @@
+{
+  "id": "mimir-vault-sync",
+  "name": "Mimir Vault Sync",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Bidirectional sync between Obsidian notes and the Mimir persistent memory MCP server. Push notes to Mimir as agent memories, pull Mimir entities into Obsidian.",
+  "author": "tcconnally",
+  "authorUrl": "https://github.com/tcconnally/mimir",
+  "isDesktopOnly": true
+}
