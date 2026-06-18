@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+import threading
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -87,6 +88,83 @@ class MimirStore(BaseStore):
         self.ollama_url = ollama_url
         self.embedding_model = embedding_model
         self._proc: Optional[subprocess.Popen] = None
+        self._req_id: int = 0
+        self._lock = threading.Lock()
+
+    def _ensure_session(self):
+        """Spawn a persistent mimir process if one isn't already running."""
+        if self._proc is not None and self._proc.poll() is None:
+            return
+
+        args = [self.binary, "--db", self.db_path]
+        if self.encryption_key:
+            args.extend(["--encryption-key", self.encryption_key])
+        if self.ollama_url:
+            args.extend(["--ollama-url", self.ollama_url])
+        if self.embedding_model:
+            args.extend(["--embedding-model", self.embedding_model])
+
+        self._proc = subprocess.Popen(
+            args,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self._req_id = 0
+
+        # Send initialize
+        init_req = json.dumps({
+            "jsonrpc": "2.0", "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "langgraph-mimir", "version": "1.0.0"},
+            },
+        })
+        try:
+            self._proc.stdin.write(init_req + "\n")
+            self._proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            self._proc = None
+            raise RuntimeError("Failed to initialize mimir process")
+
+    def _read_response(self, expect_id: int) -> Optional[dict]:
+        """Read a single JSON-RPC response matching *expect_id*."""
+        assert self._proc is not None
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            if self._proc.poll() is not None:
+                return None
+            line = self._proc.stdout.readline()
+            if not line:
+                time.sleep(0.01)
+                continue
+            try:
+                msg = json.loads(line.strip())
+            except json.JSONDecodeError:
+                continue
+            if isinstance(msg, dict) and msg.get("id") == expect_id:
+                return msg
+        return None
+
+    def _close_session(self):
+        if self._proc is None:
+            return
+        try:
+            self._proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            self._proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait()
+        self._proc = None
+
+    def __del__(self):
+        self._close_session()
 
     def _namespace_to_category(self, namespace: tuple[str, ...]) -> str:
         """Convert LangGraph namespace tuple to Mimir category string."""
@@ -125,75 +203,43 @@ class MimirStore(BaseStore):
         return {}
 
     def _call_mimir(self, method: str, params: dict) -> dict:
-        """Call a Mimir MCP tool via a stdio subprocess.
+        """Call a Mimir MCP tool via the persistent stdio session.
 
-        Sends ``initialize`` and ``tools/call`` in one write and reads all
-        output via :meth:`subprocess.Popen.communicate`, which is portable
-        across platforms (the previous ``select``-based reader did not work on
-        Windows, where ``select`` cannot poll pipes). Returns the unwrapped
-        Mimir payload dict.
+        The process is spawned once on first call and reused across all
+        subsequent calls — no per-call cold-start overhead.
         """
-        args = [self.binary, "--db", self.db_path]
-        if self.encryption_key:
-            args.extend(["--encryption-key", self.encryption_key])
-        if self.ollama_url:
-            args.extend(["--ollama-url", self.ollama_url])
-        if self.embedding_model:
-            args.extend(["--embedding-model", self.embedding_model])
-
-        init_req = json.dumps({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "langgraph-mimir", "version": "1.0.0"},
-            },
-        })
-        call_req = json.dumps({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {"name": method, "arguments": params},
-        })
-
-        proc = subprocess.Popen(
-            args,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        try:
-            stdout, _ = proc.communicate(
-                input=init_req + "\n" + call_req + "\n", timeout=self.timeout
-            )
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
-            raise TimeoutError(f"Mimir {method} timed out after {self.timeout}s")
-
-        # Find the JSON-RPC response to our tools/call (id == 2); other lines
-        # are the initialize response and any log noise.
-        response: dict | None = None
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
+        with self._lock:
             try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(msg, dict) and msg.get("id") == 2:
-                response = msg
-                break
+                self._ensure_session()
+            except RuntimeError as e:
+                raise RuntimeError(f"Mimir session failed: {e}")
 
-        if response is None:
-            raise RuntimeError(f"No response from Mimir for {method}")
-        if response.get("error"):
-            raise RuntimeError(f"Mimir error: {response['error']}")
-        return self._unwrap_result(response.get("result", {}))
+            # Read and discard the initialize response (first call only)
+            if self._req_id == 1:
+                self._read_response(1)
+
+            req_id = self._req_id + 2
+            call_req = json.dumps({
+                "jsonrpc": "2.0", "id": req_id,
+                "method": "tools/call",
+                "params": {"name": method, "arguments": params},
+            })
+
+            try:
+                self._proc.stdin.write(call_req + "\n")
+                self._proc.stdin.flush()
+                self._req_id = req_id
+            except (BrokenPipeError, OSError):
+                self._proc = None
+                raise RuntimeError("Mimir process died during call")
+
+            response = self._read_response(req_id)
+            if response is None:
+                self._close_session()
+                raise RuntimeError(f"No response from Mimir for {method}")
+            if response.get("error"):
+                raise RuntimeError(f"Mimir error ({method}): {response['error']}")
+            return self._unwrap_result(response.get("result", {}))
 
     @staticmethod
     def _ms_to_dt(ms: Any) -> datetime:
