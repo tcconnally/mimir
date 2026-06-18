@@ -27,6 +27,7 @@ pub struct Database {
     db_path: String,
     encryption: Option<EncryptionManager>,
     llm_config: LlmConfig,
+    #[allow(dead_code)]
     embedding_config: crate::embedding::EmbeddingConfig,
     connectors: Vec<Box<dyn Connector>>,
 }
@@ -104,7 +105,14 @@ impl Database {
     }
 
     /// Configure LLM integration for the mimir_ask tool.
-    pub fn set_llm(&mut self, enabled: bool, endpoint: &str, model: &str, api_key: Option<&str>, embedding_endpoint: Option<&str>) {
+    pub fn set_llm(
+        &mut self,
+        enabled: bool,
+        endpoint: &str,
+        model: &str,
+        api_key: Option<&str>,
+        embedding_endpoint: Option<&str>,
+    ) {
         self.llm_config = LlmConfig {
             enabled,
             endpoint: endpoint.to_string(),
@@ -143,11 +151,7 @@ impl Database {
         let mut context_parts = Vec::new();
         let mut sources = Vec::new();
         for e in &entities {
-            let snippet: String = e
-                .body_json
-                .chars()
-                .take(600)
-                .collect();
+            let snippet: String = e.body_json.chars().take(600).collect();
             context_parts.push(format!("[key: {}] {}", e.key, snippet));
             sources.push(AskSource {
                 key: e.key.clone(),
@@ -197,7 +201,10 @@ impl Database {
     }
 
     /// Run connector ingestion: fetch documents from external sources and store as entities.
-    pub fn ingest(&self, params: &IngestParams) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    pub fn ingest(
+        &self,
+        params: &IngestParams,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         if self.connectors.is_empty() {
             return Err("No connectors configured. Add connectors to enable ingestion.".into());
         }
@@ -254,7 +261,9 @@ impl Database {
                             Err(e) => errors.push(format!("{}/{}: {}", name, entity.key, e)),
                         }
                     }
-                    self.connectors[i].last_sync().store(now, std::sync::atomic::Ordering::SeqCst);
+                    self.connectors[i]
+                        .last_sync()
+                        .store(now, std::sync::atomic::Ordering::SeqCst);
                 }
                 Err(e) => errors.push(format!("{}: {}", name, e)),
             }
@@ -275,10 +284,7 @@ impl Database {
         id: &str,
         embedding: &[f32],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let blob: Vec<u8> = embedding
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+        let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
         self.conn.execute(
             "UPDATE entities SET embedding = ?1 WHERE id = ?2",
             params![blob, id],
@@ -345,10 +351,14 @@ impl Database {
         }
         // Determine embedding endpoint: explicit --embedding-endpoint wins,
         // otherwise derive from the LLM endpoint by swapping /api/generate → /api/embed.
-        let endpoint = self.llm_config.embedding_endpoint.as_deref().unwrap_or_else(|| {
-            // Default: replace Ollama generate endpoint with embed
-            self.llm_config.endpoint.as_str()
-        });
+        let endpoint = self
+            .llm_config
+            .embedding_endpoint
+            .as_deref()
+            .unwrap_or({
+                // Default: replace Ollama generate endpoint with embed
+                self.llm_config.endpoint.as_str()
+            });
         let effective_endpoint = if self.llm_config.embedding_endpoint.is_some() {
             // Explicit endpoint: use as-is
             endpoint.to_string()
@@ -360,17 +370,10 @@ impl Database {
         // Detect OpenAI-compatible format: endpoint contains /v1/
         let is_openai = effective_endpoint.contains("/v1/");
 
-        let body = if is_openai {
-            serde_json::json!({
-                "model": self.llm_config.model,
-                "input": text,
-            })
-        } else {
-            serde_json::json!({
-                "model": self.llm_config.model,
-                "input": text,
-            })
-        };
+        let body = serde_json::json!({
+            "model": self.llm_config.model,
+            "input": text,
+        });
         let body_str = serde_json::to_string(&body)?;
 
         let mut request = ureq::post(&effective_endpoint)
@@ -385,8 +388,8 @@ impl Database {
         let response_body = response
             .into_string()
             .map_err(|e| format!("Failed to read embed response: {}", e))?;
-        let json: serde_json::Value =
-            serde_json::from_str(&response_body).map_err(|e| format!("Invalid embed response: {}", e))?;
+        let json: serde_json::Value = serde_json::from_str(&response_body)
+            .map_err(|e| format!("Invalid embed response: {}", e))?;
 
         if is_openai {
             // OpenAI format: {"data": [{"embedding": [0.1, 0.2, ...]}], ...}
@@ -443,7 +446,10 @@ impl Database {
         );
 
         // Count matching
-        let count_sql = format!("SELECT COUNT(*) FROM entities WHERE {}", conditions.join(" AND "));
+        let count_sql = format!(
+            "SELECT COUNT(*) FROM entities WHERE {}",
+            conditions.join(" AND ")
+        );
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
         let examined: usize = self
@@ -452,13 +458,23 @@ impl Database {
             as usize;
 
         if params.dry_run {
-            return Ok(PruneReport { archived: 0, examined, dry_run: true, reason });
+            return Ok(PruneReport {
+                archived: 0,
+                examined,
+                dry_run: true,
+                reason,
+            });
         }
 
-        let limit = if params.limit == 0 { String::new() } else { format!(" LIMIT {}", params.limit) };
+        let limit = if params.limit == 0 {
+            String::new()
+        } else {
+            format!(" LIMIT {}", params.limit)
+        };
         let sql = format!(
             "UPDATE entities SET archived = 1, archive_reason = ?1 WHERE {} {}",
-            conditions.join(" AND "), limit
+            conditions.join(" AND "),
+            limit
         );
         let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(reason.clone())];
         all_params.extend(param_values);
@@ -472,7 +488,12 @@ impl Database {
             params![reason],
         );
 
-        Ok(PruneReport { archived, examined, dry_run: false, reason })
+        Ok(PruneReport {
+            archived,
+            examined,
+            dry_run: false,
+            reason,
+        })
     }
 
     /// Dense vector search: brute-force cosine similarity over all entities with embeddings.
@@ -483,16 +504,14 @@ impl Database {
         limit: usize,
     ) -> Result<Vec<(Entity, f64)>, Box<dyn std::error::Error>> {
         let max_scan = 50_000; // safety ceiling — databases beyond this should use HNSW
-        let mut stmt = self.conn.prepare(
-            &format!(
-                "SELECT id, category, key, body_json, status, type, tags,
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT id, category, key, body_json, status, type, tags,
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding
              FROM entities WHERE archived = 0 AND embedding IS NOT NULL LIMIT {}",
-                max_scan
-            ),
-        )?;
+            max_scan
+        ))?;
 
         let enc = self.encryption.as_ref();
         let rows = stmt.query_map([], |row| {
@@ -673,9 +692,9 @@ impl Database {
         body_json: &str,
         threshold: f64,
     ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, body_json FROM entities WHERE category = ?1 AND archived = 0",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, body_json FROM entities WHERE category = ?1 AND archived = 0")?;
         let rows = stmt.query_map(params![category], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?;
@@ -857,7 +876,9 @@ impl Database {
     /// Search entities with FTS5 + LIKE fallback and optional filters.
     pub fn recall(&self, params: &RecallParams) -> Result<Vec<Entity>, Box<dyn std::error::Error>> {
         // Dense vector search path
-        if params.mode == crate::models::SearchMode::Dense || params.mode == crate::models::SearchMode::Hybrid {
+        if params.mode == crate::models::SearchMode::Dense
+            || params.mode == crate::models::SearchMode::Hybrid
+        {
             if let Some(ref query_vec) = params.embedding {
                 let dense_results = self.dense_search(query_vec, params.limit as usize)?;
 
@@ -869,7 +890,6 @@ impl Database {
                 let sparse = self.fts5_search(params)?;
                 let dense_scored: Vec<(Entity, f64)> = dense_results
                     .into_iter()
-                    .map(|(e, score)| (e, score))
                     .collect();
                 let sparse_scored: Vec<(Entity, f64)> = sparse
                     .into_iter()
@@ -878,7 +898,12 @@ impl Database {
                         (e, score)
                     })
                     .collect();
-                let fused = crate::db::reciprocal_rank_fusion(&dense_scored, &sparse_scored, 60.0, params.limit as usize);
+                let fused = crate::db::reciprocal_rank_fusion(
+                    &dense_scored,
+                    &sparse_scored,
+                    60.0,
+                    params.limit as usize,
+                );
                 return Ok(fused.into_iter().map(|(e, _)| e).collect());
             }
             // Fall through to FTS5 if no embedding vector provided
@@ -888,7 +913,10 @@ impl Database {
     }
 
     /// Core FTS5 + LIKE keyword search (extracted for reuse by recall and hybrid).
-    fn fts5_search(&self, params: &RecallParams) -> Result<Vec<Entity>, Box<dyn std::error::Error>> {
+    fn fts5_search(
+        &self,
+        params: &RecallParams,
+    ) -> Result<Vec<Entity>, Box<dyn std::error::Error>> {
         let mut conditions: Vec<String> = Vec::new();
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -981,10 +1009,7 @@ impl Database {
 
         // Filter by always_on flag
         if let Some(ao) = params.always_on {
-            conditions.push(format!(
-                "always_on = ?{}",
-                param_values.len() + 1
-            ));
+            conditions.push(format!("always_on = ?{}", param_values.len() + 1));
             param_values.push(Box::new(ao as i32));
         }
 
@@ -1025,9 +1050,7 @@ impl Database {
 
         let mut stmt = self.conn.prepare(&sql)?;
         let enc = self.encryption.as_ref();
-        let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            entity_from_row(row, enc)
-        })?;
+        let rows = stmt.query_map(param_refs.as_slice(), |row| entity_from_row(row, enc))?;
 
         let mut items = Vec::new();
         for row in rows {
@@ -1073,17 +1096,27 @@ impl Database {
                     let content_len = entity.body_json.len() as f64;
                     let damper = 1.0 / (1.0 + (1.0 + content_len / size_pivot.max(1.0)).log10());
                     // Boost decay_score as a proxy for ranking (additive, never penalizes)
-                    entity.decay_score = (entity.decay_score + params.content_weight * damper).min(1.0);
+                    entity.decay_score =
+                        (entity.decay_score + params.content_weight * damper).min(1.0);
                 }
             }
             // Re-sort after content witness boost
-            items.sort_by(|a, b| b.decay_score.partial_cmp(&a.decay_score).unwrap_or(std::cmp::Ordering::Equal));
+            items.sort_by(|a, b| {
+                b.decay_score
+                    .partial_cmp(&a.decay_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
 
         // #105: Two-level diversity quota (BrainDB-inspired)
         // Per-keyword halving: each distinct keyword gets ceil(max_results x halving^n) slots
         if params.diversity_halving < 1.0 && params.diversity_halving > 0.0 && !items.is_empty() {
-            items = Self::apply_diversity_quota(items, params.limit as usize, params.diversity_halving, &params.query);
+            items = Self::apply_diversity_quota(
+                items,
+                params.limit as usize,
+                params.diversity_halving,
+                &params.query,
+            );
         }
 
         Ok(items)
@@ -1116,12 +1149,18 @@ impl Database {
 
             // Find dominant keyword: first query word found in body_json
             let body_lower = entity.body_json.to_lowercase();
-            let dom_kw = query_words.iter().find(|w| body_lower.contains(&w.to_lowercase())).map(|w| w.to_string());
+            let dom_kw = query_words
+                .iter()
+                .find(|w| body_lower.contains(&w.to_lowercase()))
+                .map(|w| w.to_string());
 
             if let Some(ref kw) = dom_kw {
                 if !kw_slots.contains_key(kw) {
                     let n = kw_slots.len();
-                    kw_slots.insert(kw.clone(), (max_results as f64 * halving.powi(n as i32)).ceil() as i64);
+                    kw_slots.insert(
+                        kw.clone(),
+                        (max_results as f64 * halving.powi(n as i32)).ceil() as i64,
+                    );
                     kw_order.push(kw.clone());
                 }
                 let remaining = kw_slots.get_mut(kw).unwrap();
@@ -1507,7 +1546,8 @@ impl Database {
         max_depth: i64,
         max_nodes: i64,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let root = self.get_entity(category, key)?
+        let root = self
+            .get_entity(category, key)?
             .ok_or_else(|| format!("entity not found: {}/{}", category, key))?;
 
         // Get root links
@@ -1529,7 +1569,14 @@ impl Database {
         let mut traversed = Vec::new();
 
         visited.insert(root.id.clone());
-        self._traverse_links(&root.id, &mut traversed, &mut visited, max_depth, max_nodes, 0);
+        self._traverse_links(
+            &root.id,
+            &mut traversed,
+            &mut visited,
+            max_depth,
+            max_nodes,
+            0,
+        );
 
         let chain = serde_json::json!({
             "entity": {
@@ -1576,42 +1623,52 @@ impl Database {
 
             match self.get_entity_by_id(&link.target_id) {
                 Ok(Some(entity)) => {
-                visited.insert(link.target_id.clone());
+                    visited.insert(link.target_id.clone());
 
-                // Get this entity's outgoing links
-                let child_links_json: String = self
-                    .conn
-                    .query_row(
-                        "SELECT links FROM entities WHERE id = ?1",
-                        params![entity.id],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or_else(|_| "[]".to_string());
-                let child_links: Vec<MemoryLink> =
-                    serde_json::from_str(&child_links_json).unwrap_or_default();
-                let child_links_json: Vec<serde_json::Value> = child_links.iter().map(|l| {
+                    // Get this entity's outgoing links
+                    let child_links_json: String = self
+                        .conn
+                        .query_row(
+                            "SELECT links FROM entities WHERE id = ?1",
+                            params![entity.id],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or_else(|_| "[]".to_string());
+                    let child_links: Vec<MemoryLink> =
+                        serde_json::from_str(&child_links_json).unwrap_or_default();
+                    let child_links_json: Vec<serde_json::Value> = child_links.iter().map(|l| {
                     serde_json::json!({"target_id": l.target_id, "relationship": l.relationship})
                 }).collect();
 
-                let node = serde_json::json!({
-                    "id": entity.id,
-                    "category": entity.category,
-                    "key": entity.key,
-                    "body_json": entity.body_json,
-                    "relationship": link.relationship,
-                    "depth": current_depth + 1,
-                    "links": child_links_json
-                });
+                    let node = serde_json::json!({
+                        "id": entity.id,
+                        "category": entity.category,
+                        "key": entity.key,
+                        "body_json": entity.body_json,
+                        "relationship": link.relationship,
+                        "depth": current_depth + 1,
+                        "links": child_links_json
+                    });
 
-                traversed.push(node.clone());
+                    traversed.push(node.clone());
 
-                self._traverse_links(&entity.id, traversed, visited, max_depth, max_nodes, current_depth + 1);
+                    self._traverse_links(
+                        &entity.id,
+                        traversed,
+                        visited,
+                        max_depth,
+                        max_nodes,
+                        current_depth + 1,
+                    );
                 }
                 Ok(None) => {
                     // Dangling link — target entity no longer exists
                 }
                 Err(e) => {
-                    eprintln!("mimir: traverse error reading entity {}: {}", link.target_id, e);
+                    eprintln!(
+                        "mimir: traverse error reading entity {}: {}",
+                        link.target_id, e
+                    );
                 }
             }
         }
@@ -1687,9 +1744,7 @@ impl Database {
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
         let enc = self.encryption.as_ref();
-        let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            entity_from_row(row, enc)
-        })?;
+        let rows = stmt.query_map(param_refs.as_slice(), |row| entity_from_row(row, enc))?;
 
         let mut items = Vec::new();
         for row in rows {
@@ -1740,8 +1795,7 @@ impl Database {
             let category: String = row.get(1)?;
             let key: String = row.get(2)?;
             let links_str: String = row.get::<_, String>(3).unwrap_or_else(|_| "[]".to_string());
-            let links: Vec<MemoryLink> =
-                serde_json::from_str(&links_str).unwrap_or_default();
+            let links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
             Ok((id, category, key, links))
         })?;
 
@@ -1957,7 +2011,13 @@ impl Database {
             // Sanitize id for filesystem: only alphanumeric, hyphen, underscore
             let safe_id: String = id
                 .chars()
-                .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect();
             let filename = format!("{}.md", safe_id);
             let filepath = vault.join(&filename);
@@ -2249,7 +2309,7 @@ last_accessed: {}
                     entity.decay_score,
                 ));
             }
-            ctx.push_str("\n");
+            ctx.push('\n');
         }
 
         for entity in &all_entities {
@@ -2262,7 +2322,10 @@ last_accessed: {}
                 entity.decay_score,
             ));
         }
-        ctx.push_str(&format!("\n> {} entities recalled\n", all_entities.len() + always_on_entities.len()));
+        ctx.push_str(&format!(
+            "\n> {} entities recalled\n",
+            all_entities.len() + always_on_entities.len()
+        ));
 
         Ok(ctx)
     }
@@ -2305,7 +2368,10 @@ last_accessed: {}
         for (i, word) in words.iter().enumerate() {
             let param_idx = i + 1;
             like_parts.push(format!("body_json LIKE ?{}", param_idx));
-            params_vec.push(Box::new(format!("%recall_when%{}%", word.replace('\'', "''"))));
+            params_vec.push(Box::new(format!(
+                "%recall_when%{}%",
+                word.replace('\'', "''")
+            )));
         }
 
         let sql = format!(
@@ -2329,9 +2395,7 @@ last_accessed: {}
 
         let mut stmt = self.conn.prepare(&sql)?;
         let enc = self.encryption.as_ref();
-        let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            entity_from_row(row, enc)
-        })?;
+        let rows = stmt.query_map(param_refs.as_slice(), |row| entity_from_row(row, enc))?;
 
         let mut items = Vec::new();
         for row in rows {
@@ -2341,6 +2405,7 @@ last_accessed: {}
     }
 
     /// Coherence daemon: auto-groom the memory with promote, decay, link, archive.
+    #[allow(unused_assignments)]
     pub fn cohere(
         &self,
         params: &crate::models::CohereParams,
@@ -2419,7 +2484,7 @@ last_accessed: {}
         })?;
 
         for row in rows {
-            let (e1_id, cat, key, _tags1_str, e2_id) = row?;
+            let (_e1_id, cat, key, _tags1_str, e2_id) = row?;
 
             // Create a simple "related" link from e1 to e2
             if let Err(e) = self.link(&cat, &key, &e2_id, "auto-related") {
@@ -2502,20 +2567,22 @@ pub fn reciprocal_rank_fusion(
     for (rank, (entity, _)) in dense_results.iter().enumerate() {
         let rrf = 1.0 / (k + (rank + 1) as f64);
         *scores.entry(entity.id.clone()).or_insert(0.0) += rrf;
-        entities.entry(entity.id.clone()).or_insert_with(|| entity.clone());
+        entities
+            .entry(entity.id.clone())
+            .or_insert_with(|| entity.clone());
     }
 
     for (rank, (entity, _)) in sparse_results.iter().enumerate() {
         let rrf = 1.0 / (k + (rank + 1) as f64);
         *scores.entry(entity.id.clone()).or_insert(0.0) += rrf;
-        entities.entry(entity.id.clone()).or_insert_with(|| entity.clone());
+        entities
+            .entry(entity.id.clone())
+            .or_insert_with(|| entity.clone());
     }
 
     let mut fused: Vec<_> = scores
         .into_iter()
-        .filter_map(|(id, score)| {
-            entities.remove(&id).map(|entity| (entity, score))
-        })
+        .filter_map(|(id, score)| entities.remove(&id).map(|entity| (entity, score)))
         .collect();
 
     fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -2539,7 +2606,9 @@ fn entity_from_row(
 ) -> rusqlite::Result<crate::models::Entity> {
     use crate::models::{Entity, MemoryLink};
     let tags_str: String = row.get::<_, String>(6).unwrap_or_else(|_| "[]".to_string());
-    let links_str: String = row.get::<_, String>(13).unwrap_or_else(|_| "[]".to_string());
+    let links_str: String = row
+        .get::<_, String>(13)
+        .unwrap_or_else(|_| "[]".to_string());
     let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
     let links: Vec<MemoryLink> = serde_json::from_str(&links_str).unwrap_or_default();
     let archived: i32 = row.get(11).unwrap_or(0);
@@ -2551,7 +2620,7 @@ fn entity_from_row(
         let k: String = row.get(2)?;
         let aad = format!("{}:{}", cat, k);
         enc.decrypt(&raw_body_json, aad.as_bytes())
-            .unwrap_or_else(|_| raw_body_json) // Fall back to raw if decryption fails (unencrypted DB)
+            .unwrap_or(raw_body_json) // Fall back to raw if decryption fails (unencrypted DB)
     } else {
         raw_body_json
     };
@@ -2924,7 +2993,12 @@ mod tests {
         assert!(db.encryption_enabled());
 
         // Store an entity — body should be encrypted at rest
-        let entity = make_entity("e-enc", "insight", "secret-note", r#"{"content": "top secret data"}"#);
+        let entity = make_entity(
+            "e-enc",
+            "insight",
+            "secret-note",
+            r#"{"content": "top secret data"}"#,
+        );
         db.remember(&entity).unwrap();
 
         // Retrieve and verify round-trip
@@ -2932,14 +3006,19 @@ mod tests {
         assert_eq!(found.body_json, r#"{"content": "top secret data"}"#);
 
         // Verify the raw DB column is encrypted (not plaintext)
-        let raw_body: String = db.conn
+        let raw_body: String = db
+            .conn
             .query_row(
                 "SELECT body_json FROM entities WHERE category = ?1 AND key = ?2",
                 rusqlite::params!["insight", "secret-note"],
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(!raw_body.contains("top secret"), "Raw DB column should be encrypted, got: {}", &raw_body[..raw_body.len().min(60)]);
+        assert!(
+            !raw_body.contains("top secret"),
+            "Raw DB column should be encrypted, got: {}",
+            &raw_body[..raw_body.len().min(60)]
+        );
 
         // Test that a Database without encryption sees the garbled text
         let (db2, path2) = temp_db();

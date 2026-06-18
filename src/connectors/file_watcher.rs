@@ -125,7 +125,7 @@ impl FileWatcher {
 
             // Generate document
             let rel_path = path.to_string_lossy().to_string();
-            let key = rel_path.replace('/', "-").replace('\\', "-");
+            let key = rel_path.replace(['/', '\\'], "-");
             let body = serde_json::json!({
                 "path": rel_path,
                 "content": content,

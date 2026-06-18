@@ -56,6 +56,7 @@ pub fn init_transport_state(db: Arc<Mutex<Database>>) {
 #[derive(Debug, Deserialize)]
 struct MessageParams {
     #[serde(default)]
+    #[allow(dead_code)]
     session_id: Option<String>,
 }
 
@@ -63,6 +64,7 @@ struct MessageParams {
 #[derive(Debug, Deserialize)]
 struct SseParams {
     #[serde(default)]
+    #[allow(dead_code)]
     session_id: Option<String>,
 }
 
@@ -106,8 +108,14 @@ async fn handle_message(
     };
 
     let state = get_state()?;
-    let mut mcp_state = state.mcp_state.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut mcp_state = state
+        .mcp_state
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let response = mcp::handle_request(&req, &mut mcp_state, &db);
 

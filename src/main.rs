@@ -191,7 +191,11 @@ fn main() {
             // Create parent directory if needed
             if let Some(parent) = std::path::Path::new(&expanded).parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
-                    eprintln!("mimir: failed to create directory {}: {}", parent.display(), e);
+                    eprintln!(
+                        "mimir: failed to create directory {}: {}",
+                        parent.display(),
+                        e
+                    );
                     std::process::exit(1);
                 }
             }
@@ -203,7 +207,10 @@ fn main() {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(&expanded, std::fs::Permissions::from_mode(0o600));
+                        let _ = std::fs::set_permissions(
+                            &expanded,
+                            std::fs::Permissions::from_mode(0o600),
+                        );
                     }
                     println!("Key written to {}", expanded);
                     println!("Use --encryption-key {} to enable encryption", expanded);
@@ -238,7 +245,21 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Serve { ref db, ref encryption_key, ref web, ref port, ref web_bind, ref llm_endpoint, ref llm_api_key, ref embedding_endpoint, ref llm_model, embedding_model: _, ref connectors_config, ref transport, .. }) => {
+        Some(Commands::Serve {
+            ref db,
+            ref encryption_key,
+            ref web,
+            ref port,
+            ref web_bind,
+            ref llm_endpoint,
+            ref llm_api_key,
+            ref embedding_endpoint,
+            ref llm_model,
+            embedding_model: _,
+            ref connectors_config,
+            ref transport,
+            ..
+        }) => {
             let db_path = db.clone();
             let mut database = match db::Database::open(&db_path) {
                 Ok(db) => db,
@@ -257,8 +278,17 @@ fn main() {
 
             // Configure LLM for mimir_ask if endpoint is provided
             if let Some(ref endpoint) = llm_endpoint {
-                database.set_llm(true, endpoint, llm_model, llm_api_key.as_deref(), embedding_endpoint.as_deref());
-                eprintln!("mimir: LLM enabled (endpoint: {}, model: {})", endpoint, llm_model);
+                database.set_llm(
+                    true,
+                    endpoint,
+                    llm_model,
+                    llm_api_key.as_deref(),
+                    embedding_endpoint.as_deref(),
+                );
+                eprintln!(
+                    "mimir: LLM enabled (endpoint: {}, model: {})",
+                    endpoint, llm_model
+                );
             }
 
             // Load connectors from YAML config if provided
@@ -339,7 +369,10 @@ fn main() {
                     transport::TransportMode::Sse => "sse",
                     transport::TransportMode::Http => "http",
                 };
-                eprintln!("mimir: MCP over {} transport on http://{}", mode_label, transport_addr);
+                eprintln!(
+                    "mimir: MCP over {} transport on http://{}",
+                    mode_label, transport_addr
+                );
                 eprintln!("mimir: POST http://{}/message", transport_addr);
                 if mode == transport::TransportMode::Sse {
                     eprintln!("mimir: GET  http://{}/sse", transport_addr);
@@ -349,12 +382,15 @@ fn main() {
                     let listener = match tokio::net::TcpListener::bind(&transport_addr).await {
                         Ok(l) => l,
                         Err(e) => {
-                            eprintln!("mimir: fatal: MCP transport bind failed on {}: {}", transport_addr, e);
+                            eprintln!(
+                                "mimir: fatal: MCP transport bind failed on {}: {}",
+                                transport_addr, e
+                            );
                             std::process::exit(1);
                         }
                     };
                     match axum::serve(listener, transport_router).await {
-                        Ok(_) => {},
+                        Ok(_) => {}
                         Err(e) => {
                             eprintln!("mimir: fatal: MCP transport server error: {}", e);
                             std::process::exit(1);
@@ -383,8 +419,17 @@ fn main() {
             }
 
             if let Some(ref endpoint) = cli.llm_endpoint {
-                database.set_llm(true, endpoint, &cli.llm_model, cli.llm_api_key.as_deref(), cli.embedding_endpoint.as_deref());
-                eprintln!("mimir: LLM enabled (endpoint: {}, model: {})", endpoint, cli.llm_model);
+                database.set_llm(
+                    true,
+                    endpoint,
+                    &cli.llm_model,
+                    cli.llm_api_key.as_deref(),
+                    cli.embedding_endpoint.as_deref(),
+                );
+                eprintln!(
+                    "mimir: LLM enabled (endpoint: {}, model: {})",
+                    endpoint, cli.llm_model
+                );
             }
 
             if let Some(ref config_path) = cli.connectors_config {
@@ -462,7 +507,10 @@ fn main() {
                     transport::TransportMode::Sse => "sse",
                     transport::TransportMode::Http => "http",
                 };
-                eprintln!("mimir: MCP over {} transport on http://{}", mode_label, transport_addr);
+                eprintln!(
+                    "mimir: MCP over {} transport on http://{}",
+                    mode_label, transport_addr
+                );
                 eprintln!("mimir: POST http://{}/message", transport_addr);
                 if mode == transport::TransportMode::Sse {
                     eprintln!("mimir: GET  http://{}/sse", transport_addr);
@@ -472,12 +520,15 @@ fn main() {
                     let listener = match tokio::net::TcpListener::bind(&transport_addr).await {
                         Ok(l) => l,
                         Err(e) => {
-                            eprintln!("mimir: fatal: MCP transport bind failed on {}: {}", transport_addr, e);
+                            eprintln!(
+                                "mimir: fatal: MCP transport bind failed on {}: {}",
+                                transport_addr, e
+                            );
                             std::process::exit(1);
                         }
                     };
                     match axum::serve(listener, transport_router).await {
-                        Ok(_) => {},
+                        Ok(_) => {}
                         Err(e) => {
                             eprintln!("mimir: fatal: MCP transport server error: {}", e);
                             std::process::exit(1);
@@ -509,16 +560,29 @@ fn load_connectors(path: &str) -> Result<Vec<Box<dyn crate::connectors::Connecto
 
     // Load GitHub connector if configured
     if let Some(github) = config.get("connectors").and_then(|c| c.get("github")) {
-        let enabled = github.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let enabled = github
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if enabled {
             let token = github.get("token").and_then(|v| v.as_str()).unwrap_or("");
             let repos: Vec<String> = github
                 .get("repos")
                 .and_then(|v| v.as_sequence())
-                .map(|s| s.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|s| {
+                    s.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
-            let days_past = github.get("days_past").and_then(|v| v.as_u64()).unwrap_or(90) as u32;
-            let max_items = github.get("max_items_per_repo").and_then(|v| v.as_u64()).unwrap_or(500) as usize;
+            let days_past = github
+                .get("days_past")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(90) as u32;
+            let max_items = github
+                .get("max_items_per_repo")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(500) as usize;
 
             let gcfg = crate::connectors::github::GitHubConnectorConfig {
                 enabled: true,
@@ -527,7 +591,9 @@ fn load_connectors(path: &str) -> Result<Vec<Box<dyn crate::connectors::Connecto
                 days_past,
                 max_items_per_repo: max_items,
             };
-            connectors.push(Box::new(crate::connectors::github::GitHubConnector::new(gcfg)));
+            connectors.push(Box::new(crate::connectors::github::GitHubConnector::new(
+                gcfg,
+            )));
         }
     }
 
@@ -538,14 +604,25 @@ fn load_connectors(path: &str) -> Result<Vec<Box<dyn crate::connectors::Connecto
             let paths: Vec<String> = fw
                 .get("paths")
                 .and_then(|v| v.as_sequence())
-                .map(|s| s.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|s| {
+                    s.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             let extensions: Vec<String> = fw
                 .get("extensions")
                 .and_then(|v| v.as_sequence())
-                .map(|s| s.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|s| {
+                    s.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_else(|| vec![".md".to_string(), ".txt".to_string()]);
-            let debounce_ms = fw.get("debounce_ms").and_then(|v| v.as_u64()).unwrap_or(1500);
+            let debounce_ms = fw
+                .get("debounce_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1500);
 
             let fcfg = crate::connectors::file_watcher::FileWatcherConfig {
                 enabled: true,
@@ -553,7 +630,9 @@ fn load_connectors(path: &str) -> Result<Vec<Box<dyn crate::connectors::Connecto
                 extensions,
                 debounce_ms,
             };
-            connectors.push(Box::new(crate::connectors::file_watcher::FileWatcher::new(fcfg)));
+            connectors.push(Box::new(crate::connectors::file_watcher::FileWatcher::new(
+                fcfg,
+            )));
         }
     }
 

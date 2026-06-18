@@ -72,11 +72,7 @@ impl Connector for GitHubConnector {
 }
 
 impl GitHubConnector {
-    fn fetch_repo_issues(
-        &self,
-        repo: &str,
-        since: &str,
-    ) -> Result<Vec<RawDocument>, String> {
+    fn fetch_repo_issues(&self, repo: &str, since: &str) -> Result<Vec<RawDocument>, String> {
         let url = format!(
             "https://api.github.com/repos/{}/issues?state=all&since={}&per_page=100&sort=updated&direction=desc",
             repo, since
@@ -187,5 +183,3 @@ fn parse_link_next(link_header: &Option<String>) -> Option<String> {
     }
     None
 }
-
-

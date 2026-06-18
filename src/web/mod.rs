@@ -85,7 +85,10 @@ async fn list_entities(
     State(state): State<WebState>,
     Query(params): Query<EntityListParams>,
 ) -> Result<Json<Value>, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let entities = db
         .list_entities(
             params.offset,
@@ -95,10 +98,7 @@ async fn list_entities(
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let items: Vec<Value> = entities
-        .iter()
-        .map(|e| e.to_json_expanded())
-        .collect();
+    let items: Vec<Value> = entities.iter().map(|e| e.to_json_expanded()).collect();
 
     Ok(Json(json!({ "items": items, "total": items.len() })))
 }
@@ -107,7 +107,10 @@ async fn entity_detail(
     State(state): State<WebState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match db.get_entity_by_id_public(&id) {
         Ok(Some(entity)) => Ok(Json(entity.to_json_expanded())),
         Ok(None) => Err(StatusCode::NOT_FOUND),
@@ -119,7 +122,10 @@ async fn search(
     State(state): State<WebState>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<Value>, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let recall_params = crate::models::RecallParams {
         query: params.q.clone(),
         category: params.category.clone(),
@@ -130,16 +136,16 @@ async fn search(
         .recall(&recall_params)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let items: Vec<Value> = entities
-        .iter()
-        .map(|e| e.to_json_expanded())
-        .collect();
+    let items: Vec<Value> = entities.iter().map(|e| e.to_json_expanded()).collect();
 
     Ok(Json(json!({ "items": items, "total": items.len() })))
 }
 
 async fn stats(State(state): State<WebState>) -> Result<Json<Value>, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let s = db.stats().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(
         serde_json::to_value(s).unwrap_or(json!({ "error": "serialization failed" })),
@@ -150,7 +156,10 @@ async fn journal(
     State(state): State<WebState>,
     Query(params): Query<JournalParams>,
 ) -> Result<Json<Value>, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let events = db
         .get_recent_journal(params.limit)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -159,7 +168,10 @@ async fn journal(
 }
 
 async fn graph(State(state): State<WebState>) -> Result<Json<Value>, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let (nodes, edges) = db
         .get_entity_graph()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;

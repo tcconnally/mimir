@@ -166,8 +166,7 @@ pub fn handle_request(
             let result_text = call_tool(tool_name, db, tool_args, id.clone());
 
             // Try to parse the result as JSON for structuredContent
-            let structured: Option<serde_json::Value> =
-                serde_json::from_str(&result_text).ok();
+            let structured: Option<serde_json::Value> = serde_json::from_str(&result_text).ok();
             let mut result = json!({
                 "content": [{
                     "type": "text",
@@ -1567,73 +1566,38 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
         error: None,
     }
 }
-fn call_tool(
-    name: &str,
-    db: &Database,
-    args: Value,
-    _id: Option<Value>,
-) -> String {
+fn call_tool(name: &str, db: &Database, args: Value, _id: Option<Value>) -> String {
     let handler_result: Result<String, String> = match name {
-        "mimir_remember" => {
-            tools::handle_remember(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_remember" => tools::handle_remember(db, args).map_err(|e| e.to_string()),
 
-        "mimir_recall" => {
-            tools::handle_recall(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_recall" => tools::handle_recall(db, args).map_err(|e| e.to_string()),
 
-        "mimir_ask" => {
-            tools::handle_ask(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_ask" => tools::handle_ask(db, args).map_err(|e| e.to_string()),
 
-        "mimir_get_entity" => {
-            tools::handle_get_entity(db, args).map_err(|e| e.to_string())
-        }
-        "mimir_forget" => {
-            tools::handle_forget(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_get_entity" => tools::handle_get_entity(db, args).map_err(|e| e.to_string()),
+        "mimir_forget" => tools::handle_forget(db, args).map_err(|e| e.to_string()),
 
-        "mimir_ingest" => {
-            tools::handle_ingest(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_ingest" => tools::handle_ingest(db, args).map_err(|e| e.to_string()),
 
-        "mimir_embed" => {
-            tools::handle_embed(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_embed" => tools::handle_embed(db, args).map_err(|e| e.to_string()),
 
-        "mimir_prune" => {
-            tools::handle_prune(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_prune" => tools::handle_prune(db, args).map_err(|e| e.to_string()),
 
         "mimir_link" => tools::handle_link(db, args).map_err(|e| e.to_string()),
 
-        "mimir_unlink" => {
-            tools::handle_unlink(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_unlink" => tools::handle_unlink(db, args).map_err(|e| e.to_string()),
 
-        "mimir_journal" => {
-            tools::handle_journal(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_journal" => tools::handle_journal(db, args).map_err(|e| e.to_string()),
 
-        "mimir_timeline" => {
-            tools::handle_timeline(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_timeline" => tools::handle_timeline(db, args).map_err(|e| e.to_string()),
 
-        "mimir_state_set" => {
-            tools::handle_state_set(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_state_set" => tools::handle_state_set(db, args).map_err(|e| e.to_string()),
 
-        "mimir_state_get" => {
-            tools::handle_state_get(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_state_get" => tools::handle_state_get(db, args).map_err(|e| e.to_string()),
 
-        "mimir_state_delete" => {
-            tools::handle_state_delete(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_state_delete" => tools::handle_state_delete(db, args).map_err(|e| e.to_string()),
 
-        "mimir_state_list" => {
-            tools::handle_state_list(db, args).map_err(|e| e.to_string())
-        }
+        "mimir_state_list" => tools::handle_state_list(db, args).map_err(|e| e.to_string()),
 
         "mimir_health" => Ok(tools::handle_health(db)),
 
@@ -1665,7 +1629,13 @@ fn call_tool(
         Err(err_msg) => serde_json::to_string(&json!({
             "content": [{"type": "text", "text": err_msg}],
             "isError": true
-        })).unwrap_or_else(|_| format!(r#"{{"content":[{{"type":"text","text":"{}"}}],"isError":true}}"#, err_msg)),
+        }))
+        .unwrap_or_else(|_| {
+            format!(
+                r#"{{"content":[{{"type":"text","text":"{}"}}],"isError":true}}"#,
+                err_msg
+            )
+        }),
     }
 }
 

@@ -163,6 +163,7 @@ pub struct RecallParams {
     /// Each distinct matched keyword gets ceil(max_results × halving^n) slots.
     pub diversity_halving: f64,
     /// Per-query reservation share for multi-query diversity (0.0 = disabled).
+    #[allow(dead_code)]
     pub diversity_per_query_share: f64,
 }
 
@@ -302,9 +303,16 @@ pub struct CohereParams {
     pub archive_threshold: f64,
 }
 
-fn default_max_links() -> usize { 20 }
-fn default_archive_threshold() -> f64 { 0.05 }
-fn default_promote_threshold() -> i64 { 3 }
+fn default_max_links() -> usize {
+    20
+}
+fn default_archive_threshold() -> f64 {
+    0.05
+}
+#[allow(dead_code)]
+fn default_promote_threshold() -> i64 {
+    3
+}
 
 /// Coherence daemon report — results of an auto-grooming pass.
 #[derive(Debug, Clone, Serialize)]
