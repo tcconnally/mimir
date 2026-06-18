@@ -4,14 +4,10 @@ Persistent memory for CrewAI agents via Mimir.
 
 ## Install
 
+Install from source (not yet published to PyPI):
+
 ```bash
 pip install crewai
-pip install mimir-crewai
-```
-
-Or from source:
-
-```bash
 pip install -e integrations/crewai/
 ```
 

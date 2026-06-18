@@ -1,17 +1,32 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "mimir-crewai"
 version = "0.1.0"
 description = "Mimir persistent memory tool for CrewAI agents"
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Perseus Computing LLC" }]
+keywords = ["crewai", "mimir", "memory", "mcp", "agents"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "crewai>=0.30.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/Perseus-Computing-LLC/mimir"
+Repository = "https://github.com/Perseus-Computing-LLC/mimir"
+
 [tool.setuptools]
-py-modules = []
 packages = ["mimir_crewai"]
-package-dir = {"" = "."}
+package-dir = { "" = "." }

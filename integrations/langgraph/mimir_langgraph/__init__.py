@@ -27,11 +27,19 @@ import json
 import subprocess
 import time
 import logging
+from collections.abc import Iterable
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from langgraph.store.base import BaseStore, Item, SearchItem, Op, Result
-from langgraph.store.base import NOT_GIVEN
+
+# The "no TTL given" sentinel was renamed NOT_GIVEN -> NOT_PROVIDED in
+# LangGraph 1.0. Support both so the adapter imports across versions.
+try:
+    from langgraph.store.base import NOT_PROVIDED as _NOT_GIVEN
+except ImportError:  # langgraph < 1.0
+    from langgraph.store.base import NOT_GIVEN as _NOT_GIVEN
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +96,43 @@ class MimirStore(BaseStore):
         """Convert Mimir category string back to namespace tuple."""
         return tuple(category.split("/")) if category != "default" else ()
 
+    @staticmethod
+    def _unwrap_result(result: dict) -> dict:
+        """Unwrap an MCP ``tools/call`` result into Mimir's payload dict.
+
+        Mimir returns the standard MCP envelope::
+
+            {"content": [{"type": "text", "text": "<json>"}],
+             "structuredContent": {...parsed json...}}
+
+        The actual payload (``items``, ``by_category``, ``context`` ...) lives
+        in ``structuredContent`` (preferred) or, failing that, in the JSON text
+        of the first content block. Reading ``result["items"]`` directly always
+        yields nothing, so callers must go through this helper.
+        """
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            return structured
+        content = result.get("content")
+        if isinstance(content, list) and content:
+            text = content[0].get("text", "") if isinstance(content[0], dict) else ""
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+            if isinstance(parsed, dict):
+                return parsed
+        return {}
+
     def _call_mimir(self, method: str, params: dict) -> dict:
-        """Call a Mimir MCP tool via stdio subprocess."""
+        """Call a Mimir MCP tool via a stdio subprocess.
+
+        Sends ``initialize`` and ``tools/call`` in one write and reads all
+        output via :meth:`subprocess.Popen.communicate`, which is portable
+        across platforms (the previous ``select``-based reader did not work on
+        Windows, where ``select`` cannot poll pipes). Returns the unwrapped
+        Mimir payload dict.
+        """
         args = [self.binary, "--db", self.db_path]
         if self.encryption_key:
             args.extend(["--encryption-key", self.encryption_key])
@@ -98,6 +141,23 @@ class MimirStore(BaseStore):
         if self.embedding_model:
             args.extend(["--embedding-model", self.embedding_model])
 
+        init_req = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "langgraph-mimir", "version": "1.0.0"},
+            },
+        })
+        call_req = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": method, "arguments": params},
+        })
+
         proc = subprocess.Popen(
             args,
             stdin=subprocess.PIPE,
@@ -105,59 +165,50 @@ class MimirStore(BaseStore):
             stderr=subprocess.PIPE,
             text=True,
         )
-
         try:
-            # MCP initialize
-            init_req = json.dumps({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "langgraph-mimir", "version": "1.0.0"},
-                },
-            }) + "\n"
-            proc.stdin.write(init_req)
-            proc.stdin.flush()
+            stdout, _ = proc.communicate(
+                input=init_req + "\n" + call_req + "\n", timeout=self.timeout
+            )
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise TimeoutError(f"Mimir {method} timed out after {self.timeout}s")
 
-            # Read init response
-            import select
-            ready, _, _ = select.select([proc.stdout], [], [], self.connect_timeout)
-            if not ready:
-                raise TimeoutError("Mimir MCP initialize timed out")
-            proc.stdout.readline()  # discard init response
-            time.sleep(0.05)
-
-            # Tool call
-            call_req = json.dumps({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {"name": method, "arguments": params},
-            }) + "\n"
-            proc.stdin.write(call_req)
-            proc.stdin.flush()
-
-            ready, _, _ = select.select([proc.stdout], [], [], self.timeout)
-            if not ready:
-                raise TimeoutError(f"Mimir {method} timed out")
-
-            response = json.loads(proc.stdout.readline())
-            if "error" in response:
-                raise RuntimeError(f"Mimir error: {response['error']}")
-            return response.get("result", {})
-
-        finally:
+        # Find the JSON-RPC response to our tools/call (id == 2); other lines
+        # are the initialize response and any log noise.
+        response: dict | None = None
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
             try:
-                proc.stdin.close()
-            except Exception:
-                pass
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(msg, dict) and msg.get("id") == 2:
+                response = msg
+                break
+
+        if response is None:
+            raise RuntimeError(f"No response from Mimir for {method}")
+        if response.get("error"):
+            raise RuntimeError(f"Mimir error: {response['error']}")
+        return self._unwrap_result(response.get("result", {}))
+
+    @staticmethod
+    def _ms_to_dt(ms: Any) -> datetime:
+        """Convert a Mimir ``*_unix_ms`` timestamp to a UTC ``datetime``.
+
+        ``Item.created_at`` / ``updated_at`` are typed ``datetime``; the epoch
+        is used as a fallback when a record carries no usable timestamp.
+        """
+        epoch = datetime.fromtimestamp(0, tz=timezone.utc)
+        if not ms:
+            return epoch
+        try:
+            return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc)
+        except (ValueError, TypeError, OSError):
+            return epoch
 
     def put(
         self,
@@ -166,7 +217,7 @@ class MimirStore(BaseStore):
         value: dict[str, Any],
         index: list[str] | Literal[False] | None = None,  # type: ignore[name-defined]
         *,
-        ttl: float | None | Any = NOT_GIVEN,
+        ttl: float | None | Any = _NOT_GIVEN,
     ) -> None:
         """Store a value in Mimir.
 
@@ -179,11 +230,11 @@ class MimirStore(BaseStore):
             "category": category,
             "key": key,
             "body_json": json.dumps(value),
-            "entity_type": "langgraph_item",
+            "type": "langgraph_item",
         })
 
         # Handle TTL via Mimir state
-        if ttl is not NOT_GIVEN and ttl is not None:
+        if ttl is not _NOT_GIVEN and ttl is not None:
             self._call_mimir("mimir_state_set", {
                 "key": f"{category}/{key}__ttl",
                 "value": str(time.time() + float(ttl)),
@@ -225,8 +276,11 @@ class MimirStore(BaseStore):
                     namespace=namespace,
                     key=key,
                     value=value,
-                    created_at=item.get("created_at") or "1970-01-01T00:00:00Z",
-                    updated_at=item.get("updated_at") or "1970-01-01T00:00:00Z",
+                    created_at=self._ms_to_dt(item.get("created_at_unix_ms")),
+                    updated_at=self._ms_to_dt(
+                        item.get("last_accessed_unix_ms")
+                        or item.get("created_at_unix_ms")
+                    ),
                 )
 
         return None
@@ -276,8 +330,11 @@ class MimirStore(BaseStore):
                 namespace=namespace_prefix,
                 key=item.get("key", ""),
                 value=value,
-                created_at=item.get("created_at") or "1970-01-01T00:00:00Z",
-                updated_at=item.get("updated_at") or "1970-01-01T00:00:00Z",
+                created_at=self._ms_to_dt(item.get("created_at_unix_ms")),
+                updated_at=self._ms_to_dt(
+                    item.get("last_accessed_unix_ms")
+                    or item.get("created_at_unix_ms")
+                ),
                 score=item.get("decay_score"),
             ))
 
@@ -314,14 +371,16 @@ class MimirStore(BaseStore):
     ) -> list[tuple[str, ...]]:
         """List all namespaces (categories) in Mimir."""
         result = self._call_mimir("mimir_stats", {})
-        categories = result.get("categories", [])
+        # mimir_stats returns category counts under "by_category" (a mapping of
+        # category name -> count), not a "categories" list.
+        by_category = result.get("by_category", {})
 
         namespaces = []
-        for cat in categories:
+        for cat in by_category:
             ns = self._category_to_namespace(cat)
             namespaces.append(ns)
 
-        return namespaces[:limit]
+        return namespaces[offset:offset + limit]
 
     async def alist_namespaces(self, *args, **kwargs) -> list[tuple[str, ...]]:
         """Async variant — delegates to sync list_namespaces."""

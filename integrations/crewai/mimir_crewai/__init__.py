@@ -17,7 +17,6 @@ Usage:
 import json
 import subprocess
 import time
-import select
 from pathlib import Path
 from typing import Optional, Any
 from crewai.tools import BaseTool
@@ -60,11 +59,53 @@ class MimirMemoryTool(BaseTool):
         self.timeout = timeout
         self.encryption_key = encryption_key
 
+    @staticmethod
+    def _unwrap_result(result: dict) -> dict:
+        """Unwrap an MCP ``tools/call`` result into Mimir's payload dict.
+
+        Mimir returns the standard MCP envelope::
+
+            {"content": [{"type": "text", "text": "<json>"}],
+             "structuredContent": {...parsed json...}}
+
+        The payload (``items``, ``context`` ...) lives in ``structuredContent``
+        (preferred) or the JSON text of the first content block. Reading
+        ``result["items"]`` directly always yields nothing.
+        """
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            return structured
+        content = result.get("content")
+        if isinstance(content, list) and content:
+            text = content[0].get("text", "") if isinstance(content[0], dict) else ""
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+            if isinstance(parsed, dict):
+                return parsed
+        return {}
+
     def _call_mimir(self, method: str, params: dict) -> dict:
         """Call a Mimir MCP tool via stdio."""
         args = [self.binary, "--db", self.db_path]
         if self.encryption_key:
             args.extend(["--encryption-key", self.encryption_key])
+
+        init_req = json.dumps({
+            "jsonrpc": "2.0", "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "crewai-mimir", "version": "1.0.0"},
+            },
+        })
+        call_req = json.dumps({
+            "jsonrpc": "2.0", "id": 2,
+            "method": "tools/call",
+            "params": {"name": method, "arguments": params},
+        })
 
         proc = subprocess.Popen(
             args,
@@ -73,51 +114,33 @@ class MimirMemoryTool(BaseTool):
             stderr=subprocess.PIPE,
             text=True,
         )
-
         try:
-            init_req = json.dumps({
-                "jsonrpc": "2.0", "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "crewai-mimir", "version": "1.0.0"},
-                },
-            }) + "\n"
-            proc.stdin.write(init_req)
-            proc.stdin.flush()
-            ready, _, _ = select.select([proc.stdout], [], [], 10.0)
-            if ready:
-                proc.stdout.readline()
-            time.sleep(0.05)
+            stdout, _ = proc.communicate(
+                input=init_req + "\n" + call_req + "\n", timeout=self.timeout
+            )
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return {"error": "timeout"}
 
-            call_req = json.dumps({
-                "jsonrpc": "2.0", "id": 2,
-                "method": "tools/call",
-                "params": {"name": method, "arguments": params},
-            }) + "\n"
-            proc.stdin.write(call_req)
-            proc.stdin.flush()
-
-            ready, _, _ = select.select([proc.stdout], [], [], self.timeout)
-            if not ready:
-                return {"error": "timeout"}
-
-            response = json.loads(proc.stdout.readline())
-            if "error" in response:
-                return {"error": response["error"]}
-            return response.get("result", {})
-
-        finally:
+        response = None
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
             try:
-                proc.stdin.close()
-            except Exception:
-                pass
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(msg, dict) and msg.get("id") == 2:
+                response = msg
+                break
+
+        if response is None:
+            return {"error": "no response from mimir"}
+        if response.get("error"):
+            return {"error": response["error"]}
+        return self._unwrap_result(response.get("result", {}))
 
     def _run(self, action: str, **kwargs) -> str:
         """Execute a memory action.
@@ -149,7 +172,7 @@ class MimirMemoryTool(BaseTool):
             "category": category,
             "key": key or f"auto-{int(time.time())}",
             "body_json": json.dumps({"content": content}),
-            "entity_type": entity_type,
+            "type": entity_type,
         })
         if "error" in result:
             return f"Failed to remember: {result['error']}"

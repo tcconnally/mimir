@@ -4,14 +4,10 @@ Drop-in persistent long-term memory for LangGraph agents via Mimir.
 
 ## Install
 
+Install from source (not yet published to PyPI):
+
 ```bash
 pip install langgraph
-pip install mimir-langgraph
-```
-
-Or from source:
-
-```bash
 pip install -e integrations/langgraph/
 ```
 
