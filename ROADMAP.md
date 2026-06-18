@@ -116,7 +116,7 @@ were skipped — v1.0.0 includes everything planned through v0.5 plus more).
 - Claims audit against codebase
 - Glama TDQS improvements (outputSchema + annotations)
 
-**Total tools: 28 MCP tools**
+**Total tools: 30 MCP tools**
 
 ---
 
@@ -138,7 +138,7 @@ were skipped — v1.0.0 includes everything planned through v0.5 plus more).
 
 ### Quality
 - Glama TDQS score improvement (outputSchema + annotations on remaining tools)
-- Smithery capability discovery fix (ensure all 28 tools appear)
+- Smithery capability discovery fix (ensure all 30 tools appear)
 - Windows CI in GitHub Actions
 - Stress tests at 100K+ entity scale
 

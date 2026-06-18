@@ -11,7 +11,7 @@
 Mimir is a lightweight **MCP JSON-RPC 2.0 stdio server** that gives AI agents durable
 memory across sessions. Agents store structured entities, journal their decisions,
 manage transient state, generate embeddings, query with hybrid search, and ingest
-external data — all through **27 MCP tools**.
+external data — all through **30 MCP tools**.
 
 It uses **SQLite with FTS5 + dense vector search** across three tables: entities
 (structured, idempotent), journal (append-only event log), and state (key-value
@@ -122,13 +122,15 @@ Mimir is for teams that want **production memory without infrastructure** — no
 
 ---
 
-## MCP Tools (v1.0.0 — 27 tools)
+## MCP Tools (30 tools)
 
 ### Entity tools
 | Tool | Description |
 |---|---|
 | `mimir_remember` | Store/update entity. Idempotent by (category, key). |
 | `mimir_recall` | Search with FTS5/dense/hybrid modes, filters, stemming expansion. |
+| `mimir_recall_when` | Proactive just-in-time recall: surface entities whose `recall_when` triggers match a given context. |
+| `mimir_get_entity` | Fetch one entity by ID with full `body_json` (e.g. to read a result truncated by `preview_cap`). |
 | `mimir_forget` | Soft-delete (archived=1). |
 | `mimir_link` | Create relationship links between entities. |
 | `mimir_unlink` | Remove entity links. |
@@ -164,6 +166,7 @@ Mimir is for teams that want **production memory without infrastructure** — no
 | `mimir_context` | Pre-formatted markdown context for session injection. |
 | `mimir_workspace_list` | List all distinct entity categories. |
 | `mimir_prune` | Bulk archive by category, decay, or age. |
+| `mimir_cohere` | Autonomous coherence pass: promote buffer→working, apply decay, auto-link related entities, archive stale. |
 
 ### Graph & analysis
 | Tool | Description |
@@ -261,7 +264,7 @@ connectors:
 
 ## Key Properties
 
-- **27 MCP tools** — full CRUD, search, RAG, embeddings, connectors, lifecycle
+- **30 MCP tools** — full CRUD, search, RAG, embeddings, connectors, lifecycle
 - **Hybrid search** — FTS5 + dense vectors + RRF fusion
 - **Encryption at rest** — AES-256-GCM, opt-in, transparent
 - **Web dashboard** — built-in, browser-based, dark theme

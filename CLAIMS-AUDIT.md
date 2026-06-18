@@ -1,5 +1,10 @@
 # Claims Audit — mimir
 
+> **Update (2026-06):** The tool surface has grown since this audit. As of v1.0.1
+> there are **30** registered `mimir_*` tools (verified in `tools/list` and the
+> `tools/call` dispatch). The "23" figure below was accurate for v0.5.0 and is
+> kept as a historical record. See #130.
+
 **Date:** 2026-06-12 · **Audited:** README.md vs code on `main` (v0.5.0)
 
 ## Findings

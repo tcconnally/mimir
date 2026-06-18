@@ -197,11 +197,11 @@ pub fn handle_request(
     }
 }
 
-/// Build the tools/list response with all 23 tools including outputSchema and annotations.
+/// Build the tools/list response with all 30 tools including outputSchema and annotations.
 fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     // Tools are defined inline as serde_json::Value for maximum flexibility.
     // The json!() macro would require the exact structure at compile time,
-    // but since we have 23 tools with nested outputSchema, we parse from a string.
+    // but since we have 30 tools with nested outputSchema, we parse from a string.
     let tools_json: serde_json::Value = serde_json::from_str(
         r###"[
   {
