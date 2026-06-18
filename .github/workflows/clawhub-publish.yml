@@ -1,0 +1,23 @@
+name: Publish to ClawHub
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'clawhub/skills/**'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview only — do not actually publish'
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    uses: openclaw/clawhub/.github/workflows/skill-publish.yml@main
+    with:
+      owner: tcconnally
+      root: clawhub/skills
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+    secrets:
+      clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}
