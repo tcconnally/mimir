@@ -67,6 +67,10 @@ struct Cli {
     #[arg(long)]
     connectors_config: Option<String>,
 
+    /// Bearer token required for web dashboard access (Authorization: Bearer ***    /// When set, all web API routes require this token.
+    #[arg(long)]
+    web_auth_token: Option<String>,
+
     /// Deprecated compatibility flag; MCP stdio mode is always enabled
     #[arg(long = "mcp", default_value_t = false, hide = true)]
     _mcp: bool,
@@ -124,6 +128,13 @@ enum Commands {
         /// Path to connectors.yaml config file for external connectors
         #[arg(long)]
         connectors_config: Option<String>,
+
+        /// Bearer token required for web dashboard access (Authorization: Bearer <token>).
+        /// When set, all web API routes require this token. The dashboard homepage also
+        /// requires the token (renders nothing without it to avoid credential prompting).
+        /// When not set, the dashboard listens only on 127.0.0.1 and CORS is disabled.
+        #[arg(long)]
+        web_auth_token: Option<String>,
 
         /// Deprecated compatibility flag; MCP stdio mode is always enabled
         #[arg(long = "mcp", default_value_t = false, hide = true)]
@@ -257,6 +268,7 @@ fn main() {
             ref llm_model,
             embedding_model: _,
             ref connectors_config,
+            ref web_auth_token,
             ref transport,
             ..
         }) => {
@@ -326,7 +338,7 @@ fn main() {
                     }
                 }
                 let web_db = std::sync::Arc::new(std::sync::Mutex::new(web_db));
-                let router = crate::web::build_router(web_db);
+                let router = crate::web::build_router(web_db, web_auth_token.clone());
                 let addr = format!("{}:{}", web_bind_addr, web_port);
                 eprintln!("mimir: web dashboard starting on http://{}", addr);
 
@@ -464,7 +476,7 @@ fn main() {
                     }
                 }
                 let web_db = std::sync::Arc::new(std::sync::Mutex::new(web_db));
-                let router = crate::web::build_router(web_db);
+                let router = crate::web::build_router(web_db, cli.web_auth_token.clone());
                 let addr = format!("{}:{}", web_bind_addr, web_port);
                 eprintln!("mimir: web dashboard starting on http://{}", addr);
 

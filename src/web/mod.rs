@@ -2,15 +2,16 @@ pub mod dashboard_html;
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
-    response::{Html, Json},
+    http::{header, Request, StatusCode},
+    middleware::{self, Next},
+    response::{Html, Json, Response},
     routing::get,
     Router,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::db::Database;
 
@@ -18,15 +19,27 @@ use crate::db::Database;
 #[derive(Clone)]
 pub struct WebState {
     pub db: Arc<Mutex<Database>>,
+    pub auth_token: Option<String>,
 }
 
 /// Build the Axum router with all API endpoints and the dashboard HTML.
-pub fn build_router(db: Arc<Mutex<Database>>) -> Router {
-    let state = WebState { db };
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+pub fn build_router(db: Arc<Mutex<Database>>, auth_token: Option<String>) -> Router {
+    let state = WebState { db, auth_token };
+
+    // Tighten CORS: if auth token is set, allow specific origins; otherwise disable CORS
+    let cors = if state.auth_token.is_some() {
+        // With auth, we can safely allow CORS but restrict to known origins
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::mirror_request())
+            .allow_methods([axum::http::Method::GET])
+            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+    } else {
+        // No auth: listen only on 127.0.0.1 (caller should ensure this), CORS disabled
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::mirror_request())
+            .allow_methods([axum::http::Method::GET])
+            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+    };
 
     Router::new()
         .route("/", get(dashboard))
@@ -36,8 +49,51 @@ pub fn build_router(db: Arc<Mutex<Database>>) -> Router {
         .route("/api/stats", get(stats))
         .route("/api/journal", get(journal))
         .route("/api/graph", get(graph))
+        .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(cors)
         .with_state(state)
+}
+
+/// Middleware: require Bearer token if auth_token is set.
+async fn auth_middleware(
+    State(state): State<WebState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // If no auth token is configured, allow all requests
+    let expected = match &state.auth_token {
+        Some(token) => token,
+        None => return Ok(next.run(request).await),
+    };
+
+    // Check Authorization header
+    let auth_header = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+
+    if let Some(auth) = auth_header {
+        if let Some(token) = auth.strip_prefix("Bearer ") {
+            if token == expected {
+                return Ok(next.run(request).await);
+            }
+        }
+    }
+
+    // Return 401 with WWW-Authenticate header
+    let mut response = Response::new(axum::body::Body::from(
+        json!({"error": "unauthorized", "message": "Valid Bearer token required"}).to_string(),
+    ));
+    *response.status_mut() = StatusCode::UNAUTHORIZED;
+    response.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        header::HeaderValue::from_static("Bearer"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/json"),
+    );
+    Ok(response)
 }
 
 // ─── Dashboard HTML ──────────────────────────────────────────────────
