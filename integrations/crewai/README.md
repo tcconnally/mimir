@@ -73,6 +73,6 @@ a shared knowledge base over time.
 
 ## Requirements
 
-- Mimir v1.0.0+ (`curl -sSL https://raw.githubusercontent.com/tcconnally/mimir/main/scripts/bootstrap.sh | bash`)
+- Mimir v1.0.0+ (`curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mimir/main/scripts/bootstrap.sh | bash`)
 - CrewAI >= 0.30.0
 - Python 3.10+

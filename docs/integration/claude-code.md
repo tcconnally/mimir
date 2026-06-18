@@ -10,7 +10,7 @@ across coding sessions.
 
 ```bash
 # One-shot bootstrap (recommended)
-curl -sSL https://raw.githubusercontent.com/tcconnally/mimir/main/scripts/bootstrap.sh | bash
+curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mimir/main/scripts/bootstrap.sh | bash
 
 # Or via cargo
 cargo install mimir

@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.1-green.svg)](https://github.com/tcconnally/mimir/releases)
+[![Version](https://img.shields.io/badge/version-1.0.1-green.svg)](https://github.com/Perseus-Computing-LLC/mimir/releases)
 
 ## What is Mimir?
 
@@ -26,7 +26,7 @@ Works with any MCP host: Claude Desktop, Cursor, OpenClaw, Hermes Agent, Perseus
 
 ```bash
 # Build from source
-git clone https://github.com/tcconnally/mimir.git
+git clone https://github.com/Perseus-Computing-LLC/mimir.git
 cd mimir
 cargo build --release
 
@@ -37,7 +37,7 @@ cargo install --path .
 cp target/release/mimir ~/.local/bin/
 
 # Or download the binary
-curl -sSL https://github.com/tcconnally/mimir/releases/download/v1.0.0/mimir-v1.0.0-linux-x86_64 -o mimir
+curl -sSL https://github.com/Perseus-Computing-LLC/mimir/releases/download/v1.0.0/mimir-v1.0.0-linux-x86_64 -o mimir
 chmod +x mimir && mv mimir ~/.local/bin/
 ```
 
@@ -52,7 +52,7 @@ chmod +x mimir && mv mimir ~/.local/bin/
 pip install mimir
 
 # Or download the standalone binary (no Python needed)
-curl -L https://github.com/tcconnally/mimir/releases/latest/download/mimir-linux-x86_64 -o mimir
+curl -L https://github.com/Perseus-Computing-LLC/mimir/releases/latest/download/mimir-linux-x86_64 -o mimir
 chmod +x mimir
 ./mimir --db ./memory.db
 ```
@@ -242,8 +242,8 @@ connectors:
     enabled: true
     token: "${GITHUB_TOKEN}"
     repos:
-      - tcconnally/mimir
-      - tcconnally/perseus
+      - Perseus-Computing-LLC/mimir
+      - Perseus-Computing-LLC/perseus
     days_past: 90
     max_items_per_repo: 500
   file_watcher:
