@@ -39,8 +39,7 @@ impl EncryptionManager {
         }
 
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
-        let cipher =
-            Aes256Gcm::new(key);
+        let cipher = Aes256Gcm::new(key);
 
         Ok(Self { cipher })
     }
@@ -87,6 +86,7 @@ impl EncryptionManager {
             .decrypt(nonce, ciphertext)
             .map_err(|e| format!("Decryption failed: incorrect key or corrupted data ({})", e))?;
 
-        String::from_utf8(plaintext).map_err(|e| format!("Decrypted data is not valid UTF-8: {}", e))
+        String::from_utf8(plaintext)
+            .map_err(|e| format!("Decrypted data is not valid UTF-8: {}", e))
     }
 }

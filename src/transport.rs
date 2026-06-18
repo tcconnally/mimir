@@ -106,8 +106,14 @@ async fn handle_message(
     };
 
     let state = get_state()?;
-    let mut mcp_state = state.mcp_state.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut mcp_state = state
+        .mcp_state
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let response = mcp::handle_request(&req, &mut mcp_state, &db);
 

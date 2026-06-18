@@ -302,9 +302,15 @@ pub struct CohereParams {
     pub archive_threshold: f64,
 }
 
-fn default_max_links() -> usize { 20 }
-fn default_archive_threshold() -> f64 { 0.05 }
-fn default_promote_threshold() -> i64 { 3 }
+fn default_max_links() -> usize {
+    20
+}
+fn default_archive_threshold() -> f64 {
+    0.05
+}
+fn default_promote_threshold() -> i64 {
+    3
+}
 
 /// Coherence daemon report — results of an auto-grooming pass.
 #[derive(Debug, Clone, Serialize)]

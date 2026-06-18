@@ -105,8 +105,8 @@ fn download_file(url: &str, dest: &PathBuf) -> Result<(), String> {
     let mut buf = [0u8; 65536];
     let mut downloaded: u64 = 0;
     loop {
-        let n = std::io::Read::read(&mut reader, &mut buf)
-            .map_err(|e| format!("read error: {}", e))?;
+        let n =
+            std::io::Read::read(&mut reader, &mut buf).map_err(|e| format!("read error: {}", e))?;
         if n == 0 {
             break;
         }
@@ -149,7 +149,10 @@ pub fn generate_embedding(
     {
         match generate_with_ort(config, text) {
             Ok(vec) => return Ok(vec),
-            Err(e) => eprintln!("mimir: native embedding failed ({}), trying Python fallback...", e),
+            Err(e) => eprintln!(
+                "mimir: native embedding failed ({}), trying Python fallback...",
+                e
+            ),
         }
     }
 
@@ -159,13 +162,11 @@ pub fn generate_embedding(
         Err(e) => eprintln!("mimir: Python embedding fallback failed ({})", e),
     }
 
-    Err(
-        "No embedding backend available. Options:\n\
+    Err("No embedding backend available. Options:\n\
          - Rebuild with: cargo build --release --features bundled-embeddings\n\
          - Install Python + onnxruntime: pip install onnxruntime\n\
          - Use Ollama: mimir serve --llm-endpoint http://localhost:11434"
-            .into(),
-    )
+        .into())
 }
 
 // ─── Native ort backend (feature = "bundled-embeddings") ─────────────────
@@ -182,9 +183,8 @@ fn generate_with_ort(
 
     let session = Session::builder()?.commit_from_file(&config.model_path)?;
 
-    let tokenizer =
-        tokenizers::Tokenizer::from_file(&tokenizer_path)
-            .map_err(|e| format!("failed to load tokenizer: {}", e))?;
+    let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
+        .map_err(|e| format!("failed to load tokenizer: {}", e))?;
 
     let encoding = tokenizer
         .encode(text, true)
@@ -202,12 +202,10 @@ fn generate_with_ort(
     let input_array = ndarray::Array1::from_vec(token_ids.clone());
     let mask_array = ndarray::Array1::from_vec(attention_mask.clone());
 
-    let input_tensor = ort::value::TensorRef::from_array_view(
-        &input_array.insert_axis(ndarray::Axis(0)),
-    )?;
-    let mask_tensor = ort::value::TensorRef::from_array_view(
-        &mask_array.insert_axis(ndarray::Axis(0)),
-    )?;
+    let input_tensor =
+        ort::value::TensorRef::from_array_view(&input_array.insert_axis(ndarray::Axis(0)))?;
+    let mask_tensor =
+        ort::value::TensorRef::from_array_view(&mask_array.insert_axis(ndarray::Axis(0)))?;
 
     let outputs = session.run(ort::inputs![
         "input_ids" => input_tensor,
@@ -215,8 +213,7 @@ fn generate_with_ort(
     ]?)?;
 
     // Extract last_hidden_state and mean pool
-    let hidden: &ort::value::TensorRef<f32> = outputs["last_hidden_state"]
-        .extract_tensor()?;
+    let hidden: &ort::value::TensorRef<f32> = outputs["last_hidden_state"].extract_tensor()?;
     let view = hidden.view();
     let seq_len = view.shape()[1];
     let dim = view.shape()[2];
@@ -309,7 +306,12 @@ except Exception as e:
         .arg("-c")
         .arg(&script)
         .output()
-        .map_err(|e| format!("failed to run python3: {}. Install Python 3 and onnxruntime.", e))?;
+        .map_err(|e| {
+            format!(
+                "failed to run python3: {}. Install Python 3 and onnxruntime.",
+                e
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

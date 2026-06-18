@@ -168,8 +168,7 @@ pub fn handle_request(
             match result_text {
                 Ok(text) => {
                     // Try to parse the result as JSON for structuredContent
-                    let structured: Option<serde_json::Value> =
-                        serde_json::from_str(&text).ok();
+                    let structured: Option<serde_json::Value> = serde_json::from_str(&text).ok();
                     let mut result = json!({
                         "content": [{
                             "type": "text",
@@ -185,8 +184,30 @@ pub fn handle_request(
                         result: Some(result),
                         error: None,
                     })
-                },
-                Err(error_response) => Some(error_response),
+                }
+                Err(error_response) => {
+                    // MCP spec: tool errors should be content-level isError:true,
+                    // not JSON-RPC protocol errors. Extract the error message and
+                    // wrap it in a successful response with isError flag.
+                    let error_msg = error_response
+                        .error
+                        .as_ref()
+                        .map(|e| e.message.clone())
+                        .unwrap_or_else(|| "Internal error".to_string());
+                    let result = json!({
+                        "content": [{
+                            "type": "text",
+                            "text": error_msg
+                        }],
+                        "isError": true
+                    });
+                    Some(JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id,
+                        result: Some(result),
+                        error: None,
+                    })
+                }
             }
         }
 
@@ -1583,9 +1604,7 @@ fn call_tool(
             tools::handle_recall(db, args).map_err(|e| error_response(id, -32603, &e))
         }
 
-        "mimir_ask" => {
-            tools::handle_ask(db, args).map_err(|e| error_response(id, -32603, &e))
-        }
+        "mimir_ask" => tools::handle_ask(db, args).map_err(|e| error_response(id, -32603, &e)),
 
         "mimir_get_entity" => {
             tools::handle_get_entity(db, args).map_err(|e| error_response(id, -32603, &e))
@@ -1598,13 +1617,9 @@ fn call_tool(
             tools::handle_ingest(db, args).map_err(|e| error_response(id, -32603, &e))
         }
 
-        "mimir_embed" => {
-            tools::handle_embed(db, args).map_err(|e| error_response(id, -32603, &e))
-        }
+        "mimir_embed" => tools::handle_embed(db, args).map_err(|e| error_response(id, -32603, &e)),
 
-        "mimir_prune" => {
-            tools::handle_prune(db, args).map_err(|e| error_response(id, -32603, &e))
-        }
+        "mimir_prune" => tools::handle_prune(db, args).map_err(|e| error_response(id, -32603, &e)),
 
         "mimir_link" => tools::handle_link(db, args).map_err(|e| error_response(id, -32603, &e)),
 
@@ -1653,8 +1668,12 @@ fn call_tool(
         "mimir_vault_import" => Ok(tools::handle_vault_import(db, args)),
         "mimir_decay" => Ok(tools::handle_decay(db, args)),
         "mimir_workspace_list" => Ok(tools::handle_workspace_list(db)),
-        "mimir_recall_when" => tools::handle_recall_when(db, args).map_err(|e| error_response(id, -32603, &e)),
-        "mimir_cohere" => tools::handle_cohere(db, args).map_err(|e| error_response(id, -32603, &e)),
+        "mimir_recall_when" => {
+            tools::handle_recall_when(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
+        "mimir_cohere" => {
+            tools::handle_cohere(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
 
         _ => Err(error_response(
             id,

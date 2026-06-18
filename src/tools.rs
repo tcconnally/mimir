@@ -234,7 +234,10 @@ pub fn handle_remember(db: &Database, args: Value) -> Result<String, String> {
                 .iter()
                 .map(|s| serde_json::Value::String(s.clone()))
                 .collect();
-            map.insert("recall_when".to_string(), serde_json::Value::Array(triggers));
+            map.insert(
+                "recall_when".to_string(),
+                serde_json::Value::Array(triggers),
+            );
         }
         serde_json::to_string(&obj).unwrap_or(a.body_json)
     };
@@ -335,7 +338,11 @@ fn handle_recall_with_expansion(db: &Database, a: &RecallArgs) -> Result<String,
     use std::collections::HashMap;
 
     let stemmer = Stemmer::create(Algorithm::English);
-    let tokens: Vec<&str> = a.query.split_whitespace().filter(|w| !w.is_empty()).collect();
+    let tokens: Vec<&str> = a
+        .query
+        .split_whitespace()
+        .filter(|w| !w.is_empty())
+        .collect();
     if tokens.is_empty() {
         return Err("Query expansion requires at least one token".to_string());
     }
@@ -343,7 +350,7 @@ fn handle_recall_with_expansion(db: &Database, a: &RecallArgs) -> Result<String,
     // Build variants: original query + stemmed alternatives
     let mut variants: Vec<String> = vec![a.query.clone()];
     for (i, &token) in tokens.iter().enumerate() {
-        if variants.len() >= a.expansion.n_variants + 1 {
+        if variants.len() > a.expansion.n_variants {
             break;
         }
         let stemmed = stemmer.stem(token).to_string();
@@ -409,7 +416,6 @@ fn handle_recall_with_expansion(db: &Database, a: &RecallArgs) -> Result<String,
     });
     Ok(result.to_string())
 }
-
 
 /// #103: Get a single entity by ID with full body (for drill-down after preview cap).
 pub fn handle_get_entity(db: &Database, args: Value) -> Result<String, String> {
@@ -720,7 +726,9 @@ pub struct VaultExportArgs {
 pub fn handle_vault_export(db: &Database, args: Value) -> String {
     let a: VaultExportArgs = match serde_json::from_value(args) {
         Ok(a) => a,
-        Err(e) => return json!({"error": format!("Invalid vault_export arguments: {}", e)}).to_string(),
+        Err(e) => {
+            return json!({"error": format!("Invalid vault_export arguments: {}", e)}).to_string()
+        }
     };
     let dir = if a.vault_dir.starts_with("~/") {
         let home = std::env::var("HOME")
@@ -741,7 +749,9 @@ pub fn handle_vault_export(db: &Database, args: Value) -> String {
 pub fn handle_vault_import(db: &Database, args: Value) -> String {
     let a: VaultExportArgs = match serde_json::from_value(args) {
         Ok(a) => a,
-        Err(e) => return json!({"error": format!("Invalid vault_import arguments: {}", e)}).to_string(),
+        Err(e) => {
+            return json!({"error": format!("Invalid vault_import arguments: {}", e)}).to_string()
+        }
     };
     let dir = if a.vault_dir.starts_with("~/") {
         let home = std::env::var("HOME")
@@ -780,7 +790,9 @@ fn default_max_nodes() -> i64 {
 pub fn handle_traverse(db: &Database, args: Value) -> String {
     let a: TraverseArgs = match serde_json::from_value(args) {
         Ok(a) => a,
-        Err(e) => return json!({"error": format!("Invalid traverse arguments: {}", e)}).to_string(),
+        Err(e) => {
+            return json!({"error": format!("Invalid traverse arguments: {}", e)}).to_string()
+        }
     };
     match db.traverse_chain(&a.category, &a.key, a.max_depth, a.max_nodes) {
         Ok(chain) => serde_json::to_string(&chain)
@@ -831,7 +843,9 @@ fn default_conflict_limit() -> i64 {
 pub fn handle_conflicts(db: &Database, args: Value) -> String {
     let a: ConflictArgs = match serde_json::from_value(args) {
         Ok(a) => a,
-        Err(e) => return json!({"error": format!("Invalid conflicts arguments: {}", e)}).to_string(),
+        Err(e) => {
+            return json!({"error": format!("Invalid conflicts arguments: {}", e)}).to_string()
+        }
     };
     match db.detect_conflicts(&a.category, a.threshold, a.limit, a.offset) {
         Ok(report) => serde_json::to_string(&report)
@@ -858,8 +872,9 @@ pub fn handle_ask(db: &Database, args: Value) -> Result<String, String> {
     }
 
     match db.ask(&params) {
-        Ok(result) => serde_json::to_string(&result)
-            .map_err(|e| format!("Serialization failed: {}", e)),
+        Ok(result) => {
+            serde_json::to_string(&result).map_err(|e| format!("Serialization failed: {}", e))
+        }
         Err(e) => Err(format!("Ask failed: {}", e)),
     }
 }
@@ -887,8 +902,9 @@ pub fn handle_prune(db: &Database, args: Value) -> Result<String, String> {
     let params: PruneParams =
         serde_json::from_value(args).map_err(|e| format!("Invalid prune arguments: {}", e))?;
     match db.prune(&params) {
-        Ok(report) => serde_json::to_string(&report)
-            .map_err(|e| format!("Serialization failed: {}", e)),
+        Ok(report) => {
+            serde_json::to_string(&report).map_err(|e| format!("Serialization failed: {}", e))
+        }
         Err(e) => Err(format!("Prune failed: {}", e)),
     }
 }
@@ -909,11 +925,13 @@ pub struct RecallWhenArgs {
     pub limit: i64,
 }
 
-fn default_rw_limit() -> i64 { 10 }
+fn default_rw_limit() -> i64 {
+    10
+}
 
 pub fn handle_recall_when(db: &Database, args: Value) -> Result<String, String> {
-    let a: RecallWhenArgs =
-        serde_json::from_value(args).map_err(|e| format!("Invalid recall_when arguments: {}", e))?;
+    let a: RecallWhenArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid recall_when arguments: {}", e))?;
 
     let entities = db
         .recall_when(&a.context, a.limit)
@@ -938,6 +956,5 @@ pub fn handle_cohere(db: &Database, args: Value) -> Result<String, String> {
         .cohere(&params)
         .map_err(|e| format!("Cohere failed: {}", e))?;
 
-    serde_json::to_string(&report)
-        .map_err(|e| format!("Serialization failed: {}", e))
+    serde_json::to_string(&report).map_err(|e| format!("Serialization failed: {}", e))
 }
