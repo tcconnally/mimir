@@ -12,12 +12,16 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   publish:
     uses: openclaw/clawhub/.github/workflows/skill-publish.yml@main
     with:
       owner: tcconnally
       root: clawhub/skills
-      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' || github.event_name == 'push' }}
     secrets:
       clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}
