@@ -31,13 +31,17 @@ pub struct Database {
     connectors: Vec<Box<dyn Connector>>,
 }
 
-/// Configuration for the LLM integration (Ollama API).
+/// Configuration for the LLM integration (Ollama or OpenAI-compatible API).
 #[derive(Clone)]
 pub struct LlmConfig {
     pub enabled: bool,
     pub endpoint: String,
     pub model: String,
     pub timeout_secs: u64,
+    pub api_key: Option<String>,
+    /// Separate embedding endpoint (defaults to Ollama /api/embed derived from endpoint).
+    /// Supports OpenAI-compatible /v1/embeddings format.
+    pub embedding_endpoint: Option<String>,
 }
 
 impl Default for LlmConfig {
@@ -47,6 +51,8 @@ impl Default for LlmConfig {
             endpoint: "http://localhost:11434/api/generate".to_string(),
             model: "llama3".to_string(),
             timeout_secs: 30,
+            api_key: None,
+            embedding_endpoint: None,
         }
     }
 }
@@ -98,12 +104,14 @@ impl Database {
     }
 
     /// Configure LLM integration for the mimir_ask tool.
-    pub fn set_llm(&mut self, enabled: bool, endpoint: &str, model: &str) {
+    pub fn set_llm(&mut self, enabled: bool, endpoint: &str, model: &str, api_key: Option<&str>, embedding_endpoint: Option<&str>) {
         self.llm_config = LlmConfig {
             enabled,
             endpoint: endpoint.to_string(),
             model: model.to_string(),
             timeout_secs: 30,
+            api_key: api_key.map(|s| s.to_string()),
+            embedding_endpoint: embedding_endpoint.map(|s| s.to_string()),
         };
     }
 
@@ -164,11 +172,15 @@ impl Database {
         });
 
         let body_str = serde_json::to_string(&body)?;
-        let response = ureq::post(&self.llm_config.endpoint)
+        let mut request = ureq::post(&self.llm_config.endpoint)
             .set("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(self.llm_config.timeout_secs))
+            .timeout(std::time::Duration::from_secs(self.llm_config.timeout_secs));
+        if let Some(ref key) = self.llm_config.api_key {
+            request = request.set("Authorization", &format!("Bearer {}", key));
+        }
+        let response = request
             .send_string(&body_str)
-            .map_err(|e| format!("Ollama API call failed: {}", e))?;
+            .map_err(|e| format!("LLM API call failed: {}", e))?;
 
         let response_body = response
             .into_string()
@@ -325,39 +337,85 @@ impl Database {
         }))
     }
 
-    /// Call Ollama /api/embed endpoint to get a dense vector for a text.
+    /// Call embed endpoint to get a dense vector for a text.
+    /// Supports both Ollama /api/embed and OpenAI-compatible /v1/embeddings.
     fn call_ollama_embed(&self, text: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         if !self.llm_config.enabled {
             return Err("LLM is not enabled. Set --llm-endpoint to use embedding.".into());
         }
-        let endpoint = self.llm_config.endpoint.replace("/api/generate", "/api/embed");
-        let body = serde_json::json!({
-            "model": self.llm_config.model,
-            "input": text,
+        // Determine embedding endpoint: explicit --embedding-endpoint wins,
+        // otherwise derive from the LLM endpoint by swapping /api/generate → /api/embed.
+        let endpoint = self.llm_config.embedding_endpoint.as_deref().unwrap_or_else(|| {
+            // Default: replace Ollama generate endpoint with embed
+            self.llm_config.endpoint.as_str()
         });
+        let effective_endpoint = if self.llm_config.embedding_endpoint.is_some() {
+            // Explicit endpoint: use as-is
+            endpoint.to_string()
+        } else {
+            // Derive: swap /api/generate for /api/embed (Ollama convention)
+            endpoint.replace("/api/generate", "/api/embed")
+        };
+
+        // Detect OpenAI-compatible format: endpoint contains /v1/
+        let is_openai = effective_endpoint.contains("/v1/");
+
+        let body = if is_openai {
+            serde_json::json!({
+                "model": self.llm_config.model,
+                "input": text,
+            })
+        } else {
+            serde_json::json!({
+                "model": self.llm_config.model,
+                "input": text,
+            })
+        };
         let body_str = serde_json::to_string(&body)?;
-        let response = ureq::post(&endpoint)
+
+        let mut request = ureq::post(&effective_endpoint)
             .set("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(self.llm_config.timeout_secs))
+            .timeout(std::time::Duration::from_secs(self.llm_config.timeout_secs));
+        if let Some(ref key) = self.llm_config.api_key {
+            request = request.set("Authorization", &format!("Bearer {}", key));
+        }
+        let response = request
             .send_string(&body_str)
-            .map_err(|e| format!("Ollama embed API call failed: {}", e))?;
+            .map_err(|e| format!("Embed API call failed at {}: {}", effective_endpoint, e))?;
         let response_body = response
             .into_string()
             .map_err(|e| format!("Failed to read embed response: {}", e))?;
         let json: serde_json::Value =
             serde_json::from_str(&response_body).map_err(|e| format!("Invalid embed response: {}", e))?;
 
-        let embeddings = json["embeddings"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|v| v.as_array())
-            .ok_or("No embeddings in Ollama response")?;
+        if is_openai {
+            // OpenAI format: {"data": [{"embedding": [0.1, 0.2, ...]}], ...}
+            let vec: Vec<f32> = json["data"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|v| v["embedding"].as_array())
+                .ok_or("No embeddings in OpenAI response")?
+                .iter()
+                .filter_map(|v| v.as_f64().map(|f| f as f32))
+                .collect();
+            if vec.is_empty() {
+                return Err("OpenAI returned empty embedding vector".into());
+            }
+            Ok(vec)
+        } else {
+            // Ollama format: {"embeddings": [[...]]}
+            let embeddings = json["embeddings"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.as_array())
+                .ok_or("No embeddings in Ollama response")?;
 
-        let vec: Vec<f32> = embeddings
-            .iter()
-            .filter_map(|v| v.as_f64().map(|f| f as f32))
-            .collect();
-        Ok(vec)
+            let vec: Vec<f32> = embeddings
+                .iter()
+                .filter_map(|v| v.as_f64().map(|f| f as f32))
+                .collect();
+            Ok(vec)
+        }
     }
 
     /// Bulk archive entities matching criteria (category, decay threshold, age).

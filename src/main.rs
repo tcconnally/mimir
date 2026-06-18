@@ -46,6 +46,15 @@ struct Cli {
     #[arg(long)]
     llm_endpoint: Option<String>,
 
+    /// API key for LLM endpoint (Bearer token — required for OpenAI, OpenRouter, etc.)
+    #[arg(long)]
+    llm_api_key: Option<String>,
+
+    /// Separate embedding endpoint (OpenAI /v1/embeddings, Ollama /api/embed, etc.)
+    /// If not set, defaults to Ollama /api/embed derived from llm_endpoint.
+    #[arg(long)]
+    embedding_endpoint: Option<String>,
+
     /// Path to ONNX embedding model (enables local embeddings, no Ollama required)
     #[arg(long)]
     embedding_model: Option<String>,
@@ -94,6 +103,15 @@ enum Commands {
         /// Ollama API endpoint for the mimir_ask RAG tool
         #[arg(long)]
         llm_endpoint: Option<String>,
+
+        /// API key for LLM endpoint (Bearer token — required for OpenAI, OpenRouter, etc.)
+        #[arg(long)]
+        llm_api_key: Option<String>,
+
+        /// Separate embedding endpoint (OpenAI /v1/embeddings, Ollama /api/embed, etc.)
+        /// If not set, defaults to Ollama /api/embed derived from llm_endpoint.
+        #[arg(long)]
+        embedding_endpoint: Option<String>,
 
         /// Path to ONNX embedding model (enables local embeddings, no Ollama required)
         #[arg(long)]
@@ -220,7 +238,7 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Serve { ref db, ref encryption_key, ref web, ref port, ref web_bind, ref llm_endpoint, ref llm_model, ref connectors_config, ref transport, .. }) => {
+        Some(Commands::Serve { ref db, ref encryption_key, ref web, ref port, ref web_bind, ref llm_endpoint, ref llm_api_key, ref embedding_endpoint, ref llm_model, ref embedding_model: _, ref connectors_config, ref transport, .. }) => {
             let db_path = db.clone();
             let mut database = match db::Database::open(&db_path) {
                 Ok(db) => db,
@@ -239,7 +257,7 @@ fn main() {
 
             // Configure LLM for mimir_ask if endpoint is provided
             if let Some(ref endpoint) = llm_endpoint {
-                database.set_llm(true, endpoint, llm_model);
+                database.set_llm(true, endpoint, llm_model, llm_api_key.as_deref(), embedding_endpoint.as_deref());
                 eprintln!("mimir: LLM enabled (endpoint: {}, model: {})", endpoint, llm_model);
             }
 
@@ -353,7 +371,7 @@ fn main() {
             }
 
             if let Some(ref endpoint) = cli.llm_endpoint {
-                database.set_llm(true, endpoint, &cli.llm_model);
+                database.set_llm(true, endpoint, &cli.llm_model, cli.llm_api_key.as_deref(), cli.embedding_endpoint.as_deref());
                 eprintln!("mimir: LLM enabled (endpoint: {}, model: {})", endpoint, cli.llm_model);
             }
 
