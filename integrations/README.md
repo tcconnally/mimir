@@ -7,9 +7,10 @@ Ready-to-use adapters that connect Mimir to popular AI agent frameworks.
 | Framework | Type | Directory |
 |---|---|---|
 | **LangGraph** (LangChain) | `BaseStore` implementation | [`langgraph/`](langgraph/) |
+| **CrewAI** | Agent Tool | [`crewai/`](crewai/) |
+| **AutoGen** (AG2 / autogen-core) | `Memory` implementation | [`autogen/`](autogen/) |
 | **Claude Code** (Anthropic) | MCP server config | [`../docs/integration/claude-code.md`](../docs/integration/claude-code.md) |
 | **Cursor** | MCP server config | [`../docs/integration/cursor.md`](../docs/integration/cursor.md) |
-| **CrewAI** | Agent Tool | [`crewai/`](crewai/) |
 
 ## Adding a New Integration
 

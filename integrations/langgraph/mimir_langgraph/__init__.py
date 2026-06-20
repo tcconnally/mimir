@@ -99,10 +99,13 @@ class MimirStore(BaseStore):
         args = [self.binary, "--db", self.db_path]
         if self.encryption_key:
             args.extend(["--encryption-key", self.encryption_key])
+        # ollama_url maps to Mimir's --llm-endpoint (there is no --ollama-url flag).
         if self.ollama_url:
-            args.extend(["--ollama-url", self.ollama_url])
+            args.extend(["--llm-endpoint", self.ollama_url])
+        # embedding_model maps to --llm-model for Ollama-backed embeddings.
+        # (Mimir's --embedding-model expects an ONNX model *path*, not a name.)
         if self.embedding_model:
-            args.extend(["--embedding-model", self.embedding_model])
+            args.extend(["--llm-model", self.embedding_model])
 
         self._proc = subprocess.Popen(
             args,

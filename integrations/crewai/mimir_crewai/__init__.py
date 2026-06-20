@@ -90,9 +90,10 @@ class MimirMemoryTool(BaseTool):
         self._req_id = 0
 
         # Send initialize request
+        init_id = self._next_id()
         init_req = json.dumps({
             "jsonrpc": "2.0",
-            "id": self._next_id(),
+            "id": init_id,
             "method": "initialize",
             "params": {
                 "protocolVersion": "2024-11-05",
@@ -108,7 +109,7 @@ class MimirMemoryTool(BaseTool):
             raise RuntimeError("Failed to initialize mimir process")
 
         # Read the initialize response (ignore — just consume it)
-        self._read_response(self._req_id - 1)
+        self._read_response(init_id)
 
     def _next_id(self) -> int:
         self._req_id += 1

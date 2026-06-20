@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mimir-autogen"
+version = "0.1.0"
+description = "Mimir persistent memory for AutoGen (AG2 / autogen-core) agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Perseus Computing LLC" }]
+keywords = ["autogen", "ag2", "mimir", "memory", "mcp", "agents"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "autogen-core>=0.4.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.urls]
+Homepage = "https://github.com/Perseus-Computing-LLC/mimir"
+Repository = "https://github.com/Perseus-Computing-LLC/mimir"
+
+[tool.setuptools]
+packages = ["mimir_autogen"]
+package-dir = { "" = "." }

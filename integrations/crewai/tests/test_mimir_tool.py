@@ -39,32 +39,78 @@ def MimirMemoryTool():
 
 
 def _fake_popen(routes):
+    """Build a FakePopen whose stdout replays JSON-RPC responses over the
+    persistent stdio session the tool uses (write/readline, not communicate).
+
+    ``routes`` maps a tool name → callable(args) -> payload dict. The fake
+    answers the initialize handshake with ``{}`` and each ``tools/call`` with
+    the MCP envelope wrapping the routed payload.
+    """
+    class FakeStdout:
+        def __init__(self):
+            self._lines = []
+
+        def push(self, line):
+            self._lines.append(line)
+
+        def readline(self):
+            if self._lines:
+                return self._lines.pop(0)
+            return ""
+
     class FakePopen:
         last_input = None
 
         def __init__(self, *args, **kwargs):
-            pass
+            self._stdout = FakeStdout()
+            self.stderr = None
 
-        def communicate(self, input=None, timeout=None):  # noqa: A002
-            FakePopen.last_input = input
-            call = next(
-                m
-                for m in (json.loads(line) for line in input.splitlines() if line)
-                if m.get("id") == 2
-            )
-            payload = routes[call["params"]["name"]](call["params"]["arguments"])
-            init_resp = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})
-            tool_resp = json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "result": {
-                        "content": [{"type": "text", "text": json.dumps(payload)}],
-                        "structuredContent": payload,
-                    },
-                }
-            )
-            return (init_resp + "\n" + tool_resp + "\n", "")
+            class _Stdin:
+                def __init__(self, outer):
+                    self.outer = outer
+
+                def write(self, data):
+                    FakePopen.last_input = data
+                    for line in data.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        msg = json.loads(line)
+                        mid = msg.get("id")
+                        if msg.get("method") == "initialize":
+                            self.outer._stdout.push(
+                                json.dumps({"jsonrpc": "2.0", "id": mid, "result": {}}) + "\n"
+                            )
+                        elif msg.get("method") == "tools/call":
+                            name = msg["params"]["name"]
+                            payload = routes[name](msg["params"]["arguments"])
+                            env = {
+                                "jsonrpc": "2.0",
+                                "id": mid,
+                                "result": {
+                                    "content": [{"type": "text", "text": json.dumps(payload)}],
+                                    "structuredContent": payload,
+                                },
+                            }
+                            self.outer._stdout.push(json.dumps(env) + "\n")
+
+                def flush(self):
+                    pass
+
+                def close(self):
+                    pass
+
+            self.stdin = _Stdin(self)
+
+        @property
+        def stdout(self):
+            return self._stdout
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
 
         def kill(self):
             pass

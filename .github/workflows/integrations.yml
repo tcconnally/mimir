@@ -1,0 +1,44 @@
+name: Integrations
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "integrations/**"
+      - ".github/workflows/integrations.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "integrations/**"
+      - ".github/workflows/integrations.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # autogen & crewai tests stub their framework deps — no install needed.
+          - adapter: autogen
+            extra_deps: ""
+          - adapter: crewai
+            extra_deps: ""
+          # langgraph adapter imports langgraph.store.base at module load,
+          # so the real package must be present to collect the tests.
+          - adapter: langgraph
+            extra_deps: "langgraph"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test deps
+        run: pip install pytest pytest-asyncio ${{ matrix.extra_deps }}
+
+      - name: Run ${{ matrix.adapter }} adapter tests
+        working-directory: integrations/${{ matrix.adapter }}
+        run: python -m pytest tests/ -v

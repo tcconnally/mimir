@@ -19,42 +19,76 @@ def _make_fake_popen(routes):
     """Build a fake ``subprocess.Popen`` driven by ``routes``.
 
     ``routes`` maps a Mimir tool name to a callable(arguments) -> payload dict.
-    The fake wraps that payload in Mimir's real envelope and records the last
-    ``communicate`` input so tests can assert what was sent.
+    The fake drives the persistent stdio session the store uses (write/readline,
+    not communicate): each ``initialize`` write gets an empty result and each
+    ``tools/call`` write gets the routed payload in Mimir's real MCP envelope.
     """
+
+    class FakeStdout:
+        def __init__(self):
+            self._lines = []
+
+        def push(self, line):
+            self._lines.append(line)
+
+        def readline(self):
+            if self._lines:
+                return self._lines.pop(0)
+            return ""
 
     class FakePopen:
         last_input: str | None = None
 
         def __init__(self, *args, **kwargs):
             self.args = args[0] if args else kwargs.get("args")
+            self._stdout = FakeStdout()
+            self.stderr = None
 
-        def communicate(self, input=None, timeout=None):  # noqa: A002
-            FakePopen.last_input = input
-            call = None
-            for line in (input or "").splitlines():
-                msg = json.loads(line)
-                if msg.get("id") == 2:
-                    call = msg
-            name = call["params"]["name"]
-            arguments = call["params"]["arguments"]
-            payload = routes[name](arguments)
-            init_resp = json.dumps(
-                {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05"}}
-            )
-            tool_resp = json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "result": {
-                        # Mimir always sends a text content block ...
-                        "content": [{"type": "text", "text": json.dumps(payload)}],
-                        # ... and structuredContent when the text parses as JSON.
-                        "structuredContent": payload,
-                    },
-                }
-            )
-            return (init_resp + "\n" + tool_resp + "\n", "")
+            class _Stdin:
+                def __init__(self, outer):
+                    self.outer = outer
+
+                def write(self, data):
+                    FakePopen.last_input = data
+                    for line in data.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        msg = json.loads(line)
+                        mid = msg.get("id")
+                        if msg.get("method") == "initialize":
+                            self.outer._stdout.push(json.dumps({
+                                "jsonrpc": "2.0", "id": mid,
+                                "result": {"protocolVersion": "2024-11-05"},
+                            }) + "\n")
+                        elif msg.get("method") == "tools/call":
+                            name = msg["params"]["name"]
+                            payload = routes[name](msg["params"]["arguments"])
+                            self.outer._stdout.push(json.dumps({
+                                "jsonrpc": "2.0", "id": mid,
+                                "result": {
+                                    "content": [{"type": "text", "text": json.dumps(payload)}],
+                                    "structuredContent": payload,
+                                },
+                            }) + "\n")
+
+                def flush(self):
+                    pass
+
+                def close(self):
+                    pass
+
+            self.stdin = _Stdin(self)
+
+        @property
+        def stdout(self):
+            return self._stdout
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
 
         def kill(self):
             pass
