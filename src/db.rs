@@ -253,6 +253,7 @@ impl Database {
                             verified: false,
                             source: format!("connector:{}", name),
                             workspace_hash: String::new(),
+                            agent_id: String::new(),
                             created_at_unix_ms: now,
                             last_accessed_unix_ms: now,
                             embedding: None,
@@ -571,7 +572,7 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding,
-                    always_on, certainty, workspace_hash
+                    always_on, certainty, workspace_hash, agent_id
              FROM entities WHERE archived = 0 AND embedding IS NOT NULL LIMIT {}",
             max_scan
         ))?;
@@ -854,9 +855,9 @@ impl Database {
                     decay_score = ?5, layer = ?6, topic_path = ?7,
                     archived = ?8, archive_reason = ?9, links = ?10,
                     verified = ?11, source = ?12, last_accessed_unix_ms = ?13,
-                    always_on = ?14, certainty = ?15, workspace_hash = ?16,
+                    always_on = ?14, certainty = ?15, workspace_hash = ?16, agent_id = ?17,
                     retrieval_count = retrieval_count + 1
-                 WHERE id = ?17",
+                 WHERE id = ?18",
                 params![
                     body_encrypted,
                     entity.status,
@@ -874,6 +875,7 @@ impl Database {
                     entity.always_on as i32,
                     entity.certainty,
                     entity.workspace_hash,
+                    entity.agent_id,
                     id,
                 ],
             )?;
@@ -914,11 +916,11 @@ impl Database {
                   decay_score, retrieval_count, layer, topic_path,
                   archived, archive_reason, links, verified, source,
                   always_on, certainty, created_at_unix_ms, last_accessed_unix_ms,
-                  workspace_hash)
+                  workspace_hash, agent_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                          ?8, ?9, ?10, ?11,
                          ?12, ?13, ?14, ?15, ?16,
-                         ?17, ?18, ?19, ?20, ?21)",
+                         ?17, ?18, ?19, ?20, ?21, ?22)",
                 params![
                     id,
                     entity.category,
@@ -941,6 +943,7 @@ impl Database {
                     entity.created_at_unix_ms,
                     entity.last_accessed_unix_ms,
                     entity.workspace_hash,
+                    entity.agent_id,
                 ],
             )?;
 
@@ -1104,6 +1107,13 @@ impl Database {
             param_values.push(Box::new(ws.clone()));
         }
 
+        // Filter by agent_id (v1.2.0 attribution). When set, only entities
+        // written by the specified agent are visible.
+        if let Some(ref aid) = params.agent_id {
+            conditions.push(format!("agent_id = ?{}", param_values.len() + 1));
+            param_values.push(Box::new(aid.clone()));
+        }
+
         // Exclude archived unless explicitly requested
         if !params.include_archived {
             conditions.push("archived = 0".to_string());
@@ -1115,7 +1125,7 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding,
-                    always_on, certainty, workspace_hash
+                    always_on, certainty, workspace_hash, agent_id
              FROM entities",
         );
 
@@ -1284,7 +1294,7 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding,
-                    always_on, certainty, workspace_hash
+                    always_on, certainty, workspace_hash, agent_id
              FROM entities WHERE category = ?1 AND key = ?2 LIMIT 1",
         )?;
 
@@ -1415,8 +1425,8 @@ impl Database {
         self.conn.execute(
             "INSERT INTO journal
              (id, event_type, evaluated_json, acted_json, forward_json,
-              category, key, entity_id, created_at_unix_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+              category, key, entity_id, agent_id, created_at_unix_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 event.id,
                 event.event_type,
@@ -1426,6 +1436,7 @@ impl Database {
                 event.category,
                 event.key,
                 event.entity_id,
+                event.agent_id,
                 event.created_at_unix_ms,
             ],
         )?;
@@ -1473,7 +1484,7 @@ impl Database {
 
         let mut sql = String::from(
             "SELECT id, event_type, evaluated_json, acted_json, forward_json,
-                    category, key, entity_id, created_at_unix_ms
+                    category, key, entity_id, agent_id, created_at_unix_ms
              FROM journal",
         );
 
@@ -1508,7 +1519,8 @@ impl Database {
                 category: row.get(5)?,
                 key: row.get(6)?,
                 entity_id: row.get(7)?,
-                created_at_unix_ms: row.get(8)?,
+                agent_id: row.get::<_, Option<String>>(8).unwrap_or(None).unwrap_or_default(),
+                created_at_unix_ms: row.get(9)?,
             })
         })?;
 
@@ -1777,7 +1789,7 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding,
-                    always_on, certainty, workspace_hash
+                    always_on, certainty, workspace_hash, agent_id
              FROM entities WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
@@ -1811,7 +1823,7 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding,
-                    always_on, certainty, workspace_hash
+                    always_on, certainty, workspace_hash, agent_id
              FROM entities WHERE archived = 0",
         );
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -1858,7 +1870,7 @@ impl Database {
     ) -> Result<Vec<JournalEvent>, Box<dyn std::error::Error>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, event_type, evaluated_json, acted_json, forward_json,
-                    category, key, entity_id, created_at_unix_ms
+                    category, key, entity_id, agent_id, created_at_unix_ms
              FROM journal ORDER BY created_at_unix_ms DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit], |row| {
@@ -1871,7 +1883,8 @@ impl Database {
                 category: row.get::<_, String>(5).unwrap_or_default(),
                 key: row.get::<_, String>(6).unwrap_or_default(),
                 entity_id: row.get::<_, String>(7).unwrap_or_default(),
-                created_at_unix_ms: row.get(8)?,
+                agent_id: row.get::<_, Option<String>>(8).unwrap_or(None).unwrap_or_default(),
+                created_at_unix_ms: row.get(9)?,
             })
         })?;
         let mut items = Vec::new();
@@ -2326,6 +2339,7 @@ last_accessed: {}
                 always_on: false,
                 certainty: 0.5,
                 workspace_hash: String::new(),
+                agent_id: String::new(),
                 created_at_unix_ms: now_ms(),
                 last_accessed_unix_ms: now_ms(),
                 embedding: None,
@@ -2478,7 +2492,7 @@ last_accessed: {}
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding,
-                    always_on, certainty, workspace_hash
+                    always_on, certainty, workspace_hash, agent_id
              FROM entities
              WHERE archived = 0 AND ({})
              ORDER BY decay_score DESC, retrieval_count DESC
@@ -2745,6 +2759,7 @@ fn entity_from_row(
         always_on: row.get::<_, i32>(19).unwrap_or(0) != 0,
         certainty: row.get::<_, f64>(20).unwrap_or(0.5),
         workspace_hash: row.get::<_, Option<String>>(21).unwrap_or(None).unwrap_or_default(),
+        agent_id: row.get::<_, Option<String>>(22).unwrap_or(None).unwrap_or_default(),
         created_at_unix_ms: row.get(16)?,
         last_accessed_unix_ms: row.get(17)?,
         embedding: None,
@@ -2785,6 +2800,7 @@ mod tests {
             always_on: false,
             certainty: 0.5,
             workspace_hash: String::new(),
+            agent_id: String::new(),
             created_at_unix_ms: now_ms(),
             last_accessed_unix_ms: now_ms(),
             embedding: None,
@@ -3007,6 +3023,7 @@ mod tests {
             category: "decision".to_string(),
             key: "use-pg".to_string(),
             entity_id: "e1".to_string(),
+            agent_id: "agent-1".to_string(),
             created_at_unix_ms: now_ms(),
         };
         db.journal(&event).unwrap();
@@ -3325,6 +3342,7 @@ mod tests {
                 diversity_halving: 1.0,
                 diversity_per_query_share: 0.0,
                 workspace_hash: None,
+            agent_id: None,
             },
         )
         .unwrap();
@@ -3451,6 +3469,7 @@ mod tests {
                     diversity_halving: 1.0f64,
                     diversity_per_query_share: 0.0f64,
                     workspace_hash: None,
+                    agent_id: None,
                 }) {
                     Ok(_) => {},
                     Err(e) => {
@@ -3509,6 +3528,7 @@ mod tests {
             diversity_halving: 1.0,
             diversity_per_query_share: 0.0,
             workspace_hash: ws,
+            agent_id: None,
         };
 
         // Scope to "alpha" — should only see ent_a
@@ -3551,12 +3571,87 @@ mod tests {
             mode: crate::models::SearchMode::Fts5, embedding: None, preview_cap: None,
             always_on: None, content_weight: 0.0, diversity_halving: 1.0,
             diversity_per_query_share: 0.0, workspace_hash: None,
+            agent_id: None,
         };
         let results = db.recall(&params).unwrap();
         let found = results.iter().find(|e| e.key == "key1").expect("entity recalled");
         assert_eq!(found.workspace_hash, "myworkspace", "workspace_hash must roundtrip");
         assert!(found.always_on, "always_on must roundtrip (regression: short SELECT dropped it)");
         assert_eq!(found.certainty, 0.9, "certainty must roundtrip");
+    }
+
+
+    #[test]
+    fn agent_id_filters_in_recall() {
+        // Phase 2 Week 4-6: entities tagged with agent_id are filterable.
+        let (db, _path) = temp_db();
+
+        let mut ent_a = make_entity("aid-a", "agents", "agent-a-key", r#"{"content":"alpha agent xyzzy unique data"}"#);
+        ent_a.agent_id = "squad-leader".to_string();
+        db.remember(&ent_a).unwrap();
+
+        let mut ent_b = make_entity("aid-b", "agents", "agent-b-key", r#"{"content":"beta agent plugh distinct info"}"#);
+        ent_b.agent_id = "scout".to_string();
+        db.remember(&ent_b).unwrap();
+
+        // No filter — sees both
+        let all = db.recall(&crate::models::RecallParams {
+            query: "agent".to_string(), agent_id: None,
+            ..crate::models::RecallParams::default()
+        }).unwrap();
+        let all_keys: Vec<_> = all.iter().map(|e| e.key.as_str()).collect();
+        assert!(all_keys.contains(&"agent-a-key"));
+        assert!(all_keys.contains(&"agent-b-key"));
+
+        // Filter by "squad-leader" — only sees ent_a
+        let squad = db.recall(&crate::models::RecallParams {
+            query: "agent".to_string(), agent_id: Some("squad-leader".to_string()),
+            ..crate::models::RecallParams::default()
+        }).unwrap();
+        let squad_keys: Vec<_> = squad.iter().map(|e| e.key.as_str()).collect();
+        assert!(squad_keys.contains(&"agent-a-key"));
+        assert!(!squad_keys.contains(&"agent-b-key"));
+        assert_eq!(squad.len(), 1);
+    }
+
+    #[test]
+    fn agent_id_roundtrips() {
+        let (db, _path) = temp_db();
+        let mut ent = make_entity("rt-aid", "agents", "k", r#"{"content":"roundtrip"}"#);
+        ent.workspace_hash = "scope".to_string();
+        ent.agent_id = "secret-agent-man".to_string();
+        db.remember(&ent).unwrap();
+
+        let results = db.recall(&crate::models::RecallParams {
+            query: "roundtrip".to_string(),
+            ..crate::models::RecallParams::default()
+        }).unwrap();
+        let found = results.iter().find(|e| e.key == "k").unwrap();
+        assert_eq!(found.agent_id, "secret-agent-man");
+        assert_eq!(found.workspace_hash, "scope");
+    }
+
+    #[test]
+    fn journal_agent_attribution() {
+        let (db, _path) = temp_db();
+        let event = crate::models::JournalEvent {
+            id: "jrn-agent-1".to_string(),
+            event_type: "test".to_string(),
+            evaluated_json: "{}".to_string(),
+            acted_json: "{}".to_string(),
+            forward_json: "{}".to_string(),
+            category: "test".to_string(),
+            key: "t1".to_string(),
+            entity_id: String::new(),
+            agent_id: "security-bot".to_string(),
+            created_at_unix_ms: now_ms(),
+        };
+        db.journal(&event).unwrap();
+
+        let events = db.timeline(&crate::models::TimelineParams::default()).unwrap();
+        assert!(!events.is_empty());
+        let found = events.iter().find(|e| e.id == "jrn-agent-1").unwrap();
+        assert_eq!(found.agent_id, "security-bot");
     }
 
 }

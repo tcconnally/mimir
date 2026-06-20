@@ -252,6 +252,11 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
           "type": "string",
           "default": "",
           "description": "Workspace scope identifier (v1.2.0). Empty = global. Entities with a workspace_hash are invisible to recall queries scoped to a different workspace."
+        },
+        "agent_id": {
+          "type": "string",
+          "default": "",
+          "description": "Agent identity (v1.2.0). Tracks which agent wrote this entity. Used for agent attribution and context filtering."
         }
       },
       "required": [
@@ -370,6 +375,10 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
         "workspace_hash": {
           "type": "string",
           "description": "Workspace scope filter (v1.2.0). When set, only entities with a matching workspace_hash are returned. Omit for no workspace filtering."
+        },
+        "agent_id": {
+          "type": "string",
+          "description": "Agent identity filter (v1.2.0). When set, only entities with a matching agent_id are returned. Omit for no agent filtering."
         }
       },
       "required": [
@@ -746,6 +755,11 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
         "entity_id": {
           "type": "string",
           "description": "Related entity ID for linking"
+        },
+        "agent_id": {
+          "type": "string",
+          "default": "",
+          "description": "Agent identity (v1.2.0). Records which agent created this journal event."
         }
       },
       "required": []

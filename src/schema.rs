@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS entities (
     embedding BLOB,
     always_on INTEGER DEFAULT 0,
     certainty REAL DEFAULT 0.5,
-    workspace_hash TEXT DEFAULT ''
+    workspace_hash TEXT DEFAULT '',
+    agent_id TEXT DEFAULT ''
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_category_key ON entities(category, key);
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS journal (
     category TEXT DEFAULT '',
     key TEXT DEFAULT '',
     entity_id TEXT DEFAULT '',
+    agent_id TEXT DEFAULT '',
     created_at_unix_ms INTEGER NOT NULL
 );
 
@@ -92,6 +94,18 @@ pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Er
         .is_ok();
     if !has_workspace_hash {
         conn.execute_batch("ALTER TABLE entities ADD COLUMN workspace_hash TEXT DEFAULT '';")?;
+    }
+
+    // Add agent_id column to entities (v1.2.0 — agent attribution)
+    let has_agent_id: bool = conn.prepare("SELECT agent_id FROM entities LIMIT 1").is_ok();
+    if !has_agent_id {
+        conn.execute_batch("ALTER TABLE entities ADD COLUMN agent_id TEXT DEFAULT '';")?;
+    }
+
+    // Add agent_id column to journal (v1.2.0 — journal attribution)
+    let has_journal_agent: bool = conn.prepare("SELECT agent_id FROM journal LIMIT 1").is_ok();
+    if !has_journal_agent {
+        conn.execute_batch("ALTER TABLE journal ADD COLUMN agent_id TEXT DEFAULT '';")?;
     }
 
     Ok(())

@@ -42,6 +42,10 @@ pub struct Entity {
     /// Entities are invisible across workspaces when a scope is set.
     #[serde(default)]
     pub workspace_hash: String,
+    /// Agent identity (v1.2.0). Tracks which agent wrote this entity.
+    /// Used for agent attribution and context filtering.
+    #[serde(default)]
+    pub agent_id: String,
     pub created_at_unix_ms: i64,
     pub last_accessed_unix_ms: i64,
     #[serde(skip)]
@@ -125,6 +129,7 @@ pub struct JournalEvent {
     pub key: String,
     #[serde(default)]
     pub entity_id: String,
+    pub agent_id: String,
     pub created_at_unix_ms: i64,
 }
 
@@ -172,6 +177,9 @@ pub struct RecallParams {
     /// Workspace scope filter (v1.2.0). When Some, only entities with a
     /// matching workspace_hash are returned. None = no workspace filtering.
     pub workspace_hash: Option<String>,
+    /// Agent identity filter (v1.2.0). When Some, only entities with a
+    /// matching agent_id are returned. None = no agent filtering.
+    pub agent_id: Option<String>,
 }
 
 /// Search mode for recall: FTS5 keyword, dense vector, or hybrid fusion.
@@ -231,6 +239,7 @@ impl Default for RecallParams {
             diversity_halving: 1.0,
             diversity_per_query_share: 0.0,
             workspace_hash: None,
+            agent_id: None,
         }
     }
 }

@@ -34,6 +34,8 @@ pub struct RememberArgs {
     pub certainty: f64,
     #[serde(default)]
     pub workspace_hash: String,
+    #[serde(default)]
+    pub agent_id: String,
 }
 
 fn default_certainty() -> f64 {
@@ -84,6 +86,8 @@ pub struct RecallArgs {
     pub diversity_halving: f64,
     #[serde(default)]
     pub workspace_hash: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 fn default_halving() -> f64 {
@@ -134,6 +138,8 @@ pub struct JournalArgs {
     pub key: String,
     #[serde(default)]
     pub entity_id: String,
+    #[serde(default)]
+    pub agent_id: String,
 }
 
 fn default_event_type() -> String {
@@ -270,6 +276,7 @@ pub fn handle_remember(db: &Database, args: Value) -> Result<String, String> {
         always_on: a.always_on,
         certainty: a.certainty,
         workspace_hash: a.workspace_hash.clone(),
+        agent_id: a.agent_id.clone(),
         created_at_unix_ms: now,
         last_accessed_unix_ms: now,
         embedding: None,
@@ -321,6 +328,7 @@ pub fn handle_recall(db: &Database, args: Value) -> Result<String, String> {
         diversity_halving: a.diversity_halving,
         diversity_per_query_share: 0.0,
         workspace_hash: a.workspace_hash.clone(),
+        agent_id: a.agent_id.clone(),
     };
 
     let entities = db
@@ -389,6 +397,7 @@ fn handle_recall_with_expansion(db: &Database, a: &RecallArgs) -> Result<String,
             diversity_halving: a.diversity_halving,
             diversity_per_query_share: 0.0,
             workspace_hash: a.workspace_hash.clone(),
+            agent_id: a.agent_id.clone(),
         };
 
         if let Ok(entities) = db.recall(&params) {
@@ -542,6 +551,7 @@ pub fn handle_journal(db: &Database, args: Value) -> Result<String, String> {
         category: a.category,
         key: a.key,
         entity_id: a.entity_id,
+        agent_id: a.agent_id,
         created_at_unix_ms: now_ms(),
     };
 
