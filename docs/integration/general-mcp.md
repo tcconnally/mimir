@@ -47,7 +47,7 @@ args:
 mcp_servers:
   mimir:
     command: "/usr/local/bin/mimir"
-    args: ["--db", "~/.mimir/data/mimir.db"]
+    args: ["--db", "/home/YOUR_USER/.mimir/data/mimir.db"]
     timeout: 60
     connect_timeout: 30
 ```
@@ -80,11 +80,11 @@ mcp_servers:
 }
 ```
 
-## All 29 Tools
+## All 30 Tools
 
 | Category | Tools |
 |---|---|
-| **CRUD** | `mimir_remember`, `mimir_recall`, `mimir_forget`, `mimir_recall_when` |
+| **CRUD** | `mimir_remember`, `mimir_recall`, `mimir_forget`, `mimir_get_entity`, `mimir_recall_when` |
 | **Graph** | `mimir_link`, `mimir_unlink`, `mimir_traverse` |
 | **Journal** | `mimir_journal`, `mimir_timeline` |
 | **State** | `mimir_state_set`, `mimir_state_get`, `mimir_state_delete`, `mimir_state_list` |

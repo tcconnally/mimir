@@ -12,14 +12,14 @@ and projects.
 # One-shot bootstrap (recommended)
 curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mimir/main/scripts/bootstrap.sh | bash
 
-# Or via cargo
-cargo install mimir
+# Or build from source via cargo
+cargo install --git https://github.com/Perseus-Computing-LLC/mimir
 ```
 
 Verify:
 ```bash
 mimir --version
-# Expected: mimir 1.0.0
+# Expected: mimir 1.0.1
 ```
 
 ### 2. Create a data directory
@@ -197,11 +197,11 @@ and explore the entity link graph.
 If you have Ollama running, Mimir can generate embeddings for hybrid search:
 
 ```bash
-# Ensure Ollama is running with a model
+# Ensure Ollama is running with an embedding-capable model
 ollama pull nomic-embed-text
 ```
 
-Then in your Mimir config, add the LLM configuration in the args:
+Then in your Mimir config, configure the LLM endpoint and model:
 
 ```json
 {
@@ -210,13 +210,17 @@ Then in your Mimir config, add the LLM configuration in the args:
       "command": "mimir",
       "args": [
         "--db", "/home/YOU/.mimir/data/mimir.db",
-        "--ollama-url", "http://localhost:11434",
-        "--embedding-model", "nomic-embed-text"
+        "--llm-endpoint", "http://localhost:11434/api/generate",
+        "--llm-model", "nomic-embed-text"
       ]
     }
   }
 }
 ```
 
-With hybrid search, `mimir_recall` with `search_mode: "hybrid"` combines
+> **Note:** `--llm-model` sets the model for BOTH embeddings and `mimir_ask`
+> (RAG). If you use `mimir_ask`, choose a model that supports both chat and
+> embeddings, or run a separate Mimir instance for each.
+
+With embeddings enabled, `mimir_recall` with `mode: "hybrid"` combines
 keyword matching with semantic similarity for better recall.

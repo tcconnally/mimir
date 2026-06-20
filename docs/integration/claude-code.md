@@ -12,14 +12,14 @@ across coding sessions.
 # One-shot bootstrap (recommended)
 curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mimir/main/scripts/bootstrap.sh | bash
 
-# Or via cargo
-cargo install mimir
+# Or build from source via cargo
+cargo install --git https://github.com/Perseus-Computing-LLC/mimir
 ```
 
 Verify:
 ```bash
 mimir --version
-# Expected: mimir 1.0.0
+# Expected: mimir 1.0.1
 ```
 
 ### 2. Create a data directory
