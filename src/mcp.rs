@@ -1853,10 +1853,145 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
         "created_at_unix_ms": {"type": "integer"}
       }
     },
-    "annotations": {
-      "destructiveHint": true
+    \"annotations\": {
+      \"destructiveHint\": true
     }
-  }]"###
+  },
+  {
+    \"name\": \"mimir_autocohere\",
+    \"description\": \"Run a full atomic grooming pass: cohere (promote, link, archive), then decay (recalculate Ebbinghaus decay), then compact (archive below threshold). Returns a summary report. Use dry_run=true to preview without changes.\",
+    \"inputSchema\": {
+      \"type\": \"object\",
+      \"properties\": {
+        \"dry_run\": {
+          \"type\": \"boolean\",
+          \"description\": \"If true, preview changes without writing\",
+          \"default\": false
+        }
+      }
+    },
+    \"outputSchema\": {
+      \"type\": \"object\",
+      \"properties\": {
+        \"promoted_entities\": {\"type\": \"integer\", \"description\": \"Entities promoted during cohere\"},
+        \"links_created\": {\"type\": \"integer\", \"description\": \"Auto-links created during cohere\"},
+        \"archived_entities\": {\"type\": \"integer\", \"description\": \"Entities archived (cohere + compact)\"},
+        \"decay_updates\": {\"type\": \"integer\", \"description\": \"Entities whose decay score was updated\"},
+        \"compact_archived_count\": {\"type\": \"integer\", \"description\": \"Entities archived during compact step\"},
+        \"db_size_delta_bytes\": {\"type\": \"integer\", \"description\": \"Change in SQLite file size in bytes\"},
+        \"dry_run\": {\"type\": \"boolean\"}
+      }
+    },
+    \"annotations\": {
+      \"destructiveHint\": true
+    }
+  },
+  {
+    \"name\": \"mimir_supersede\",
+    \"description\": \"Create a 'supersedes' relationship from a new fact to an old one, setting the old entity's status to 'deprecated'. Use this when a newer entity makes an older one obsolete.\",
+    \"inputSchema\": {
+      \"type\": \"object\",
+      \"properties\": {
+        \"from_category\": {
+          \"type\": \"string\",
+          \"description\": \"Category of the OLD entity being superseded\"
+        },
+        \"from_key\": {
+          \"type\": \"string\",
+          \"description\": \"Key of the OLD entity being superseded\"
+        },
+        \"to_category\": {
+          \"type\": \"string\",
+          \"description\": \"Category of the NEW entity that supersedes\"
+        },
+        \"to_key\": {
+          \"type\": \"string\",
+          \"description\": \"Key of the NEW entity that supersedes\"
+        },
+        \"reason\": {
+          \"type\": \"string\",
+          \"description\": \"Reason for superseding (recorded in archive_reason)\",
+          \"default\": \"\"
+        },
+        \"relationship\": {
+          \"type\": \"string\",
+          \"description\": \"Link relationship type (default: 'supersedes')\",
+          \"default\": \"supersedes\"
+        }
+      },
+      \"required\": [\"from_category\", \"from_key\", \"to_category\", \"to_key\"]
+    },
+    \"outputSchema\": {
+      \"type\": \"object\",
+      \"properties\": {
+        \"from_entity_id\": {\"type\": \"string\", \"description\": \"ID of the old (superseded) entity\"},
+        \"from_entity_category\": {\"type\": \"string\"},
+        \"from_entity_key\": {\"type\": \"string\"},
+        \"to_entity_id\": {\"type\": \"string\", \"description\": \"ID of the new (superseding) entity\"},
+        \"to_entity_category\": {\"type\": \"string\"},
+        \"to_entity_key\": {\"type\": \"string\"},
+        \"relationship\": {\"type\": \"string\"},
+        \"status_updated\": {\"type\": \"string\", \"description\": \"New status of the old entity (always 'deprecated')\"}
+      }
+    },
+    \"annotations\": {
+      \"destructiveHint\": true
+    }
+  },
+  {
+    \"name\": \"mimir_maintenance\",
+    \"description\": \"Database maintenance operations: deduplicate entities with identical (category, key), detect orphan journal entries and links, vacuum (reclaim disk space), reindex FTS5. Set dry_run=true to preview. Use 'all' to run everything.\",
+    \"inputSchema\": {
+      \"type\": \"object\",
+      \"properties\": {
+        \"dedup\": {
+          \"type\": \"boolean\",
+          \"description\": \"Find duplicate (category, key) entities and archive the oldest\",
+          \"default\": false
+        },
+        \"orphans\": {
+          \"type\": \"boolean\",
+          \"description\": \"Detect journal entries and links pointing to non-existent entities\",
+          \"default\": false
+        },
+        \"vacuum\": {
+          \"type\": \"boolean\",
+          \"description\": \"Run SQLite VACUUM to reclaim disk space\",
+          \"default\": false
+        },
+        \"reindex\": {
+          \"type\": \"boolean\",
+          \"description\": \"Rebuild the FTS5 search index from entities table\",
+          \"default\": false
+        },
+        \"all\": {
+          \"type\": \"boolean\",
+          \"description\": \"Run all maintenance operations (dedup, orphans, vacuum, reindex)\",
+          \"default\": false
+        },
+        \"dry_run\": {
+          \"type\": \"boolean\",
+          \"description\": \"If true, preview changes without writing\",
+          \"default\": false
+        }
+      }
+    },
+    \"outputSchema\": {
+      \"type\": \"object\",
+      \"properties\": {
+        \"dedup_archived\": {\"type\": \"integer\", \"description\": \"Number of duplicate entities archived\"},
+        \"orphan_journal_entries_found\": {\"type\": \"integer\", \"description\": \"Orphan journal entries detected\"},
+        \"orphan_links_found\": {\"type\": \"integer\", \"description\": \"Orphan links detected\"},
+        \"vacuum_reclaimed_bytes\": {\"type\": \"integer\", \"description\": \"Disk space reclaimed by VACUUM\"},
+        \"reindex_rows_affected\": {\"type\": \"integer\", \"description\": \"Rows reindexed into FTS5\"},
+        \"dry_run\": {\"type\": \"boolean\"},
+        \"errors\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}, \"description\": \"Errors encountered during maintenance\"}
+      }
+    },
+    \"annotations\": {
+      \"destructiveHint\": true
+    }
+  }]\"###
     ).expect("tools JSON must be valid");
 
     JsonRpcResponse {
@@ -1926,6 +2061,10 @@ fn call_tool(name: &str, db: &Database, args: Value, _id: Option<Value>) -> Stri
         "mimir_correct" => tools::handle_correct(db, args).map_err(|e| e.to_string()),
         "mimir_synthesize" => tools::handle_synthesize(db, args).map_err(|e| e.to_string()),
         "mimir_bench" => tools::handle_bench(db, args).map_err(|e| e.to_string()),
+
+        "mimir_autocohere" => tools::handle_autocohere(db, args).map_err(|e| e.to_string()),
+        "mimir_supersede" => tools::handle_supersede(db, args).map_err(|e| e.to_string()),
+        "mimir_maintenance" => tools::handle_maintenance(db, args).map_err(|e| e.to_string()),
 
         _ => Err(format!("Unknown tool: {}", name)),
     };

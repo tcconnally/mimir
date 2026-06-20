@@ -1051,7 +1051,13 @@ pub fn handle_workspace_list(db: &Database) -> String {
     }
 }
 
-// ─── New: recall_when + cohere handlers ─────────────────────────
+// ─── New: autocohere, recall_when + cohere handlers ─────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct AutocohereArgs {
+    #[serde(default)]
+    pub dry_run: bool,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct RecallWhenArgs {
@@ -1062,6 +1068,18 @@ pub struct RecallWhenArgs {
 
 fn default_rw_limit() -> i64 {
     10
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CohereArgs {
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default = "default_max_links_cohere")]
+    pub max_links: usize,
+}
+
+fn default_max_links_cohere() -> usize {
+    20
 }
 
 pub fn handle_recall_when(db: &Database, args: Value) -> Result<String, String> {
@@ -1083,15 +1101,234 @@ pub fn handle_recall_when(db: &Database, args: Value) -> Result<String, String> 
     Ok(result.to_string())
 }
 
-pub fn handle_cohere(db: &Database, args: Value) -> Result<String, String> {
-    let params: crate::models::CohereParams =
-        serde_json::from_value(args).map_err(|e| format!("Invalid cohere arguments: {}", e))?;
+pub fn handle_autocohere(db: &Database, args: Value) -> Result<String, String> {
+    let a: AutocohereArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid autocohere arguments: {}", e))?;
 
+    let mut total_promoted = 0i64;
+    let mut total_links = 0i64;
+    let mut total_archived_cohere = 0i64;
+
+    // 1. Run mimir_cohere (promote, link, archive)
+    let cohere_params = crate::models::CohereParams {
+        dry_run: a.dry_run,
+        ..Default::default()
+    };
+    let cohere_report = db
+        .cohere(&cohere_params)
+        .map_err(|e| format!("Autocohere step (cohere) failed: {}", e))?;
+
+    total_promoted += cohere_report.promoted;
+    total_links += cohere_report.linked;
+    total_archived_cohere += cohere_report.archived;
+
+    // 2. Then mimir_decay (recalculate Ebbinghaus decay)
+    let decay_report = db
+        .decay_tick()
+        .map_err(|e| format!("Autocohere step (decay) failed: {}", e))?;
+
+    // 3. Then mimir_compact (archive below threshold)
+    let compact_report = db
+        .compact(0.1, a.dry_run)
+        .map_err(|e| format!("Autocohere step (compact) failed: {}", e))?;
+
+    let initial_db_size = db
+        .file_size_bytes()
+        .map_err(|e| format!("Failed to get initial DB size: {}", e))?;
+    let final_db_size = if a.dry_run {
+        initial_db_size
+    } else {
+        db.file_size_bytes()
+            .map_err(|e| format!("Failed to get final DB size: {}", e))?
+    };
+
+    let result = json!({
+        "promoted_entities": total_promoted,
+        "links_created": total_links,
+        "archived_entities": total_archived_cohere + compact_report.entities_archived,
+        "decay_updates": decay_report.entities_updated,
+        "compact_archived_count": compact_report.entities_archived,
+        "db_size_delta_bytes": final_db_size as i64 - initial_db_size as i64,
+        "dry_run": a.dry_run,
+    });
+    Ok(result.to_string())
+}
+
+pub fn handle_cohere(db: &Database, args: Value) -> Result<String, String> {
+    let a: CohereArgs = serde_json::from_value(args).map_err(|e| format!("Invalid cohere arguments: {}", e))?;
+    let params = crate::models::CohereParams {
+        dry_run: a.dry_run,
+        max_links: a.max_links,
+        ..Default::default()
+    };
     let report = db
         .cohere(&params)
         .map_err(|e| format!("Cohere failed: {}", e))?;
 
     serde_json::to_string(&report).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+// ─── mimir_supersede handler ────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SupersedeArgs {
+    pub from_category: String,
+    pub from_key: String,
+    pub to_category: String,
+    pub to_key: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default = "default_relationship")]
+    pub relationship: String,
+}
+
+fn default_relationship() -> String {
+    "supersedes".to_string()
+}
+
+pub fn handle_supersede(db: &Database, args: Value) -> Result<String, String> {
+    let a: SupersedeArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid supersede arguments: {}", e))?;
+
+    // Find the 'from' entity
+    let from_entity = db
+        .get_entity(&a.from_category, &a.from_key)
+        .map_err(|e| format!("'From' entity lookup failed: {}", e))?
+        .ok_or_else(|| format!("'From' entity not found: {}/{}", a.from_category, a.from_key))?;
+
+    // Find the 'to' entity
+    let to_entity = db
+        .get_entity(&a.to_category, &a.to_key)
+        .map_err(|e| format!("'To' entity lookup failed: {}", e))?
+        .ok_or_else(|| format!("'To' entity not found: {}/{}", a.to_category, a.to_key))?;
+
+    // 1. Create a "supersedes" relationship link
+    db.link(
+        &to_entity.category,
+        &to_entity.key,
+        &from_entity.id,
+        &a.relationship,
+    )
+    .map_err(|e| format!("Supersede link failed: {}", e))?;
+
+    // 2. Set the OLD entity's status to "deprecated"
+    db.update_entity_status(&from_entity.id, "deprecated", &a.reason)
+        .map_err(|e| format!("Failed to deprecate 'from' entity: {}", e))?;
+
+    let result = json!({
+        "from_entity_id": from_entity.id,
+        "from_entity_category": from_entity.category,
+        "from_entity_key": from_entity.key,
+        "to_entity_id": to_entity.id,
+        "to_entity_category": to_entity.category,
+        "to_entity_key": to_entity.key,
+        "relationship": a.relationship,
+        "status_updated": "deprecated",
+    });
+    Ok(result.to_string())
+}
+
+// ─── mimir_maintenance handler ──────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct MaintenanceArgs {
+    #[serde(default)]
+    pub dedup: bool,
+    #[serde(default)]
+    pub orphans: bool,
+    #[serde(default)]
+    pub vacuum: bool,
+    #[serde(default)]
+    pub reindex: bool,
+    #[serde(default)]
+    pub all: bool,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+pub fn handle_maintenance(db: &Database, args: Value) -> Result<String, String> {
+    let a: MaintenanceArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid maintenance arguments: {}", e))?;
+
+    let mut report = json!({
+        "dedup_archived": 0,
+        "orphan_journal_entries_found": 0,
+        "orphan_links_found": 0,
+        "vacuum_reclaimed_bytes": 0,
+        "reindex_rows_affected": 0,
+        "dry_run": a.dry_run,
+        "errors": []
+    });
+
+    let current_db_size = db
+        .file_size_bytes()
+        .map_err(|e| format!("Failed to get DB size: {}", e))?;
+
+    // Dedup
+    if a.dedup || a.all {
+        match db.deduplicate_entities(a.dry_run) {
+            Ok(dedup_count) => {
+                report["dedup_archived"] = json!(dedup_count);
+            }
+            Err(e) => report["errors"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(format!("Dedup failed: {}", e))),
+        }
+    }
+
+    // Orphans
+    if a.orphans || a.all {
+        match db.detect_orphan_journal_entries() {
+            Ok(orphans_count) => {
+                report["orphan_journal_entries_found"] = json!(orphans_count);
+            }
+            Err(e) => report["errors"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(format!("Orphan journal detection failed: {}", e))),
+        }
+        match db.detect_orphan_links() {
+            Ok(orphans_count) => {
+                report["orphan_links_found"] = json!(orphans_count);
+            }
+            Err(e) => report["errors"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(format!("Orphan link detection failed: {}", e))),
+        }
+    }
+
+    // Vacuum
+    if (a.vacuum || a.all) && !a.dry_run {
+        match db.vacuum() {
+            Ok(_) => {
+                let after_vacuum_db_size = db
+                    .file_size_bytes()
+                    .map_err(|e| format!("Failed to get DB size after vacuum: {}", e))?;
+                report["vacuum_reclaimed_bytes"] = json!(current_db_size as i64 - after_vacuum_db_size as i64);
+            }
+            Err(e) => report["errors"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(format!("Vacuum failed: {}", e))),
+        }
+    }
+
+    // Reindex
+    if (a.reindex || a.all) && !a.dry_run {
+        match db.reindex_fts() {
+            Ok(n) => {
+                report["reindex_rows_affected"] = json!(n);
+            }
+            Err(e) => report["errors"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(format!("Reindex failed: {}", e))),
+        }
+    }
+
+    Ok(report.to_string())
 }
 
 // ─── mimir_correct handler ────────────────────────────────────────
@@ -1110,6 +1347,7 @@ pub struct CorrectArgs {
     #[serde(default = "default_visibility")]
     pub visibility: String,
 }
+
 
 pub fn handle_correct(db: &Database, args: Value) -> Result<String, String> {
     let a: CorrectArgs = serde_json::from_value(args)

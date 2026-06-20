@@ -1772,6 +1772,13 @@ impl Database {
         schema::gather_stats(&self.conn, &self.db_path)
     }
 
+    /// Get database file size in bytes.
+    pub fn file_size_bytes(&self) -> Result<u64, Box<dyn std::error::Error>> {
+        let path = std::path::Path::new(&self.db_path);
+        let metadata = std::fs::metadata(path)?;
+        Ok(metadata.len())
+    }
+
     /// Migrate from v0.1.x database.
     pub fn migrate_from_v0_1(
         &self,
@@ -1919,7 +1926,141 @@ impl Database {
         }
     }
 
-    /// Get entity by ID (internal helper).
+    /// Update an entity's status (e.g., to "deprecated").
+    pub fn update_entity_status(
+        &self,
+        id: &str,
+        status: &str,
+        reason: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.conn.execute(
+            "UPDATE entities SET status = ?1, archive_reason = ?2, last_accessed_unix_ms = ?3 WHERE id = ?4",
+            params![status, reason, now_ms(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Find entities with identical (category, key) and merge/archive duplicates, keeping the newest.
+    /// Returns the number of entities archived.
+    pub fn deduplicate_entities(&self, dry_run: bool) -> Result<i64, Box<dyn std::error::Error>> {
+        let mut archived_count = 0i64;
+
+        // Find duplicate (category, key) pairs, keeping the newest `created_at_unix_ms`.
+        let mut stmt = self.conn.prepare(
+            "SELECT T1.id, T1.category, T1.key FROM entities AS T1 JOIN (
+                SELECT category, key, MAX(created_at_unix_ms) as max_created_at
+                FROM entities
+                GROUP BY category, key
+                HAVING COUNT(*) > 1
+            ) AS T2 ON T1.category = T2.category AND T1.key = T2.key
+            WHERE T1.created_at_unix_ms < T2.max_created_at AND T1.archived = 0"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+
+        let mut ids_to_archive = Vec::new();
+        for row in rows {
+            let (id, category, key) = row?;
+            ids_to_archive.push(id);
+            eprintln!(
+                "mimir: deduplicate_entities: found duplicate {}/{} (will archive oldest)",
+                category, key
+            );
+        }
+
+        if !dry_run && !ids_to_archive.is_empty() {
+            let placeholders = ids_to_archive
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let tx = self.conn.unchecked_transaction()?;
+            let now = now_ms();
+
+            // Archive duplicates
+            let update_sql = format!(
+                "UPDATE entities SET archived = 1, archive_reason = 'deduplicate', last_accessed_unix_ms = ?1 WHERE id IN ({})",
+                placeholders
+            );
+
+            // Build the params list: first the timestamp, then all IDs
+            let mut param_refs: Vec<&dyn rusqlite::types::ToSql> = Vec::new();
+            let now_box: Box<dyn rusqlite::types::ToSql> = Box::new(now);
+            param_refs.push(now_box.as_ref());
+            let id_boxes: Vec<Box<dyn rusqlite::types::ToSql>> = ids_to_archive.iter().map(|s| Box::new(s.clone()) as Box<dyn rusqlite::types::ToSql>).collect();
+            for b in &id_boxes {
+                param_refs.push(b.as_ref());
+            }
+            archived_count = tx.execute(&update_sql, param_refs.as_slice())? as i64;
+
+            // Clean FTS5 index for archived entities
+            let delete_sql = format!(
+                "DELETE FROM entities_fts WHERE rowid IN (SELECT rowid FROM entities WHERE id IN ({}) )",
+                placeholders
+            );
+            let id_param_refs: Vec<&dyn rusqlite::types::ToSql> = id_boxes.iter().map(|b| b.as_ref()).collect();
+            tx.execute(&delete_sql, id_param_refs.as_slice())?;
+            tx.commit()?;
+        }
+
+        Ok(archived_count)
+    }
+
+    /// Detect journal entries pointing to archived/deleted entities.
+    /// Returns the number of orphan journal entries found.
+    pub fn detect_orphan_journal_entries(&self) -> Result<i64, Box<dyn std::error::Error>> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM journal WHERE entity_id IS NOT NULL AND entity_id != '' AND entity_id NOT IN (SELECT id FROM entities)",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Detect links pointing to archived/deleted entities.
+    /// Returns the number of orphan links found.
+    pub fn detect_orphan_links(&self) -> Result<i64, Box<dyn std::error::Error>> {
+        let mut orphan_count = 0i64;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, links FROM entities WHERE links != '[]'"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        for row in rows {
+            let (_entity_id, links_json) = row?;
+            let mut links: Vec<MemoryLink> = serde_json::from_str(&links_json).unwrap_or_default();
+            let original_len = links.len();
+
+            links.retain(|link| {
+                let target_exists: bool = self.conn.query_row(
+                    "SELECT COUNT(*) FROM entities WHERE id = ?1",
+                    params![&link.target_id],
+                    |r| r.get(0),
+                ).unwrap_or(0) > 0;
+                target_exists
+            });
+
+            if links.len() < original_len {
+                orphan_count += (original_len - links.len()) as i64;
+                // For dry_run, we just count. For actual run, we would update the entity.
+                // In this read-only detection function, we don't update.
+            }
+        }
+        Ok(orphan_count)
+    }
+
+    /// Run SQLite VACUUM command to reclaim space.
+    pub fn vacuum(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.conn.execute_batch("VACUUM")?;
+        Ok(())
+    }
+
+    /// Get a single entity by ID (internal helper).
     fn get_entity_by_id(&self, id: &str) -> Result<Option<Entity>, Box<dyn std::error::Error>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, category, key, body_json, status, type, tags,
