@@ -214,3 +214,73 @@ async fn handle_sse(
             .text("keep-alive"),
     ))
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt; // for `oneshot`
+
+    fn message_request(auth: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/message")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = auth {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {}", token));
+        }
+        builder
+            .body(Body::from(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
+            ))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn no_token_configured_allows_request() {
+        // When auth_token is None, requests pass through (state may be missing,
+        // which yields 503 — but crucially NOT 401).
+        let router = build_transport_router(TransportMode::Http, None);
+        let resp = router.oneshot(message_request(None)).await.unwrap();
+        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn missing_token_is_rejected() {
+        let router = build_transport_router(TransportMode::Http, Some("secret".to_string()));
+        let resp = router.oneshot(message_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn wrong_token_is_rejected() {
+        let router = build_transport_router(TransportMode::Http, Some("secret".to_string()));
+        let resp = router
+            .oneshot(message_request(Some("wrong")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn correct_token_passes_auth() {
+        // A correct token must clear the auth layer. State isn't initialized in
+        // this unit test, so the handler returns 503 — the point is it is NOT 401.
+        let router = build_transport_router(TransportMode::Http, Some("secret".to_string()));
+        let resp = router
+            .oneshot(message_request(Some("secret")))
+            .await
+            .unwrap();
+        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn unauthorized_response_sets_www_authenticate() {
+        let router = build_transport_router(TransportMode::Http, Some("secret".to_string()));
+        let resp = router.oneshot(message_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(resp.headers().contains_key(header::WWW_AUTHENTICATE));
+    }
+}

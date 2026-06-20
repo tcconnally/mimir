@@ -1306,6 +1306,7 @@ dependencies = [
  "serde_yaml",
  "tokenizers",
  "tokio",
+ "tower",
  "tower-http",
  "ureq 2.12.1",
  "uuid",

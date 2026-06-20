@@ -38,3 +38,6 @@ ndarray = { version = "0.16", optional = true }
 [features]
 default = []
 bundled-embeddings = ["ort", "tokenizers", "ndarray"]
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

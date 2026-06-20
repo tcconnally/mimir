@@ -78,6 +78,12 @@ struct Cli {
     /// MCP transport mode: stdio (default), sse, or http
     #[arg(long, default_value_t = String::from("stdio"))]
     transport: String,
+
+    /// Bearer token required for SSE/HTTP MCP transport (Authorization: Bearer <token>).
+    /// When set, all transport routes require this token and return 401 otherwise.
+    /// Has no effect on stdio transport.
+    #[arg(long)]
+    mcp_token: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -143,6 +149,12 @@ enum Commands {
         /// MCP transport mode: stdio (default), sse, or http
         #[arg(long, default_value_t = String::from("stdio"))]
         transport: String,
+
+        /// Bearer token required for SSE/HTTP MCP transport (Authorization: Bearer <token>).
+        /// When set, all transport routes require this token and return 401 otherwise.
+        /// Has no effect on stdio transport.
+        #[arg(long)]
+        mcp_token: Option<String>,
     },
 
     /// Migrate a v0.1.x Mimir database to v0.2.0 schema
@@ -443,6 +455,7 @@ fn main() {
             ref connectors_config,
             ref web_auth_token,
             ref transport,
+            ref mcp_token,
             ..
         }) => {
             let db_path = db.clone();
@@ -550,7 +563,8 @@ fn main() {
             if let Some(mode) = tmode {
                 let transport_db = std::sync::Arc::new(std::sync::Mutex::new(database));
                 crate::transport::init_transport_state(transport_db);
-                let transport_router = crate::transport::build_transport_router(mode, None);
+                let transport_router =
+                    crate::transport::build_transport_router(mode, mcp_token.clone());
                 let transport_addr = format!("{}:{}", web_bind, *port);
                 let mode_label = match mode {
                     transport::TransportMode::Sse => "sse",
@@ -694,7 +708,8 @@ fn main() {
             if let Some(mode) = transport_mode {
                 let transport_db = std::sync::Arc::new(std::sync::Mutex::new(database));
                 crate::transport::init_transport_state(transport_db);
-                let transport_router = crate::transport::build_transport_router(mode, None);
+                let transport_router =
+                    crate::transport::build_transport_router(mode, cli.mcp_token.clone());
                 let transport_addr = format!("{}:{}", cli.web_bind, cli.port);
                 let mode_label = match mode {
                     transport::TransportMode::Sse => "sse",
