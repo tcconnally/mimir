@@ -1,0 +1,250 @@
+syntax = "proto3";
+
+package mimir.v1;
+
+// Mimir gRPC service — maps all MCP tools to gRPC RPCs for the v2.0 platform.
+service Mimir {
+    // CRUD
+    rpc Remember(RememberRequest) returns (RememberResponse);
+    rpc Recall(RecallRequest) returns (RecallResponse);
+    rpc GetEntity(GetEntityRequest) returns (EntityMessage);
+    rpc Forget(ForgetRequest) returns (ForgetResponse);
+
+    // Graph
+    rpc Link(LinkRequest) returns (LinkResponse);
+    rpc Unlink(UnlinkRequest) returns (UnlinkResponse);
+    rpc Traverse(TraverseRequest) returns (TraverseResponse);
+
+    // Journal
+    rpc Journal(JournalRequest) returns (JournalEvent);
+    rpc Timeline(TimelineRequest) returns (TimelineResponse);
+
+    // State
+    rpc StateSet(StateSetRequest) returns (StateSetResponse);
+    rpc StateGet(StateGetRequest) returns (StateEntry);
+    rpc StateDelete(StateDeleteRequest) returns (StateDeleteResponse);
+    rpc StateList(StateListRequest) returns (StateListResponse);
+
+    // AI
+    rpc Ask(AskRequest) returns (AskResponse);
+    rpc Embed(EmbedRequest) returns (EmbedResponse);
+    rpc Cohere(CohereRequest) returns (CohereResponse);
+
+    // Lifecycle
+    rpc Decay(DecayRequest) returns (DecayResponse);
+    rpc Prune(PruneRequest) returns (PruneResponse);
+    rpc Compact(CompactRequest) returns (CompactResponse);
+    rpc Score(ScoreRequest) returns (ScoreResponse);
+
+    // Quality
+    rpc Conflicts(ConflictsRequest) returns (ConflictsResponse);
+
+    // Vault
+    rpc VaultExport(VaultExportRequest) returns (VaultExportResponse);
+    rpc VaultImport(VaultImportRequest) returns (VaultImportResponse);
+
+    // Ops
+    rpc Health(HealthRequest) returns (HealthResponse);
+    rpc Stats(StatsRequest) returns (StatsResponse);
+    rpc Context(ContextRequest) returns (ContextResponse);
+    rpc WorkspaceList(WorkspaceListRequest) returns (WorkspaceListResponse);
+
+    // v2.0: Federation
+    rpc Federate(FederateRequest) returns (FederateResponse);
+    rpc Share(ShareRequest) returns (ShareResponse);
+
+    // v2.0: Streaming
+    rpc WatchJournal(WatchJournalRequest) returns (stream JournalEvent);
+    rpc StreamContext(StreamContextRequest) returns (stream ContextChunk);
+}
+
+// ── Core entity ──
+message EntityMessage {
+    string id = 1;
+    string category = 2;
+    string key = 3;
+    string body_json = 4;
+    string status = 5;
+    string type = 6;
+    repeated string tags = 7;
+    double decay_score = 8;
+    int64 retrieval_count = 9;
+    string layer = 10;
+    string topic_path = 11;
+    bool archived = 12;
+    string archive_reason = 13;
+    bool verified = 14;
+    string source = 15;
+    bool always_on = 16;
+    double certainty = 17;
+    string workspace_hash = 18;
+    string agent_id = 19;
+    string visibility = 20;
+    int64 created_at_unix_ms = 21;
+    int64 last_accessed_unix_ms = 22;
+}
+
+message JournalEvent {
+    string id = 1;
+    string event_type = 2;
+    string evaluated_json = 3;
+    string acted_json = 4;
+    string forward_json = 5;
+    string category = 6;
+    string key = 7;
+    string entity_id = 8;
+    string agent_id = 9;
+    int64 created_at_unix_ms = 10;
+}
+
+// ── CRUD ──
+message RememberRequest {
+    string category = 1;
+    string key = 2;
+    string body_json = 3;
+    string status = 4;
+    string type = 5;
+    repeated string tags = 6;
+    double importance = 7;
+    string topic_path = 8;
+    repeated string recall_when = 9;
+    bool always_on = 10;
+    double certainty = 11;
+    string workspace_hash = 12;
+    string agent_id = 13;
+    string visibility = 14;
+}
+message RememberResponse { string id = 1; string action = 2; string category = 3; string key = 4; }
+
+message RecallRequest {
+    string query = 1;
+    optional string category = 2;
+    optional string type = 3;
+    int64 limit = 4;
+    int64 offset = 5;
+    double min_decay = 6;
+    optional string topic_path = 7;
+    bool include_archived = 8;
+    string mode = 9;
+    optional int64 preview_cap = 10;
+    optional bool always_on = 11;
+    double content_weight = 12;
+    double diversity_halving = 13;
+    optional string workspace_hash = 14;
+    optional string agent_id = 15;
+    optional string visibility = 16;
+}
+message RecallResponse { repeated EntityMessage items = 1; int64 total = 2; }
+
+message GetEntityRequest { string id = 1; }
+message ForgetRequest { string category = 1; string key = 2; string reason = 3; }
+message ForgetResponse { bool ok = 1; }
+
+// ── Graph ──
+message LinkRequest { string from_category = 1; string from_key = 2; string to_id = 3; string relationship = 4; }
+message LinkResponse { bool ok = 1; }
+message UnlinkRequest { string from_category = 1; string from_key = 2; string to_id = 3; }
+message UnlinkResponse { bool ok = 1; }
+message TraverseRequest { string category = 1; string key = 2; int32 max_depth = 3; int32 max_nodes = 4; }
+message TraverseResponse { repeated EntityMessage nodes = 1; }
+
+// ── Journal ──
+message JournalRequest {
+    string event_type = 1;
+    string category = 2;
+    string key = 3;
+    string entity_id = 4;
+    string agent_id = 5;
+    string evaluated_json = 6;
+    string acted_json = 7;
+    string forward_json = 8;
+}
+message TimelineRequest {
+    optional int64 from_ms = 1;
+    optional int64 to_ms = 2;
+    optional string event_type = 3;
+    optional string category = 4;
+    optional string entity_id = 5;
+    int64 limit = 6;
+    int64 offset = 7;
+}
+message TimelineResponse { repeated JournalEvent events = 1; int64 total = 2; }
+
+// ── State ──
+message StateSetRequest { string key = 1; string value_json = 2; optional int64 ttl_seconds = 3; }
+message StateSetResponse { bool ok = 1; }
+message StateGetRequest { string key = 1; }
+message StateEntry { string key = 1; string value_json = 2; optional int64 expires_at_unix_ms = 3; int64 created_at_unix_ms = 4; }
+message StateDeleteRequest { string key = 1; }
+message StateDeleteResponse { bool ok = 1; }
+message StateListRequest { string prefix = 1; }
+message StateListResponse { repeated string keys = 1; }
+
+// ── AI ──
+message AskRequest { string query = 1; int32 top_k = 2; }
+message AskResponse { string answer = 1; }
+
+message EmbedRequest {
+    optional string category = 1;
+    optional string key = 2;
+    optional string text = 3;
+    optional string batch_category = 4;
+    int32 batch_limit = 5;
+}
+message EmbedResponse { int64 embedded = 1; optional string id = 2; int32 dimensions = 3; }
+
+message CohereRequest {
+    bool dry_run = 1;
+    int32 max_links = 2;
+    int32 promote_threshold = 3;
+    double archive_threshold = 4;
+}
+message CohereResponse {
+    int64 examined = 1; int64 promoted = 2; int64 decayed = 3;
+    int64 linked = 4; int64 archived = 5;
+}
+
+// ── Lifecycle ──
+message DecayRequest {}
+message DecayResponse { int64 entities_checked = 1; int64 entities_updated = 2; int64 auto_archived = 3; }
+message PruneRequest { optional string category = 1; optional double min_decay = 2; optional int32 older_than_days = 3; int32 limit = 4; bool dry_run = 5; }
+message PruneResponse { int64 archived = 1; }
+message CompactRequest { bool dry_run = 1; double min_decay = 2; }
+message CompactResponse { int64 archived = 1; }
+message ScoreRequest { string category = 1; string key = 2; double score = 3; }
+message ScoreResponse { bool ok = 1; }
+
+// ── Quality ──
+message ConflictsRequest { string category = 1; double threshold = 2; int64 limit = 3; int64 offset = 4; }
+message ConflictsResponse { repeated ConflictPair pairs = 1; }
+message ConflictPair { EntityMessage entity_a = 1; EntityMessage entity_b = 2; double similarity = 3; bool certainty_boosted = 4; }
+
+// ── Vault ──
+message VaultExportRequest { string vault_dir = 1; optional string workspace_hash = 2; }
+message VaultExportResponse { int64 files_created = 1; int64 files_updated = 2; }
+message VaultImportRequest { string vault_dir = 1; }
+message VaultImportResponse { int64 files_created = 1; int64 files_updated = 2; }
+
+// ── Ops ──
+message HealthRequest {}
+message HealthResponse { bool healthy = 1; }
+message StatsRequest {}
+message StatsResponse {
+    int64 total_entities = 1; int64 total_journal = 2; int64 total_state = 3;
+    int64 db_size_bytes = 4;
+}
+message ContextRequest { repeated string categories = 1; int64 limit = 2; optional string agent_id = 3; }
+message ContextResponse { string context = 1; }
+message ContextChunk { string content = 1; }
+message WorkspaceListRequest {}
+message WorkspaceListResponse { repeated string categories = 1; }
+
+// ── Federation ──
+message FederateRequest { string from_workspace = 1; string to_workspace = 2; string vault_dir = 3; }
+message FederateResponse { int64 exported = 1; int64 remapped = 2; int64 imported = 3; }
+message ShareRequest { string category = 1; string key = 2; string to_workspace = 3; }
+message ShareResponse { string shared_id = 1; string action = 2; string from_workspace = 3; string to_workspace = 4; }
+
+// ── Streaming ──
+message WatchJournalRequest { optional string category = 1; }
+message StreamContextRequest { int32 interval_seconds = 1; int64 limit = 2; }

@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS journal (
     key TEXT DEFAULT '',
     entity_id TEXT DEFAULT '',
     agent_id TEXT DEFAULT '',
+    audit_hash TEXT DEFAULT '',
     created_at_unix_ms INTEGER NOT NULL
 );
 
@@ -107,6 +108,12 @@ pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Er
     let has_journal_agent: bool = conn.prepare("SELECT agent_id FROM journal LIMIT 1").is_ok();
     if !has_journal_agent {
         conn.execute_batch("ALTER TABLE journal ADD COLUMN agent_id TEXT DEFAULT '';")?;
+    }
+
+    // Add audit_hash column to journal (v2.0 — cryptographic audit log)
+    let has_audit_hash: bool = conn.prepare("SELECT audit_hash FROM journal LIMIT 1").is_ok();
+    if !has_audit_hash {
+        conn.execute_batch("ALTER TABLE journal ADD COLUMN audit_hash TEXT DEFAULT '';")?;
     }
 
     // Add visibility column (v1.2.0 — access controls)

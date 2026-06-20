@@ -7,6 +7,7 @@ mod models;
 mod schema;
 mod tools;
 mod transport;
+mod grpc;
 mod util;
 mod web;
 

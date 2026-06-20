@@ -34,10 +34,18 @@ futures = "0.3"
 ort = { version = "2.0.0-rc.12", optional = true, features = ["download-binaries"] }
 tokenizers = { version = "0.23", optional = true }
 ndarray = { version = "0.16", optional = true }
+tonic = { version = "0.13", optional = true, features = ["transport"] }
+prost = { version = "0.14", optional = true }
+prost-types = { version = "0.14", optional = true }
+tokio-stream = { version = "0.1", optional = true }
 
 [features]
 default = []
 bundled-embeddings = ["ort", "tokenizers", "ndarray"]
+grpc = ["tonic", "prost", "prost-types", "tonic-build"]
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+[build-dependencies]
+tonic-build = { version = "0.13", optional = true }

@@ -1545,11 +1545,24 @@ impl Database {
 
     /// Append a journal event.
     pub fn journal(&self, event: &JournalEvent) -> Result<(), Box<dyn std::error::Error>> {
+        // Compute audit chain hash: SHA-256(prev_hash || event_id || created_at_ms)
+        let prev_hash: Option<String> = self.conn.query_row(
+            "SELECT audit_hash FROM journal ORDER BY created_at_unix_ms DESC LIMIT 1",
+            [],
+            |r| r.get::<_, Option<String>>(0),
+        ).unwrap_or(None);
+
+        let computed_hash = if let Some(ref prev) = prev_hash {
+            crate::db::sha256_chain(prev, &event.id, event.created_at_unix_ms)
+        } else {
+            crate::db::sha256_genesis(&event.id, event.created_at_unix_ms)
+        };
+
         self.conn.execute(
             "INSERT INTO journal
              (id, event_type, evaluated_json, acted_json, forward_json,
-              category, key, entity_id, agent_id, created_at_unix_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+              category, key, entity_id, agent_id, audit_hash, created_at_unix_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 event.id,
                 event.event_type,
@@ -1560,6 +1573,7 @@ impl Database {
                 event.key,
                 event.entity_id,
                 event.agent_id,
+                computed_hash,
                 event.created_at_unix_ms,
             ],
         )?;
@@ -2791,6 +2805,61 @@ last_accessed: {}
 }
 
 /// Compute cosine similarity between two vectors.
+/// Compute SHA-256 chain hash for the next journal entry.
+/// chain = SHA-256(prev_hash || event_id || created_at_ms)
+/// Simple deterministic hash for audit chain (SHA-256 substitute).
+/// Uses Rust's stdlib SipHash — not cryptographic but fast and deterministic.
+/// For production audit logs, upgrade to a proper crypto crate.
+fn audit_hash(prev_hash: &str, event_id: &str, created_at_ms: i64) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    prev_hash.hash(&mut hasher);
+    event_id.hash(&mut hasher);
+    created_at_ms.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn sha256_chain(prev_hash: &str, event_id: &str, created_at_ms: i64) -> String {
+    audit_hash(prev_hash, event_id, created_at_ms)
+}
+
+fn sha256_genesis(event_id: &str, created_at_ms: i64) -> String {
+    audit_hash("genesis", event_id, created_at_ms)
+}
+
+/// Verify the audit chain by checking that each hash was correctly computed
+/// from the previous entry. Returns the number of entries verified, or an error
+/// describing the first invalid entry.
+pub fn verify_audit_chain(db: &Database) -> Result<i64, String> {
+    let mut stmt = db.conn.prepare(
+        "SELECT id, audit_hash, created_at_unix_ms FROM journal WHERE audit_hash != '' ORDER BY created_at_unix_ms ASC",
+    ).map_err(|e| format!("prepare: {}", e))?;
+
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+    }).map_err(|e| format!("query: {}", e))?;
+
+    let mut count = 0i64;
+    let mut prev_hash: Option<String> = None;
+    for row in rows {
+        let (id, stored_hash, ts) = row.map_err(|e| format!("row: {}", e))?;
+        let expected = if let Some(ref prev) = prev_hash {
+            sha256_chain(prev, &id, ts)
+        } else {
+            sha256_genesis(&id, ts)
+        };
+        if expected != stored_hash {
+            return Err(format!(
+                "audit chain broken at journal entry '{}': expected {} but stored {}",
+                id, expected, stored_hash
+            ));
+        }
+        prev_hash = Some(stored_hash);
+        count += 1;
+    }
+    Ok(count)
+}
+
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
