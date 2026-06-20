@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS entities (
     always_on INTEGER DEFAULT 0,
     certainty REAL DEFAULT 0.5,
     workspace_hash TEXT DEFAULT '',
-    agent_id TEXT DEFAULT ''
+    agent_id TEXT DEFAULT '',
+    visibility TEXT DEFAULT 'workspace'
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_category_key ON entities(category, key);
@@ -106,6 +107,12 @@ pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Er
     let has_journal_agent: bool = conn.prepare("SELECT agent_id FROM journal LIMIT 1").is_ok();
     if !has_journal_agent {
         conn.execute_batch("ALTER TABLE journal ADD COLUMN agent_id TEXT DEFAULT '';")?;
+    }
+
+    // Add visibility column (v1.2.0 — access controls)
+    let has_visibility: bool = conn.prepare("SELECT visibility FROM entities LIMIT 1").is_ok();
+    if !has_visibility {
+        conn.execute_batch("ALTER TABLE entities ADD COLUMN visibility TEXT DEFAULT 'workspace';")?;
     }
 
     Ok(())

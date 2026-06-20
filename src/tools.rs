@@ -36,10 +36,16 @@ pub struct RememberArgs {
     pub workspace_hash: String,
     #[serde(default)]
     pub agent_id: String,
+    #[serde(default = "default_visibility")]
+    pub visibility: String,
 }
 
 fn default_certainty() -> f64 {
     0.5
+}
+
+fn default_visibility() -> String {
+    "workspace".to_string()
 }
 
 fn default_status() -> String {
@@ -277,6 +283,7 @@ pub fn handle_remember(db: &Database, args: Value) -> Result<String, String> {
         certainty: a.certainty,
         workspace_hash: a.workspace_hash.clone(),
         agent_id: a.agent_id.clone(),
+        visibility: a.visibility.clone(),
         created_at_unix_ms: now,
         last_accessed_unix_ms: now,
         embedding: None,
@@ -329,6 +336,7 @@ pub fn handle_recall(db: &Database, args: Value) -> Result<String, String> {
         diversity_per_query_share: 0.0,
         workspace_hash: a.workspace_hash.clone(),
         agent_id: a.agent_id.clone(),
+        visibility: None,
     };
 
     let entities = db
@@ -398,6 +406,7 @@ fn handle_recall_with_expansion(db: &Database, a: &RecallArgs) -> Result<String,
             diversity_per_query_share: 0.0,
             workspace_hash: a.workspace_hash.clone(),
             agent_id: a.agent_id.clone(),
+            visibility: None,
         };
 
         if let Ok(entities) = db.recall(&params) {
@@ -988,6 +997,51 @@ pub fn handle_federate(db: &Database, args: Value) -> Result<String, String> {
         "import_errors": import_report.errors,
     });
     Ok(result.to_string())
+}
+
+pub fn handle_share(db: &Database, args: Value) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct ShareArgs {
+        category: String,
+        key: String,
+        to_workspace: String,
+    }
+    let a: ShareArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid share arguments: {}", e))?;
+
+    // Find the entity
+    // Recall by category first, then filter by key (FTS5 searches body_json,
+    // not the key column, so we can't use key as a query term reliably).
+    let entities = db.recall(&crate::models::RecallParams {
+        query: String::new(),
+        category: Some(a.category.clone()),
+        entity_type: None,
+        limit: 100,
+        offset: 0,
+        min_decay: 0.0,
+        topic_path: None,
+        include_archived: false,
+        skip_side_effects: true,
+        ..crate::models::RecallParams::default()
+    }).map_err(|e| format!("Recall failed: {}", e))?;
+
+    let src = entities.iter()
+        .find(|e| e.key == a.key)
+        .ok_or_else(|| format!("Entity not found: {}/{}", a.category, a.key))?;
+
+    // Clone entity into target workspace
+    let mut clone = src.clone();
+    clone.workspace_hash = a.to_workspace.clone();
+    // Force a new id so it doesn't collide
+    let raw_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+    clone.id = format!("mem-{}", &raw_id[..12.min(raw_id.len())]);
+    clone.retrieval_count = 0;
+    clone.layer = "buffer".to_string();
+
+    let (eid, action) = db.remember(&clone)
+        .map_err(|e| format!("Share failed: {}", e))?;
+
+    Ok(json!({"shared_id": eid, "action": action, "from_workspace": src.workspace_hash, "to_workspace": a.to_workspace}).to_string())
 }
 
 pub fn handle_workspace_list(db: &Database) -> String {

@@ -1598,6 +1598,52 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     }
   },
   {
+    "name": "mimir_share",
+    "description": "Share an entity to another workspace. Copies the entity (by category + key) from its current workspace into the target workspace, preserving content and metadata while generating a new ID. The original entity is unchanged. Use this for controlled cross-workspace knowledge transfer.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string",
+          "description": "Entity category to share"
+        },
+        "key": {
+          "type": "string",
+          "description": "Entity key to share"
+        },
+        "to_workspace": {
+          "type": "string",
+          "description": "Target workspace hash to copy the entity into"
+        }
+      },
+      "required": ["category", "key", "to_workspace"]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "shared_id": {
+          "type": "string",
+          "description": "ID of the new shared copy"
+        },
+        "action": {
+          "type": "string",
+          "description": "'created' or 'updated'"
+        },
+        "from_workspace": {
+          "type": "string",
+          "description": "Source workspace the entity was copied from"
+        },
+        "to_workspace": {
+          "type": "string",
+          "description": "Target workspace the entity was copied to"
+        }
+      }
+    },
+    "annotations": {
+      "destructiveHint": true
+    }
+  },
+  {
     "name": "mimir_federate",
     "description": "Federate entities from one workspace to another. Exports entities scoped to from_workspace, remaps their workspace_hash to to_workspace, and imports them — effectively copying or moving knowledge between workspaces. Use this for cross-agent or cross-project knowledge sharing without manual file transfer.",
     "inputSchema": {
@@ -1707,6 +1753,7 @@ fn call_tool(name: &str, db: &Database, args: Value, _id: Option<Value>) -> Stri
         "mimir_vault_import" => Ok(tools::handle_vault_import(db, args)),
         "mimir_decay" => Ok(tools::handle_decay(db, args)),
         "mimir_reindex" => Ok(tools::handle_reindex(db, args)),
+        "mimir_share" => tools::handle_share(db, args).map_err(|e| e.to_string()),
         "mimir_federate" => tools::handle_federate(db, args).map_err(|e| e.to_string()),
         "mimir_workspace_list" => Ok(tools::handle_workspace_list(db)),
         "mimir_recall_when" => tools::handle_recall_when(db, args).map_err(|e| e.to_string()),

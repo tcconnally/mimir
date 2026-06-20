@@ -46,6 +46,9 @@ pub struct Entity {
     /// Used for agent attribution and context filtering.
     #[serde(default)]
     pub agent_id: String,
+    /// Visibility: 'private', 'workspace', or 'public' (v1.2.0)
+    #[serde(default = "default_visibility")]
+    pub visibility: String,
     pub created_at_unix_ms: i64,
     pub last_accessed_unix_ms: i64,
     #[serde(skip)]
@@ -96,6 +99,10 @@ fn default_certainty() -> f64 {
     0.5
 }
 
+fn default_visibility() -> String {
+    "workspace".to_string()
+}
+
 /// A link between two entities. Stored as JSON array in entities.links.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryLink {
@@ -130,6 +137,7 @@ pub struct JournalEvent {
     #[serde(default)]
     pub entity_id: String,
     pub agent_id: String,
+    /// Visibility: 'private', 'workspace', or 'public' (v1.2.0)
     pub created_at_unix_ms: i64,
 }
 
@@ -180,6 +188,9 @@ pub struct RecallParams {
     /// Agent identity filter (v1.2.0). When Some, only entities with a
     /// matching agent_id are returned. None = no agent filtering.
     pub agent_id: Option<String>,
+    /// Visibility filter (v1.2.0). When Some, only entities with matching
+    /// visibility are returned. None = no visibility filter.
+    pub visibility: Option<String>,
 }
 
 /// Search mode for recall: FTS5 keyword, dense vector, or hybrid fusion.
@@ -240,6 +251,7 @@ impl Default for RecallParams {
             diversity_per_query_share: 0.0,
             workspace_hash: None,
             agent_id: None,
+            visibility: None,
         }
     }
 }

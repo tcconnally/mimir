@@ -84,6 +84,11 @@ struct Cli {
     /// Has no effect on stdio transport.
     #[arg(long)]
     mcp_token: Option<String>,
+
+    /// Token required for cross-workspace access (v1.2.0). When set, transport
+    /// routes accept this token as workspace authentication.
+    #[arg(long)]
+    workspace_token: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -155,6 +160,10 @@ enum Commands {
         /// Has no effect on stdio transport.
         #[arg(long)]
         mcp_token: Option<String>,
+
+        /// Token required for cross-workspace access (v1.2.0)
+        #[arg(long)]
+        workspace_token: Option<String>,
     },
 
     /// Migrate a v0.1.x Mimir database to v0.2.0 schema

@@ -254,6 +254,7 @@ impl Database {
                             source: format!("connector:{}", name),
                             workspace_hash: String::new(),
                             agent_id: String::new(),
+                                        visibility: "workspace".to_string(),
                             created_at_unix_ms: now,
                             last_accessed_unix_ms: now,
                             embedding: None,
@@ -572,7 +573,7 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding,
-                    always_on, certainty, workspace_hash, agent_id
+                    always_on, certainty, workspace_hash, agent_id, visibility
              FROM entities WHERE archived = 0 AND embedding IS NOT NULL LIMIT {}",
             max_scan
         ))?;
@@ -855,9 +856,9 @@ impl Database {
                     decay_score = ?5, layer = ?6, topic_path = ?7,
                     archived = ?8, archive_reason = ?9, links = ?10,
                     verified = ?11, source = ?12, last_accessed_unix_ms = ?13,
-                    always_on = ?14, certainty = ?15, workspace_hash = ?16, agent_id = ?17,
+                    always_on = ?14, certainty = ?15, workspace_hash = ?16, agent_id = ?17, visibility = ?18,
                     retrieval_count = retrieval_count + 1
-                 WHERE id = ?18",
+                 WHERE id = ?19",
                 params![
                     body_encrypted,
                     entity.status,
@@ -876,6 +877,7 @@ impl Database {
                     entity.certainty,
                     entity.workspace_hash,
                     entity.agent_id,
+                    entity.visibility,
                     id,
                 ],
             )?;
@@ -916,11 +918,11 @@ impl Database {
                   decay_score, retrieval_count, layer, topic_path,
                   archived, archive_reason, links, verified, source,
                   always_on, certainty, created_at_unix_ms, last_accessed_unix_ms,
-                  workspace_hash, agent_id)
+                  workspace_hash, agent_id, visibility)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                          ?8, ?9, ?10, ?11,
                          ?12, ?13, ?14, ?15, ?16,
-                         ?17, ?18, ?19, ?20, ?21, ?22)",
+                         ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
                 params![
                     id,
                     entity.category,
@@ -944,6 +946,7 @@ impl Database {
                     entity.last_accessed_unix_ms,
                     entity.workspace_hash,
                     entity.agent_id,
+                    entity.visibility,
                 ],
             )?;
 
@@ -1125,7 +1128,7 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding,
-                    always_on, certainty, workspace_hash, agent_id
+                    always_on, certainty, workspace_hash, agent_id, visibility
              FROM entities",
         );
 
@@ -1294,7 +1297,7 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding,
-                    always_on, certainty, workspace_hash, agent_id
+                    always_on, certainty, workspace_hash, agent_id, visibility
              FROM entities WHERE category = ?1 AND key = ?2 LIMIT 1",
         )?;
 
@@ -1789,7 +1792,7 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding,
-                    always_on, certainty, workspace_hash, agent_id
+                    always_on, certainty, workspace_hash, agent_id, visibility
              FROM entities WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
@@ -1823,7 +1826,7 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding,
-                    always_on, certainty, workspace_hash, agent_id
+                    always_on, certainty, workspace_hash, agent_id, visibility
              FROM entities WHERE archived = 0",
         );
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -2364,6 +2367,7 @@ last_accessed: {}
                 certainty: 0.5,
                 workspace_hash: workspace_hash_val,
                 agent_id: agent_id_val,
+                visibility: "workspace".to_string(),
                 created_at_unix_ms: now_ms(),
                 last_accessed_unix_ms: now_ms(),
                 embedding: None,
@@ -2516,7 +2520,7 @@ last_accessed: {}
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, embedding,
-                    always_on, certainty, workspace_hash, agent_id
+                    always_on, certainty, workspace_hash, agent_id, visibility
              FROM entities
              WHERE archived = 0 AND ({})
              ORDER BY decay_score DESC, retrieval_count DESC
@@ -2784,6 +2788,7 @@ fn entity_from_row(
         certainty: row.get::<_, f64>(20).unwrap_or(0.5),
         workspace_hash: row.get::<_, Option<String>>(21).unwrap_or(None).unwrap_or_default(),
         agent_id: row.get::<_, Option<String>>(22).unwrap_or(None).unwrap_or_default(),
+        visibility: row.get::<_, Option<String>>(23).unwrap_or(None).unwrap_or_else(|| "workspace".to_string()),
         created_at_unix_ms: row.get(16)?,
         last_accessed_unix_ms: row.get(17)?,
         embedding: None,
@@ -2825,7 +2830,8 @@ mod tests {
             certainty: 0.5,
             workspace_hash: String::new(),
             agent_id: String::new(),
-            created_at_unix_ms: now_ms(),
+            visibility: "workspace".to_string(),
+                            created_at_unix_ms: now_ms(),
             last_accessed_unix_ms: now_ms(),
             embedding: None,
         }
@@ -3367,6 +3373,7 @@ mod tests {
                 diversity_per_query_share: 0.0,
                 workspace_hash: None,
             agent_id: None,
+            visibility: None,
             },
         )
         .unwrap();
@@ -3494,6 +3501,7 @@ mod tests {
                     diversity_per_query_share: 0.0f64,
                     workspace_hash: None,
                     agent_id: None,
+                    visibility: None,
                 }) {
                     Ok(_) => {},
                     Err(e) => {
@@ -3553,6 +3561,7 @@ mod tests {
             diversity_per_query_share: 0.0,
             workspace_hash: ws,
             agent_id: None,
+            visibility: None,
         };
 
         // Scope to "alpha" — should only see ent_a
@@ -3596,6 +3605,7 @@ mod tests {
             always_on: None, content_weight: 0.0, diversity_halving: 1.0,
             diversity_per_query_share: 0.0, workspace_hash: None,
             agent_id: None,
+            visibility: None,
         };
         let results = db.recall(&params).unwrap();
         let found = results.iter().find(|e| e.key == "key1").expect("entity recalled");
