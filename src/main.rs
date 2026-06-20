@@ -550,7 +550,7 @@ fn main() {
             if let Some(mode) = tmode {
                 let transport_db = std::sync::Arc::new(std::sync::Mutex::new(database));
                 crate::transport::init_transport_state(transport_db);
-                let transport_router = crate::transport::build_transport_router(mode);
+                let transport_router = crate::transport::build_transport_router(mode, None);
                 let transport_addr = format!("{}:{}", web_bind, *port);
                 let mode_label = match mode {
                     transport::TransportMode::Sse => "sse",
@@ -564,7 +564,13 @@ fn main() {
                 if mode == transport::TransportMode::Sse {
                     eprintln!("mimir: GET  http://{}/sse", transport_addr);
                 }
-                let rt = tokio::runtime::Runtime::new().unwrap();
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        eprintln!("mimir: fatal: transport runtime creation failed: {}", e);
+                        std::process::exit(1);
+                    }
+                };
                 rt.block_on(async {
                     let listener = match tokio::net::TcpListener::bind(&transport_addr).await {
                         Ok(l) => l,
@@ -688,7 +694,7 @@ fn main() {
             if let Some(mode) = transport_mode {
                 let transport_db = std::sync::Arc::new(std::sync::Mutex::new(database));
                 crate::transport::init_transport_state(transport_db);
-                let transport_router = crate::transport::build_transport_router(mode);
+                let transport_router = crate::transport::build_transport_router(mode, None);
                 let transport_addr = format!("{}:{}", cli.web_bind, cli.port);
                 let mode_label = match mode {
                     transport::TransportMode::Sse => "sse",
@@ -702,7 +708,13 @@ fn main() {
                 if mode == transport::TransportMode::Sse {
                     eprintln!("mimir: GET  http://{}/sse", transport_addr);
                 }
-                let rt = tokio::runtime::Runtime::new().unwrap();
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        eprintln!("mimir: fatal: transport runtime creation failed: {}", e);
+                        std::process::exit(1);
+                    }
+                };
                 rt.block_on(async {
                     let listener = match tokio::net::TcpListener::bind(&transport_addr).await {
                         Ok(l) => l,

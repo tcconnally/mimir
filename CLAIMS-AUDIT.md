@@ -16,7 +16,7 @@ Claims checked against `src/`:
 - **"MCP-native"** — full JSON-RPC stdio server (`initialize`, `tools/list`, `tools/call`); verified live by the new smoke test, which performs a real handshake against a fresh database and asserts `mimir_remember` is advertised. ✓
 - **"SQLite + FTS5"** — schema.rs builds FTS5 tables; recall uses FTS5 queries. ✓
 - **"Fully local"** — no network dependencies in Cargo.toml runtime deps. ✓
-- **23 MCP tools** — exactly 23 distinct `mimir_*` tool names registered in `src/mcp.rs`. ✓
+- **30 MCP tools** — exactly 30 distinct `mimir_*` tool names registered in `src/mcp.rs`. ✓
 - **Rust test coverage** — 15 `#[test]` functions across db/schema/main/mcp. ✓
 
 ### Note for downstream consumers

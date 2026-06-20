@@ -116,7 +116,7 @@ impl FileWatcher {
             // Skip if unchanged
             let hash = Self::content_hash(&content);
             {
-                let mut hashes = self.file_hashes.lock().unwrap();
+                let mut hashes = self.file_hashes.lock().expect("file_hashes mutex poisoned");
                 if hashes.get(&path) == Some(&hash) {
                     continue;
                 }

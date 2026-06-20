@@ -1,6 +1,6 @@
 ---
 name: mimir-memory
-description: Self-hosted persistent memory for OpenClaw agents via Mimir MCP — 23 tools, hybrid search, AES-256 encryption, zero external dependencies
+description: Self-hosted persistent memory for OpenClaw agents via Mimir MCP — 30 tools, hybrid search, AES-256 encryption, zero external dependencies
 ---
 
 # Mimir — Self-Hosted Persistent Agent Memory

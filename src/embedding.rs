@@ -184,7 +184,10 @@ fn generate_with_ort(
 ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     use ort::session::Session;
 
-    let model_dir = config.model_path.parent().unwrap();
+    let model_dir = config
+        .model_path
+        .parent()
+        .expect("model_path must have a parent directory");
     let tokenizer_path = model_dir.join("tokenizer.json");
 
     let session = Session::builder()?.commit_from_file(&config.model_path)?;

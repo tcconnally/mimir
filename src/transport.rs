@@ -6,11 +6,12 @@
 // the server starts.
 
 use axum::{
-    extract::Query,
-    http::StatusCode,
+    extract::{Query, State},
+    http::{header, Request, StatusCode},
+    middleware::{self, Next},
     response::{
         sse::{Event, Sse},
-        Json,
+        Json, Response,
     },
     routing::{get, post},
     Router,
@@ -69,21 +70,65 @@ struct SseParams {
 }
 
 /// Build the MCP HTTP transport router.
-pub fn build_transport_router(mode: TransportMode) -> Router {
+///
+/// When `auth_token` is `Some`, every route requires a matching
+/// `Authorization: Bearer <token>` header and returns 401 otherwise.
+/// When `None`, auth is skipped entirely (backward compatible).
+pub fn build_transport_router(mode: TransportMode, auth_token: Option<String>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let router = Router::new()
-        .route("/message", post(handle_message))
-        .layer(cors);
+    let mut router = Router::new().route("/message", post(handle_message));
 
     if mode == TransportMode::Sse {
-        router.route("/sse", get(handle_sse))
-    } else {
-        router
+        router = router.route("/sse", get(handle_sse));
     }
+
+    router
+        .route_layer(middleware::from_fn_with_state(auth_token, auth_middleware))
+        .layer(cors)
+}
+
+/// Middleware: require a Bearer token if one is configured.
+/// Skips auth when `auth_token` is `None`.
+async fn auth_middleware(
+    State(auth_token): State<Option<String>>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let expected = match auth_token {
+        Some(token) => token,
+        None => return Ok(next.run(request).await),
+    };
+
+    let auth_header = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+
+    if let Some(auth) = auth_header {
+        if let Some(token) = auth.strip_prefix("Bearer ") {
+            if token == expected {
+                return Ok(next.run(request).await);
+            }
+        }
+    }
+
+    let mut response = Response::new(axum::body::Body::from(
+        json!({"error": "unauthorized", "message": "Valid Bearer token required"}).to_string(),
+    ));
+    *response.status_mut() = StatusCode::UNAUTHORIZED;
+    response.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        header::HeaderValue::from_static("Bearer"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/json"),
+    );
+    Ok(response)
 }
 
 /// Helper to get a reference to the global state.

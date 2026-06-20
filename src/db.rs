@@ -1224,7 +1224,10 @@ impl Database {
                     );
                     kw_order.push(kw.clone());
                 }
-                let remaining = kw_slots.get_mut(kw).unwrap();
+                let remaining = match kw_slots.get_mut(kw) {
+                    Some(r) => r,
+                    None => continue, // Should not happen: key was just inserted
+                };
                 if *remaining <= 0 {
                     continue; // This keyword's quota exhausted
                 }
