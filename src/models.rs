@@ -480,3 +480,86 @@ pub struct PruneReport {
     pub dry_run: bool,
     pub reason: String,
 }
+
+/// Parameters for the mimir_correct tool — structured correction capture.
+/// Stores what went wrong, what the user said, and what to do instead.
+#[derive(Debug, Deserialize)]
+pub struct CorrectParams {
+    pub wrong_approach: String,
+    pub user_correction: String,
+    pub task_context: String,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default = "default_visibility")]
+    pub visibility: String,
+}
+
+/// Result from mimir_correct.
+#[derive(Debug, Serialize)]
+pub struct CorrectResult {
+    pub entity_id: String,
+    pub journal_id: String,
+    pub category: String,
+    pub key: String,
+    pub created_at_unix_ms: i64,
+}
+
+/// Parameters for the mimir_synthesize tool — LLM-driven session synthesis.
+/// Reviews session content and extracts structured lessons learned.
+#[derive(Debug, Deserialize)]
+pub struct SynthesizeParams {
+    pub session_content: String,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub visibility: String,
+}
+
+/// A single synthesized lesson from session content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SynthesizedLesson {
+    pub lesson_type: String,  // "success", "failure", "correction", "dead_end", "decision", "insight"
+    pub summary: String,
+    pub evidence: String,
+    pub confidence: f64,
+}
+
+/// Result from mimir_synthesize.
+#[derive(Debug, Serialize)]
+pub struct SynthesizeResult {
+    pub lessons: Vec<SynthesizedLesson>,
+    pub entities_created: i64,
+    pub journal_id: String,
+    pub dry_run: bool,
+    pub completed_at_unix_ms: i64,
+}
+
+/// Parameters for mimir_bench — performance metrics tracking.
+#[derive(Debug, Deserialize)]
+pub struct BenchParams {
+    pub task_description: String,
+    pub turns_taken: i64,
+    pub tokens_used: i64,
+    pub memory_recall_used: bool,
+    pub recall_count: i64,
+    #[serde(default)]
+    pub task_success: bool,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Result from mimir_bench.
+#[derive(Debug, Serialize)]
+pub struct BenchResult {
+    pub entity_id: String,
+    pub created_at_unix_ms: i64,
+}
+

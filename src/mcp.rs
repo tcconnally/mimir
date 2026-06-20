@@ -1691,7 +1691,172 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
       "destructiveHint": true
     }
   }
-]"###
+,
+  {
+    "name": "mimir_correct",
+    "description": "Capture a user correction to the agent. Stores what went wrong, what the user said, and the lesson learned \u2014 as both a 'correction' entity and a journal entry. Use this every time the user corrects your approach. Enables the self-improving feedback loop: the agent learns from mistakes across sessions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "wrong_approach": {
+          "type": "string",
+          "description": "What the agent did that was wrong (the mistaken approach)"
+        },
+        "user_correction": {
+          "type": "string",
+          "description": "What the user said to correct the agent (the right way)"
+        },
+        "task_context": {
+          "type": "string",
+          "description": "What task was being attempted when the correction occurred"
+        },
+        "session_id": {
+          "type": "string",
+          "default": "",
+          "description": "Session identifier for traceability"
+        },
+        "tags": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Tags for categorization"
+        },
+        "category": {
+          "type": "string",
+          "default": "correction",
+          "description": "Entity category (default: 'correction')"
+        },
+        "visibility": {
+          "type": "string",
+          "default": "workspace",
+          "description": "Visibility: 'private', 'workspace', or 'public'"
+        }
+      },
+      "required": ["wrong_approach", "user_correction", "task_context"]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "entity_id": {"type": "string", "description": "Created correction entity ID"},
+        "journal_id": {"type": "string", "description": "Created journal entry ID"},
+        "category": {"type": "string"},
+        "key": {"type": "string"},
+        "created_at_unix_ms": {"type": "integer"}
+      }
+    },
+    "annotations": {
+      "destructiveHint": true
+    }
+  },
+  {
+    "name": "mimir_synthesize",
+    "description": "LLM-driven session synthesis. Reviews a session transcript and extracts structured lessons: what worked (success), what failed (failure), what was corrected (correction), what was abandoned (dead_end), and key decisions made (decision). Each lesson becomes an entity linked to a synthesis journal entry. Requires --llm-endpoint to be configured. This is the Perplexity-Brain-style overnight synthesis loop for agent self-improvement.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session_content": {
+          "type": "string",
+          "description": "Full session transcript to synthesize lessons from"
+        },
+        "session_id": {
+          "type": "string",
+          "default": "",
+          "description": "Session identifier for traceability"
+        },
+        "tags": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Tags applied to all synthesized entities"
+        },
+        "visibility": {
+          "type": "string",
+          "default": "workspace",
+          "description": "Visibility for synthesized entities"
+        }
+      },
+      "required": ["session_content"]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "lessons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "lesson_type": {"type": "string"},
+              "summary": {"type": "string"},
+              "evidence": {"type": "string"},
+              "confidence": {"type": "number"}
+            }
+          },
+          "description": "Extracted lessons with type, summary, evidence, and confidence"
+        },
+        "entities_created": {"type": "integer", "description": "Number of lesson entities created"},
+        "journal_id": {"type": "string"},
+        "dry_run": {"type": "boolean"},
+        "completed_at_unix_ms": {"type": "integer"}
+      }
+    },
+    "annotations": {
+      "destructiveHint": true
+    }
+  },
+  {
+    "name": "mimir_bench",
+    "description": "Record a performance benchmark data point. Tracks task metrics (turns taken, tokens used, success) alongside whether memory recall was used \u2014 enabling measurement of Mimir's impact on agent performance. Aggregate with mimir_recall to analyze trends.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "task_description": {
+          "type": "string",
+          "description": "Description of the task being measured"
+        },
+        "turns_taken": {
+          "type": "integer",
+          "description": "Number of conversation turns the task took"
+        },
+        "tokens_used": {
+          "type": "integer",
+          "description": "Total tokens consumed by the task"
+        },
+        "memory_recall_used": {
+          "type": "boolean",
+          "description": "Whether memory recall (mimir_recall) was used during this task"
+        },
+        "recall_count": {
+          "type": "integer",
+          "default": 0,
+          "description": "How many times memory was recalled during this task"
+        },
+        "task_success": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the task completed successfully"
+        },
+        "session_id": {
+          "type": "string",
+          "default": "",
+          "description": "Session identifier for traceability"
+        },
+        "tags": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Tags for categorization"
+        }
+      },
+      "required": ["task_description", "turns_taken", "tokens_used", "memory_recall_used"]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "entity_id": {"type": "string", "description": "Created benchmark entity ID"},
+        "created_at_unix_ms": {"type": "integer"}
+      }
+    },
+    "annotations": {
+      "destructiveHint": true
+    }
+  }]"###
     ).expect("tools JSON must be valid");
 
     JsonRpcResponse {
@@ -1758,6 +1923,9 @@ fn call_tool(name: &str, db: &Database, args: Value, _id: Option<Value>) -> Stri
         "mimir_workspace_list" => Ok(tools::handle_workspace_list(db)),
         "mimir_recall_when" => tools::handle_recall_when(db, args).map_err(|e| e.to_string()),
         "mimir_cohere" => tools::handle_cohere(db, args).map_err(|e| e.to_string()),
+        "mimir_correct" => tools::handle_correct(db, args).map_err(|e| e.to_string()),
+        "mimir_synthesize" => tools::handle_synthesize(db, args).map_err(|e| e.to_string()),
+        "mimir_bench" => tools::handle_bench(db, args).map_err(|e| e.to_string()),
 
         _ => Err(format!("Unknown tool: {}", name)),
     };

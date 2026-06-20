@@ -2802,6 +2802,270 @@ last_accessed: {}
             completed_at_unix_ms: now,
         })
     }
+    /// Structured correction capture — stores the wrong approach, user correction,
+    /// and task context as both an entity and a journal entry.
+    pub fn correct(&self, params: &crate::models::CorrectParams) -> Result<crate::models::CorrectResult, Box<dyn std::error::Error>> {
+        let id = format!("cor-{}", uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string());
+        let now = now_ms();
+        let category = if params.category.is_empty() { "correction".to_string() } else { params.category.clone() };
+        let key = format!("correction-{}", &id[4..16]);
+        
+        let body = serde_json::json!({
+            "wrong_approach": params.wrong_approach,
+            "user_correction": params.user_correction,
+            "task_context": params.task_context,
+            "session_id": params.session_id,
+            "lesson": format!("When {}: do NOT {}. Instead: {}", 
+                params.task_context, params.wrong_approach, params.user_correction),
+        });
+        
+        let entity = crate::models::Entity {
+            id: id.clone(),
+            category: category.clone(),
+            key: key.clone(),
+            body_json: serde_json::to_string(&body)?,
+            status: "active".to_string(),
+            entity_type: "correction".to_string(),
+            tags: params.tags.clone(),
+            decay_score: 1.0,
+            retrieval_count: 0,
+            layer: "working".to_string(),
+            topic_path: String::new(),
+            archived: false,
+            archive_reason: String::new(),
+            links: Vec::new(),
+            verified: false,
+            source: "mimir_correct".to_string(),
+            always_on: false,
+            certainty: 1.0,
+            workspace_hash: String::new(),
+            agent_id: String::new(),
+            visibility: params.visibility.clone(),
+            embedding: None,
+            created_at_unix_ms: now,
+            last_accessed_unix_ms: now,
+        };
+        self.remember(&entity)?;
+        
+        // Also create a journal entry
+        let journal_id = format!("jrn-{}", uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string());
+        let event = crate::models::JournalEvent {
+            id: journal_id.clone(),
+            event_type: "correction".to_string(),
+            evaluated_json: serde_json::to_string(&serde_json::json!({"wrong_approach": params.wrong_approach}))?,
+            acted_json: serde_json::to_string(&serde_json::json!({"user_correction": params.user_correction}))?,
+            forward_json: serde_json::to_string(&serde_json::json!({"lesson_learned": true, "task_context": params.task_context}))?,
+            category: category.clone(),
+            key: key.clone(),
+            entity_id: id.clone(),
+            agent_id: String::new(),
+            created_at_unix_ms: now,
+        };
+        self.journal(&event)?;
+        
+        Ok(crate::models::CorrectResult {
+            entity_id: id,
+            journal_id,
+            category,
+            key,
+            created_at_unix_ms: now,
+        })
+    }
+
+    /// Session synthesis — uses LLM to extract structured lessons from session content.
+    /// Creates entities for each lesson found.
+    pub fn synthesize(&self, params: &crate::models::SynthesizeParams) -> Result<crate::models::SynthesizeResult, Box<dyn std::error::Error>> {
+        if !self.llm_config.enabled {
+            return Err("LLM is not enabled. Set --llm-endpoint to enable mimir_synthesize.".into());
+        }
+        
+        let prompt = format!(
+            r#"You are a learning extraction system for an AI agent. Given a session transcript between a user and an AI agent, extract structured lessons about what worked and what didn't.
+
+CRITICAL INSTRUCTIONS:
+- Only extract lessons that are clearly evidenced in the transcript.
+- If the user explicitly corrected the agent, that's a high-confidence correction.
+- If the agent tried an approach and it failed, that's a failure lesson.
+- If the agent tried something and it worked well, that's a success lesson.
+- If an approach was abandoned without resolution, that's a dead_end.
+- If a key architectural or strategic decision was made, that's a decision.
+- Return ONLY valid JSON. No markdown, no commentary.
+
+Transcript:
+{}
+
+Return a JSON object with a "lessons" array. Each lesson has:
+- "lesson_type": one of "success", "failure", "correction", "dead_end", "decision", "insight"
+- "summary": one-line summary of the lesson (max 200 chars)
+- "evidence": quote or description from the transcript that supports this lesson (max 300 chars)
+- "confidence": number 0.0-1.0 indicating how confident you are in this lesson
+
+Example:
+{{"lessons": [{{"lesson_type": "correction", "summary": "Use absolute paths not relative paths for file operations", "evidence": "User said 'always use absolute paths' after agent used relative path", "confidence": 0.95}}]}}
+
+If no clear lessons found, return: {{"lessons": []}}"#,
+            params.session_content
+        );
+        
+        let body = serde_json::json!({
+            "model": self.llm_config.model,
+            "prompt": prompt,
+            "stream": false,
+        });
+        
+        let body_str = serde_json::to_string(&body)?;
+        let request = ureq::post(&self.llm_config.endpoint)
+            .set("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(self.llm_config.timeout_secs));
+        
+        let request = if let Some(ref key) = self.llm_config.api_key {
+            request.set("Authorization", &format!("Bearer {}", key))
+        } else {
+            request
+        };
+        
+        let response_body = request.send_string(&body_str)?.into_string()?;
+        let resp: serde_json::Value = serde_json::from_str(&response_body)?;
+        let response_text = resp["response"].as_str().unwrap_or_default();
+        
+        // Parse the LLM response as JSON
+        let lessons: Vec<crate::models::SynthesizedLesson> = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(response_text) {
+            if let Some(arr) = parsed["lessons"].as_array() {
+                arr.iter().filter_map(|l| {
+                    Some(crate::models::SynthesizedLesson {
+                        lesson_type: l["lesson_type"].as_str()?.to_string(),
+                        summary: l["summary"].as_str()?.to_string(),
+                        evidence: l["evidence"].as_str()?.to_string(),
+                        confidence: l["confidence"].as_f64()?,
+                    })
+                }).collect()
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+        
+        let now = now_ms();
+        let mut entities_created: i64 = 0;
+        
+        for lesson in &lessons {
+            let id = format!("syn-{}", uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string());
+            let key = format!("{}-{}", lesson.lesson_type, &id[4..16]);
+            let body = serde_json::json!({
+                "lesson_type": lesson.lesson_type,
+                "summary": lesson.summary,
+                "evidence": lesson.evidence,
+                "confidence": lesson.confidence,
+                "session_id": params.session_id,
+                "source": "mimir_synthesize",
+            });
+            
+            let entity = crate::models::Entity {
+                id: id.clone(),
+                category: "synthesis".to_string(),
+                key: key.clone(),
+                body_json: serde_json::to_string(&body)?,
+                status: "active".to_string(),
+                entity_type: "lesson".to_string(),
+                tags: params.tags.clone(),
+                decay_score: lesson.confidence,
+                retrieval_count: 0,
+                layer: "working".to_string(),
+                topic_path: String::new(),
+                archived: false,
+                archive_reason: String::new(),
+                links: Vec::new(),
+                verified: false,
+                source: "mimir_synthesize".to_string(),
+                always_on: false,
+                certainty: lesson.confidence,
+                workspace_hash: String::new(),
+                agent_id: String::new(),
+                visibility: if params.visibility.is_empty() { "workspace".to_string() } else { params.visibility.clone() },
+                embedding: None,
+                created_at_unix_ms: now,
+                last_accessed_unix_ms: now,
+            };
+            let _ = self.remember(&entity);
+            entities_created += 1;
+        }
+        
+        // Journal the synthesis run
+        let journal_id = format!("jrn-{}", uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string());
+        let event = crate::models::JournalEvent {
+            id: journal_id.clone(),
+            event_type: "synthesis".to_string(),
+            evaluated_json: serde_json::to_string(&serde_json::json!({"session_id": params.session_id, "content_length": params.session_content.len()}))?,
+            acted_json: serde_json::to_string(&serde_json::json!({"lessons_found": lessons.len(), "entities_created": entities_created}))?,
+            forward_json: serde_json::to_string(&serde_json::json!({"lesson_types": lessons.iter().map(|l| &l.lesson_type).collect::<Vec<_>>()}))?,
+            category: "synthesis".to_string(),
+            key: format!("session-{}", params.session_id),
+            entity_id: String::new(),
+            agent_id: String::new(),
+            created_at_unix_ms: now,
+        };
+        self.journal(&event)?;
+        
+        Ok(crate::models::SynthesizeResult {
+            lessons,
+            entities_created,
+            journal_id,
+            dry_run: false,
+            completed_at_unix_ms: now,
+        })
+    }
+
+    /// Performance benchmark tracking — records task metrics linked to memory recall usage.
+    pub fn bench(&self, params: &crate::models::BenchParams) -> Result<crate::models::BenchResult, Box<dyn std::error::Error>> {
+        let id = format!("bch-{}", uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string());
+        let now = now_ms();
+        let key = format!("bench-{}", &id[4..16]);
+        
+        let body = serde_json::json!({
+            "task_description": params.task_description,
+            "turns_taken": params.turns_taken,
+            "tokens_used": params.tokens_used,
+            "memory_recall_used": params.memory_recall_used,
+            "recall_count": params.recall_count,
+            "task_success": params.task_success,
+            "session_id": params.session_id,
+            "tokens_per_turn": if params.turns_taken > 0 { params.tokens_used / params.turns_taken } else { 0 },
+        });
+        
+        let entity = crate::models::Entity {
+            id: id.clone(),
+            category: "benchmark".to_string(),
+            key: key.clone(),
+            body_json: serde_json::to_string(&body)?,
+            status: "active".to_string(),
+            entity_type: "benchmark".to_string(),
+            tags: params.tags.clone(),
+            decay_score: 0.5,
+            retrieval_count: 0,
+            layer: "working".to_string(),
+            topic_path: String::new(),
+            archived: false,
+            archive_reason: String::new(),
+            links: Vec::new(),
+            verified: false,
+            source: "mimir_bench".to_string(),
+            always_on: false,
+            certainty: 0.5,
+            workspace_hash: String::new(),
+            agent_id: String::new(),
+            visibility: "workspace".to_string(),
+            embedding: None, created_at_unix_ms: now,
+            last_accessed_unix_ms: now,
+        };
+        self.remember(&entity)?;
+        
+        Ok(crate::models::BenchResult {
+            entity_id: id,
+            created_at_unix_ms: now,
+        })
+    }
+
 }
 
 /// Compute cosine similarity between two vectors.

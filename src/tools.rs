@@ -1093,3 +1093,110 @@ pub fn handle_cohere(db: &Database, args: Value) -> Result<String, String> {
 
     serde_json::to_string(&report).map_err(|e| format!("Serialization failed: {}", e))
 }
+
+// ─── mimir_correct handler ────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct CorrectArgs {
+    pub wrong_approach: String,
+    pub user_correction: String,
+    pub task_context: String,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default = "default_visibility")]
+    pub visibility: String,
+}
+
+pub fn handle_correct(db: &Database, args: Value) -> Result<String, String> {
+    let a: CorrectArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid correct arguments: {}", e))?;
+
+    let params = crate::models::CorrectParams {
+        wrong_approach: a.wrong_approach,
+        user_correction: a.user_correction,
+        task_context: a.task_context,
+        session_id: a.session_id,
+        tags: a.tags,
+        category: a.category,
+        visibility: a.visibility,
+    };
+
+    let result = db.correct(&params)
+        .map_err(|e| format!("Correct failed: {}", e))?;
+
+    serde_json::to_string(&result).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+// ─── mimir_synthesize handler ────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SynthesizeArgs {
+    pub session_content: String,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub visibility: String,
+}
+
+pub fn handle_synthesize(db: &Database, args: Value) -> Result<String, String> {
+    let a: SynthesizeArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid synthesize arguments: {}", e))?;
+
+    let params = crate::models::SynthesizeParams {
+        session_content: a.session_content,
+        session_id: a.session_id,
+        tags: a.tags,
+        visibility: a.visibility,
+    };
+
+    let result = db.synthesize(&params)
+        .map_err(|e| format!("Synthesize failed: {}", e))?;
+
+    serde_json::to_string(&result).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+// ─── mimir_bench handler ─────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct BenchArgs {
+    pub task_description: String,
+    pub turns_taken: i64,
+    pub tokens_used: i64,
+    pub memory_recall_used: bool,
+    #[serde(default)]
+    pub recall_count: i64,
+    #[serde(default)]
+    pub task_success: bool,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+pub fn handle_bench(db: &Database, args: Value) -> Result<String, String> {
+    let a: BenchArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid bench arguments: {}", e))?;
+
+    let params = crate::models::BenchParams {
+        task_description: a.task_description,
+        turns_taken: a.turns_taken,
+        tokens_used: a.tokens_used,
+        memory_recall_used: a.memory_recall_used,
+        recall_count: a.recall_count,
+        task_success: a.task_success,
+        session_id: a.session_id,
+        tags: a.tags,
+    };
+
+    let result = db.bench(&params)
+        .map_err(|e| format!("Bench failed: {}", e))?;
+
+    serde_json::to_string(&result).map_err(|e| format!("Serialization failed: {}", e))
+}
+
