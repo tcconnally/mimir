@@ -1454,6 +1454,26 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     }
   },
   {
+    "name": "mimir_reindex",
+    "description": "Rebuild the FTS5 search index from the entities table. Repairs index drift — e.g. after a direct SQLite write, an interrupted archive, or a legacy database written before the atomic prune/forget fixes — so archived entities stop surfacing in recall/search. Returns the number of entities reindexed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "reindexed": {
+          "type": "integer",
+          "description": "Number of non-archived entities indexed into FTS5"
+        }
+      }
+    },
+    "annotations": {
+      "destructiveHint": true
+    }
+  },
+  {
     "name": "mimir_workspace_list",
     "description": "List all distinct entity categories present in the database. Use this to discover what knowledge domains exist before querying with mimir_recall or mimir_context.",
     "inputSchema": {
@@ -1615,6 +1635,7 @@ fn call_tool(name: &str, db: &Database, args: Value, _id: Option<Value>) -> Stri
         "mimir_vault_export" => Ok(tools::handle_vault_export(db, args)),
         "mimir_vault_import" => Ok(tools::handle_vault_import(db, args)),
         "mimir_decay" => Ok(tools::handle_decay(db, args)),
+        "mimir_reindex" => Ok(tools::handle_reindex(db, args)),
         "mimir_workspace_list" => Ok(tools::handle_workspace_list(db)),
         "mimir_recall_when" => tools::handle_recall_when(db, args).map_err(|e| e.to_string()),
         "mimir_cohere" => tools::handle_cohere(db, args).map_err(|e| e.to_string()),

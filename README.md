@@ -11,7 +11,7 @@
 Mimir is a lightweight **MCP JSON-RPC 2.0 stdio server** that gives AI agents durable
 memory across sessions. Agents store structured entities, journal their decisions,
 manage transient state, generate embeddings, query with hybrid search, and ingest
-external data — all through **30 MCP tools**.
+external data — all through **31 MCP tools**.
 
 It uses **SQLite with FTS5 + dense vector search** across three tables: entities
 (structured, idempotent), journal (append-only event log), and state (key-value
@@ -135,7 +135,7 @@ Mimir is for teams that want **production memory without infrastructure** — no
 
 ---
 
-## MCP Tools (30 tools)
+## MCP Tools (31 tools)
 
 ### Entity tools
 | Tool | Description |
@@ -188,6 +188,7 @@ Mimir is for teams that want **production memory without infrastructure** — no
 | `mimir_score` | Assign quality score (0.0-1.0). |
 | `mimir_conflicts` | Detect near-duplicate entities via trigram similarity. |
 | `mimir_decay` | Recalculate Ebbinghaus decay scores. |
+| `mimir_reindex` | Rebuild the FTS5 search index from the entities table (repairs index drift). |
 
 ### Vault
 | Tool | Description |
@@ -206,6 +207,13 @@ mimir serve --llm-endpoint http://localhost:11434/api/generate --llm-model llama
 mimir serve --connectors-config ~/.mimir/connectors.yaml
 mimir keygen --key-file ~/.mimir/secret.key
 mimir migrate --from old.db --to new.db
+
+# Maintenance commands (operate directly on the DB, no server needed)
+mimir stats   --db /data/mimir.db
+mimir forget  --db /data/mimir.db --category decision --key stale-choice --reason "superseded"
+mimir prune   --db /data/mimir.db --category junk --min-decay 0.1 --older-than-days 90 --dry-run
+mimir decay   --db /data/mimir.db
+mimir reindex --db /data/mimir.db   # rebuild FTS5 index, repairs index drift
 ```
 
 ### Flags
@@ -277,7 +285,7 @@ connectors:
 
 ## Key Properties
 
-- **30 MCP tools** — full CRUD, search, RAG, embeddings, connectors, lifecycle
+- **31 MCP tools** — full CRUD, search, RAG, embeddings, connectors, lifecycle
 - **Hybrid search** — FTS5 + dense vectors + RRF fusion
 - **Encryption at rest** — AES-256-GCM, opt-in, transparent
 - **Web dashboard** — built-in, browser-based, dark theme

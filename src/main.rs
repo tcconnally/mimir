@@ -162,6 +162,65 @@ enum Commands {
         #[arg(long, default_value_t = default_key_file())]
         key_file: String,
     },
+
+    /// Archive (soft-delete) a single entity by category + key
+    Forget {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+        /// Entity category
+        #[arg(long)]
+        category: String,
+        /// Entity key
+        #[arg(long)]
+        key: String,
+        /// Reason recorded in archive_reason
+        #[arg(long, default_value_t = String::from("forgotten via CLI"))]
+        reason: String,
+    },
+
+    /// Bulk-archive entities by category, decay threshold, or age
+    Prune {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+        /// Only prune entities in this category
+        #[arg(long)]
+        category: Option<String>,
+        /// Prune entities with decay_score below this threshold
+        #[arg(long)]
+        min_decay: Option<f64>,
+        /// Prune entities older than this many days
+        #[arg(long)]
+        older_than_days: Option<u32>,
+        /// Max entities to prune (0 = unlimited)
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        /// Preview what would be archived without changing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Recalculate decay scores and auto-archive fully decayed entities
+    Decay {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+    },
+
+    /// Rebuild the FTS5 search index from the entities table (repairs index drift)
+    Reindex {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+    },
+
+    /// Print database statistics as JSON
+    Stats {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+    },
 }
 
 fn default_db_path() -> String {
@@ -202,6 +261,28 @@ fn default_key_file() -> String {
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| "/root".to_string());
     format!("{}/.mimir/secret.key", home)
+}
+
+/// Open a database for a CLI maintenance command, or exit(1) with a message.
+fn open_db_or_exit(db_path: &str) -> db::Database {
+    match db::Database::open(db_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("mimir: failed to open database at {}: {}", db_path, e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Print a serializable value as pretty JSON to stdout.
+fn print_json<T: serde::Serialize>(value: &T) {
+    match serde_json::to_string_pretty(value) {
+        Ok(s) => println!("{}", s),
+        Err(e) => {
+            eprintln!("mimir: failed to serialize output: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 fn main() {
@@ -247,6 +328,79 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("mimir: failed to write key file {}: {}", expanded, e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Forget {
+            db: ref db_path,
+            ref category,
+            ref key,
+            ref reason,
+        }) => {
+            let database = open_db_or_exit(db_path);
+            match database.forget(category, key, reason) {
+                Ok(true) => println!("Archived {}/{}", category, key),
+                Ok(false) => {
+                    eprintln!("mimir: no active entity found for {}/{}", category, key);
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("mimir: forget failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Prune {
+            db: ref db_path,
+            ref category,
+            min_decay,
+            older_than_days,
+            limit,
+            dry_run,
+        }) => {
+            let database = open_db_or_exit(db_path);
+            let params = models::PruneParams {
+                category: category.clone(),
+                min_decay,
+                older_than_days,
+                limit,
+                dry_run,
+            };
+            match database.prune(&params) {
+                Ok(report) => print_json(&report),
+                Err(e) => {
+                    eprintln!("mimir: prune failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Decay { db: ref db_path }) => {
+            let database = open_db_or_exit(db_path);
+            match database.decay_tick() {
+                Ok(report) => print_json(&report),
+                Err(e) => {
+                    eprintln!("mimir: decay failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Reindex { db: ref db_path }) => {
+            let database = open_db_or_exit(db_path);
+            match database.reindex_fts() {
+                Ok(n) => println!("Reindexed {} entities into FTS5", n),
+                Err(e) => {
+                    eprintln!("mimir: reindex failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Stats { db: ref db_path }) => {
+            let database = open_db_or_exit(db_path);
+            match database.stats() {
+                Ok(stats) => print_json(&stats),
+                Err(e) => {
+                    eprintln!("mimir: stats failed: {}", e);
                     std::process::exit(1);
                 }
             }

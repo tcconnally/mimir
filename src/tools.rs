@@ -863,6 +863,13 @@ pub fn handle_decay(db: &Database, _args: Value) -> String {
     }
 }
 
+pub fn handle_reindex(db: &Database, _args: Value) -> String {
+    match db.reindex_fts() {
+        Ok(n) => json!({"reindexed": n}).to_string(),
+        Err(e) => json!({"error": format!("Reindex failed: {}", e)}).to_string(),
+    }
+}
+
 pub fn handle_ask(db: &Database, args: Value) -> Result<String, String> {
     let params: AskParams =
         serde_json::from_value(args).map_err(|e| format!("Invalid ask arguments: {}", e))?;

@@ -471,22 +471,62 @@ impl Database {
         } else {
             format!(" LIMIT {}", params.limit)
         };
-        let sql = format!(
-            "UPDATE entities SET archived = 1, archive_reason = ?1 WHERE {} {}",
+
+        // Collect the exact rowids we are about to archive *before* mutating, so the
+        // FTS cleanup targets this batch precisely (not every row that happens to share
+        // an archive_reason string). The condition placeholders are 1-indexed against
+        // `param_values`; we reuse the same bindings for the select and the update.
+        let select_rowids_sql = format!(
+            "SELECT rowid FROM entities WHERE {}{}",
             conditions.join(" AND "),
             limit
         );
-        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(reason.clone())];
-        all_params.extend(param_values);
-        let all_refs: Vec<&dyn rusqlite::types::ToSql> =
-            all_params.iter().map(|p| p.as_ref()).collect();
-        let archived = self.conn.execute(&sql, all_refs.as_slice())?;
+        let select_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+        let rowids: Vec<i64> = {
+            let mut stmt = self.conn.prepare(&select_rowids_sql)?;
+            let rows = stmt.query_map(select_refs.as_slice(), |r| r.get::<_, i64>(0))?;
+            rows.collect::<Result<Vec<i64>, _>>()?
+        };
 
-        // Clean FTS5 for archived entities
-        let _ = self.conn.execute(
-            "DELETE FROM entities_fts WHERE rowid IN (SELECT rowid FROM entities WHERE archive_reason = ?1)",
-            params![reason],
+        if rowids.is_empty() {
+            return Ok(PruneReport {
+                archived: 0,
+                examined,
+                dry_run: false,
+                reason,
+            });
+        }
+
+        // Wrap the entity UPDATE and the FTS5 DELETE in a single transaction so the
+        // index can never drift out of sync if one statement fails (matches forget()).
+        let tx = self.conn.unchecked_transaction()?;
+        let placeholders = rowids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut update_params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            vec![Box::new(reason.clone())];
+        for id in &rowids {
+            update_params.push(Box::new(*id));
+        }
+        let update_refs: Vec<&dyn rusqlite::types::ToSql> =
+            update_params.iter().map(|p| p.as_ref()).collect();
+        let update_sql = format!(
+            "UPDATE entities SET archived = 1, archive_reason = ?1 WHERE rowid IN ({})",
+            placeholders
         );
+        let archived = tx.execute(&update_sql, update_refs.as_slice())?;
+
+        let rowid_refs: Vec<&dyn rusqlite::types::ToSql> =
+            rowids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let delete_sql = format!(
+            "DELETE FROM entities_fts WHERE rowid IN ({})",
+            placeholders
+        );
+        tx.execute(&delete_sql, rowid_refs.as_slice())?;
+        tx.commit()?;
 
         Ok(PruneReport {
             archived,
@@ -494,6 +534,27 @@ impl Database {
             dry_run: false,
             reason,
         })
+    }
+
+    /// Rebuild the FTS5 index from the `entities` table.
+    ///
+    /// Recovers from index drift — e.g. after a direct SQLite write, an interrupted
+    /// archive, or a legacy database written before the atomic prune/forget fixes.
+    /// Clears `entities_fts` and repopulates it from every non-archived entity, so
+    /// archived rows stop surfacing in recall/search. Returns the number of rows
+    /// indexed.
+    pub fn reindex_fts(&self) -> Result<usize, Box<dyn std::error::Error>> {
+        let tx = self.conn.unchecked_transaction()?;
+        // Drop everything currently in the FTS index.
+        tx.execute("DELETE FROM entities_fts", [])?;
+        // Repopulate from live (non-archived) entities only.
+        let indexed = tx.execute(
+            "INSERT INTO entities_fts (rowid, body_json)
+             SELECT rowid, body_json FROM entities WHERE archived = 0",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(indexed)
     }
 
     /// Dense vector search: brute-force cosine similarity over all entities with embeddings.
@@ -2786,6 +2847,85 @@ mod tests {
         let results2 = db.recall(&params2).unwrap();
         assert_eq!(results2.len(), 1);
         assert!(results2[0].archived);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn prune_cleans_fts_for_only_matching_rows() {
+        let (db, path) = temp_db();
+
+        // Two categories. We'll prune only "junk" and assert "keep" stays in FTS.
+        let junk = make_entity("j1", "junk", "throwaway", "{\"body\":\"prunable widget\"}");
+        let keep = make_entity("k1", "keep", "important", "{\"body\":\"prunable widget\"}");
+        db.remember(&junk).unwrap();
+        db.remember(&keep).unwrap();
+
+        // helper: is a given entity id present in the FTS index?
+        let in_fts = |id: &str| -> bool {
+            db.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM entities_fts
+                     WHERE rowid = (SELECT rowid FROM entities WHERE id = ?1)",
+                    params![id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+                > 0
+        };
+
+        assert!(in_fts("j1"));
+        assert!(in_fts("k1"));
+
+        let report = db
+            .prune(&PruneParams {
+                category: Some("junk".to_string()),
+                min_decay: None,
+                older_than_days: None,
+                limit: 0,
+                dry_run: false,
+            })
+            .unwrap();
+        assert_eq!(report.archived, 1);
+
+        // The pruned row must be gone from FTS; the unrelated row must remain.
+        assert!(!in_fts("j1"), "archived entity should be removed from FTS index");
+        assert!(in_fts("k1"), "non-matching entity must NOT be evicted from FTS");
+
+        // Entity rows still exist, just archived.
+        let junk_row = db.get_entity("junk", "throwaway").unwrap().unwrap();
+        assert!(junk_row.archived);
+        let keep_row = db.get_entity("keep", "important").unwrap().unwrap();
+        assert!(!keep_row.archived);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reindex_fts_rebuilds_from_entities() {
+        let (db, path) = temp_db();
+
+        let e = make_entity("r1", "decision", "reindex-me", "{\"body\":\"searchable text\"}");
+        db.remember(&e).unwrap();
+
+        // Corrupt the index by deleting the FTS row directly (simulating drift).
+        db.conn
+            .execute("DELETE FROM entities_fts", [])
+            .unwrap();
+        let count_before: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM entities_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count_before, 0);
+
+        // Reindex repairs it.
+        let n = db.reindex_fts().unwrap();
+        assert_eq!(n, 1);
+        let count_after: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM entities_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count_after, 1);
 
         let _ = fs::remove_file(&path);
     }
