@@ -319,6 +319,15 @@ pub struct CompactReport {
     pub completed_at_unix_ms: i64,
 }
 
+/// Purge report — permanently deletes archived entities and runs VACUUM.
+#[derive(Debug, Clone, Serialize)]
+pub struct PurgeReport {
+    pub entities_deleted: i64,
+    pub bytes_freed: i64,
+    pub dry_run: bool,
+    pub completed_at_unix_ms: i64,
+}
+
 /// Parameters for the coherence daemon pass.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct CohereParams {

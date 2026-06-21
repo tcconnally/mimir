@@ -5,7 +5,7 @@ use crate::connectors::Connector;
 use crate::encryption::EncryptionManager;
 use crate::models::{
     AskParams, AskResult, AskSource, CompactReport, DecayReport, EmbedParams, Entity, GraphEdge,
-    GraphNode, IngestParams, JournalEvent, MemoryLink, PruneParams, PruneReport, RecallParams,
+    GraphNode, IngestParams, JournalEvent, MemoryLink, PruneParams, PruneReport, PurgeReport, RecallParams,
     StateEntry, Stats, TimelineParams, VaultReport,
 };
 use crate::schema;
@@ -2295,6 +2295,63 @@ impl Database {
         }))
     }
 
+    /// Permanently delete all archived entities and run VACUUM to reclaim disk space.
+    /// This is the only way to actually remove entities; prune/forget only soft-archive.
+    /// Deleted entities are NOT recoverable. Use dry_run=true to preview first.
+    pub fn purge(&self, dry_run: bool) -> Result<PurgeReport, Box<dyn std::error::Error>> {
+        let before_size = match std::fs::metadata(&self.db_path) {
+            Ok(m) => m.len() as i64,
+            Err(_) => 0i64,
+        };
+
+        // Count archived entities
+        let mut stmt = self.conn.prepare("SELECT COUNT(*) FROM entities WHERE archived = 1")?;
+        let count: i64 = stmt.query_row([], |r| r.get(0))?;
+        stmt.finalize()?;
+
+        if dry_run {
+            return Ok(PurgeReport {
+                entities_deleted: count,
+                bytes_freed: 0,
+                dry_run: true,
+                completed_at_unix_ms: now_ms(),
+            });
+        }
+
+        if count == 0 {
+            return Ok(PurgeReport {
+                entities_deleted: 0,
+                bytes_freed: 0,
+                dry_run: false,
+                completed_at_unix_ms: now_ms(),
+            });
+        }
+
+        // Delete archived entities from FTS5 index first, then the entities table
+        let tx = self.conn.unchecked_transaction()?;
+        self.conn.execute_batch(
+            "DELETE FROM entities_fts WHERE rowid IN (SELECT rowid FROM entities WHERE archived = 1);
+             DELETE FROM entities WHERE archived = 1;"
+        )?;
+        tx.commit()?;
+
+        // VACUUM to reclaim disk space
+        self.conn.execute_batch("VACUUM;")?;
+
+        let after_size = match std::fs::metadata(&self.db_path) {
+            Ok(m) => m.len() as i64,
+            Err(_) => 0i64,
+        };
+        let freed = if before_size > after_size { before_size - after_size } else { 0 };
+
+        Ok(PurgeReport {
+            entities_deleted: count,
+            bytes_freed: freed,
+            dry_run: false,
+            completed_at_unix_ms: now_ms(),
+        })
+    }
+
     /// Compact: archive entities below a decay threshold.
     pub fn compact(
         &self,
@@ -3565,6 +3622,7 @@ mod tests {
                 older_than_days: None,
                 limit: 0,
                 dry_run: false,
+                purge_all: false,
             })
             .unwrap();
         assert_eq!(report.archived, 1);

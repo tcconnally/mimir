@@ -1408,6 +1408,7 @@ pub fn handle_synthesize(db: &Database, args: Value) -> Result<String, String> {
     serde_json::to_string(&result).map_err(|e| format!("Serialization failed: {}", e))
 }
 
+
 // ─── mimir_bench handler ─────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1445,5 +1446,20 @@ pub fn handle_bench(db: &Database, args: Value) -> Result<String, String> {
         .map_err(|e| format!("Bench failed: {}", e))?;
 
     serde_json::to_string(&result).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// Permanently delete all archived entities and VACUUM the database.
+#[derive(Debug, Deserialize)]
+pub struct PurgeArgs {
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+pub fn handle_purge(db: &Database, args: Value) -> Result<String, String> {
+    let a: PurgeArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid purge arguments: {}", e))?;
+    let report = db.purge(a.dry_run)
+        .map_err(|e| format!("Purge failed: {}", e))?;
+    serde_json::to_string(&report).map_err(|e| format!("Serialization failed: {}", e))
 }
 

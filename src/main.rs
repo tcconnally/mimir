@@ -23,10 +23,6 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// SQLite database path (used when no subcommand given)
-    #[arg(long, default_value_t = default_db_path())]
-    db: String,
-
     /// Path to AES-256-GCM encryption key file (base64-encoded, 32 bytes)
     #[arg(long)]
     encryption_key: Option<String>,
@@ -293,6 +289,39 @@ enum Commands {
         #[arg(long, default_value_t = default_db_path())]
         db: String,
     },
+
+    /// Export all non-archived entities to .md files in a vault directory
+    VaultExport {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+        /// Target directory for .md files (created if needed)
+        #[arg(long, default_value_t = String::from("~/.mimir/vault"))]
+        vault_dir: String,
+        /// Optional workspace hash to scope the export
+        #[arg(long)]
+        workspace_hash: Option<String>,
+    },
+
+    /// Import .md files from a vault directory into the database
+    VaultImport {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+        /// Source directory containing .md files
+        #[arg(long, default_value_t = String::from("~/.mimir/vault"))]
+        vault_dir: String,
+    },
+
+    /// Permanently delete archived entities and run VACUUM to reclaim disk space
+    Purge {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+        /// Preview what would be deleted without changing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn default_db_path() -> String {
@@ -438,6 +467,7 @@ fn main() {
                 older_than_days,
                 limit,
                 dry_run,
+                purge_all: false,
             };
             match database.prune(&params) {
                 Ok(report) => print_json(&report),
@@ -541,6 +571,65 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("mimir: write failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::VaultExport {
+            db: ref db_path,
+            ref vault_dir,
+            ref workspace_hash,
+        }) => {
+            check_legacy_db(db_path);
+            let database = open_db_or_exit(db_path);
+            let dir = if vault_dir.starts_with("~/") {
+                let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap_or_else(|_| "/root".to_string());
+                vault_dir.replacen("~", &home, 1)
+            } else {
+                vault_dir.clone()
+            };
+            match database.vault_export(&dir, workspace_hash.as_deref()) {
+                Ok(report) => print_json(&report),
+                Err(e) => {
+                    eprintln!("mimir: vault export failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::VaultImport {
+            db: ref db_path,
+            ref vault_dir,
+        }) => {
+            check_legacy_db(db_path);
+            let database = open_db_or_exit(db_path);
+            let dir = if vault_dir.starts_with("~/") {
+                let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap_or_else(|_| "/root".to_string());
+                vault_dir.replacen("~", &home, 1)
+            } else {
+                vault_dir.clone()
+            };
+            match database.vault_import(&dir) {
+                Ok(report) => print_json(&report),
+                Err(e) => {
+                    eprintln!("mimir: vault import failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Purge {
+            db: ref db_path,
+            dry_run,
+        }) => {
+            check_legacy_db(db_path);
+            let database = open_db_or_exit(db_path);
+            match database.purge(dry_run) {
+                Ok(report) => print_json(&report),
+                Err(e) => {
+                    eprintln!("mimir: purge failed: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -756,7 +845,7 @@ fn main() {
             }
         }
         None => {
-            let db_path = cli.db.clone();
+            let db_path = default_db_path();
             let mut database = match db::Database::open(&db_path) {
                 Ok(db) => db,
                 Err(e) => {
@@ -1006,10 +1095,18 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn parses_direct_server_with_db() {
-        let cli = Cli::parse_from(["mimir", "--db", "/tmp/mimir-direct.db"]);
+    fn parses_direct_server_without_subcommand() {
+        let cli = Cli::parse_from(["mimir"]);
         assert!(cli.command.is_none());
-        assert_eq!(cli.db, "/tmp/mimir-direct.db");
+    }
+
+    #[test]
+    fn parses_serve_with_db() {
+        let cli = Cli::parse_from(["mimir", "serve", "--db", "/tmp/mimir-serve.db"]);
+        match cli.command {
+            Some(Commands::Serve { db, .. }) => assert_eq!(db, "/tmp/mimir-serve.db"),
+            _ => panic!("expected serve subcommand"),
+        }
     }
 
     #[test]
