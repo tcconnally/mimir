@@ -94,6 +94,44 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Write a memory entity directly to the database.
+    /// Category and key must be unique for active entities.
+    Write {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+        /// Entity category (e.g., "thought", "plan", "insight")
+        #[arg(long)]
+        category: String,
+        /// Unique key within the category (e.g., "my_task_plan_v1")
+        #[arg(long)]
+        key: String,
+        /// Body of the entity as a JSON string (e.g., '{"content": "..."}')
+        #[arg(long)]
+        body: String,
+        /// Comma-separated tags (e.g., "urgent,feature-x")
+        #[arg(long, default_value_t = String::new())]
+        tags: String,
+        /// Entity type (e.g., "insight", "plan", "observation")
+        #[arg(long, default_value_t = String::from("insight"))]
+        entity_type: String,
+        /// Importance score (0.0-1.0, default 0.5)
+        #[arg(long, default_value_t = 0.5)]
+        importance: f64,
+        /// Set true to prevent decay (always on)
+        #[arg(long)]
+        always_on: bool,
+        /// Visibility (default: "workspace")
+        #[arg(long, default_value_t = String::from("workspace"))]
+        visibility: String,
+        /// Agent ID (optional)
+        #[arg(long)]
+        agent_id: Option<String>,
+        /// Workspace hash (optional)
+        #[arg(long)]
+        workspace_hash: Option<String>,
+    },
+
     /// Start the MCP JSON-RPC stdio server
     Serve {
         /// SQLite database path
@@ -423,6 +461,74 @@ fn main() {
                 Ok(stats) => print_json(&stats),
                 Err(e) => {
                     eprintln!("mimir: stats failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Write {
+            db: ref db_path,
+            ref category,
+            ref key,
+            ref body,
+            ref tags,
+            ref entity_type,
+            importance,
+            always_on,
+            ref visibility,
+            ref agent_id,
+            ref workspace_hash,
+        }) => {
+            let database = open_db_or_exit(db_path);
+            let parsed_body: serde_json::Value = match serde_json::from_str(body) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("mimir: invalid JSON for body: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let tags_vec: Vec<String> = tags
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            let now = crate::db::now_ms();
+            let raw_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+            let id = format!("cli-{}", &raw_id[..12.min(raw_id.len())]);
+
+            let entity = crate::models::Entity {
+                id,
+                category: category.clone(),
+                key: key.clone(),
+                body_json: parsed_body.to_string(),
+                status: "active".to_string(),
+                entity_type: entity_type.clone(),
+                tags: tags_vec,
+                decay_score: importance,
+                retrieval_count: 0,
+                layer: "buffer".to_string(),
+                topic_path: String::new(),
+                archived: false,
+                archive_reason: String::new(),
+                links: vec![],
+                verified: false,
+                source: "cli-write".to_string(),
+                always_on,
+                certainty: 0.5,
+                workspace_hash: workspace_hash.clone().unwrap_or_default(),
+                agent_id: agent_id.clone().unwrap_or_default(),
+                visibility: visibility.clone(),
+                created_at_unix_ms: now,
+                last_accessed_unix_ms: now,
+                embedding: None,
+            };
+
+            match database.remember(&entity) {
+                Ok((id, action)) => {
+                    print_json(&serde_json::json!({ "ok": true, "id": id, "action": action }));
+                }
+                Err(e) => {
+                    eprintln!("mimir: write failed: {}", e);
                     std::process::exit(1);
                 }
             }
