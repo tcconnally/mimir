@@ -214,6 +214,7 @@ Same checklist. Target binary size: ≤12MB stripped (from current ~8MB).
 | Cryptographic audit log | SHA-256 chain: each journal entry hashes previous | Tamper-evident audit trail |
 | `mimir_audit_verify` tool | Verify chain integrity end-to-end | Detects any single-bit modification |
 | Retention policies | `--retention-days` auto-archives old entities | DB size stays bounded |
+| **Immutable Journal** | (Plan: Implement append-only journal with cryptographic linking for chain-of-custody and tamper detection) | Secure, verifiable record of all memory events |
 
 ### Week 11–12: Mimir Cloud MVP
 

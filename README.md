@@ -1,10 +1,12 @@
 # Mimir
 
+<!-- mcp-name: io.github.tcconnally/mimir -->
+
 > Persistent memory for AI agents. Structured entity model. SQLite + FTS5 + hybrid vector search. MCP-native. Fully local.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://rust-lang.org)
-[![Version](https://img.shields.io/badge/version-1.0.1-green.svg)](https://github.com/Perseus-Computing-LLC/mimir/releases)
+[![Version](https://img.shields.io/badge/version-2.0.0-green.svg)](https://github.com/Perseus-Computing-LLC/mimir/releases)
 
 ## What is Mimir?
 

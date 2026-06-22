@@ -23,10 +23,6 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// SQLite database path (used when no subcommand given)
-    #[arg(long, default_value_t = default_db_path())]
-    db: String,
-
     /// Path to AES-256-GCM encryption key file (base64-encoded, 32 bytes)
     #[arg(long)]
     encryption_key: Option<String>,
@@ -90,10 +86,55 @@ struct Cli {
     /// routes accept this token as workspace authentication.
     #[arg(long)]
     workspace_token: Option<String>,
+
+    /// Enable offline / air-gapped mode. Disables the web dashboard, LLM endpoint,
+    /// embedding endpoint, and external connectors. All core tools (remember, recall,
+    /// search, journal, encryption) continue to function with zero network calls.
+    /// NIST SP 800-53 SC-7 / DoD IL5+ / ICD 503 air-gapped environment support.
+    #[arg(long, default_value_t = false, hide = true)]
+    offline: bool,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Write a memory entity directly to the database.
+    /// Category and key must be unique for active entities.
+    Write {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+        /// Entity category (e.g., "thought", "plan", "insight")
+        #[arg(long)]
+        category: String,
+        /// Unique key within the category (e.g., "my_task_plan_v1")
+        #[arg(long)]
+        key: String,
+        /// Body of the entity as a JSON string (e.g., '{"content": "..."}')
+        #[arg(long)]
+        body: String,
+        /// Comma-separated tags (e.g., "urgent,feature-x")
+        #[arg(long, default_value_t = String::new())]
+        tags: String,
+        /// Entity type (e.g., "insight", "plan", "observation")
+        #[arg(long, default_value_t = String::from("insight"))]
+        entity_type: String,
+        /// Importance score (0.0-1.0, default 0.5)
+        #[arg(long, default_value_t = 0.5)]
+        importance: f64,
+        /// Set true to prevent decay (always on)
+        #[arg(long)]
+        always_on: bool,
+        /// Visibility (default: "workspace")
+        #[arg(long, default_value_t = String::from("workspace"))]
+        visibility: String,
+        /// Agent ID (optional)
+        #[arg(long)]
+        agent_id: Option<String>,
+        /// Workspace hash (optional)
+        #[arg(long)]
+        workspace_hash: Option<String>,
+    },
+
     /// Start the MCP JSON-RPC stdio server
     Serve {
         /// SQLite database path
@@ -165,6 +206,11 @@ enum Commands {
         /// Token required for cross-workspace access (v1.2.0)
         #[arg(long)]
         workspace_token: Option<String>,
+
+        /// Enable offline / air-gapped mode. Disables web dashboard, LLM,
+        /// embedding, and connectors. NIST SP 800-53 SC-7 / DoD IL5+ support.
+        #[arg(long, default_value_t = false, hide = true)]
+        offline: bool,
     },
 
     /// Migrate a v0.1.x Mimir database to v0.2.0 schema
@@ -242,6 +288,39 @@ enum Commands {
         /// SQLite database path
         #[arg(long, default_value_t = default_db_path())]
         db: String,
+    },
+
+    /// Export all non-archived entities to .md files in a vault directory
+    VaultExport {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+        /// Target directory for .md files (created if needed)
+        #[arg(long, default_value_t = String::from("~/.mimir/vault"))]
+        vault_dir: String,
+        /// Optional workspace hash to scope the export
+        #[arg(long)]
+        workspace_hash: Option<String>,
+    },
+
+    /// Import .md files from a vault directory into the database
+    VaultImport {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+        /// Source directory containing .md files
+        #[arg(long, default_value_t = String::from("~/.mimir/vault"))]
+        vault_dir: String,
+    },
+
+    /// Permanently delete archived entities and run VACUUM to reclaim disk space
+    Purge {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+        /// Preview what would be deleted without changing anything
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -388,6 +467,7 @@ fn main() {
                 older_than_days,
                 limit,
                 dry_run,
+                purge_all: false,
             };
             match database.prune(&params) {
                 Ok(report) => print_json(&report),
@@ -423,6 +503,133 @@ fn main() {
                 Ok(stats) => print_json(&stats),
                 Err(e) => {
                     eprintln!("mimir: stats failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Write {
+            db: ref db_path,
+            ref category,
+            ref key,
+            ref body,
+            ref tags,
+            ref entity_type,
+            importance,
+            always_on,
+            ref visibility,
+            ref agent_id,
+            ref workspace_hash,
+        }) => {
+            let database = open_db_or_exit(db_path);
+            let parsed_body: serde_json::Value = match serde_json::from_str(body) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("mimir: invalid JSON for body: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let tags_vec: Vec<String> = tags
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.trim().to_string())
+                .collect();
+
+            let now = crate::db::now_ms();
+            let raw_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+            let id = format!("cli-{}", &raw_id[..12.min(raw_id.len())]);
+
+            let entity = crate::models::Entity {
+                id,
+                category: category.clone(),
+                key: key.clone(),
+                body_json: parsed_body.to_string(),
+                status: "active".to_string(),
+                entity_type: entity_type.clone(),
+                tags: tags_vec,
+                decay_score: importance,
+                retrieval_count: 0,
+                layer: "buffer".to_string(),
+                topic_path: String::new(),
+                archived: false,
+                archive_reason: String::new(),
+                links: vec![],
+                verified: false,
+                source: "cli-write".to_string(),
+                always_on,
+                certainty: 0.5,
+                workspace_hash: workspace_hash.clone().unwrap_or_default(),
+                agent_id: agent_id.clone().unwrap_or_default(),
+                visibility: visibility.clone(),
+                created_at_unix_ms: now,
+                last_accessed_unix_ms: now,
+                embedding: None,
+            };
+
+            match database.remember(&entity) {
+                Ok((id, action)) => {
+                    print_json(&serde_json::json!({ "ok": true, "id": id, "action": action }));
+                }
+                Err(e) => {
+                    eprintln!("mimir: write failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::VaultExport {
+            db: ref db_path,
+            ref vault_dir,
+            ref workspace_hash,
+        }) => {
+            check_legacy_db(db_path);
+            let database = open_db_or_exit(db_path);
+            let dir = if vault_dir.starts_with("~/") {
+                let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap_or_else(|_| "/root".to_string());
+                vault_dir.replacen("~", &home, 1)
+            } else {
+                vault_dir.clone()
+            };
+            match database.vault_export(&dir, workspace_hash.as_deref()) {
+                Ok(report) => print_json(&report),
+                Err(e) => {
+                    eprintln!("mimir: vault export failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::VaultImport {
+            db: ref db_path,
+            ref vault_dir,
+        }) => {
+            check_legacy_db(db_path);
+            let database = open_db_or_exit(db_path);
+            let dir = if vault_dir.starts_with("~/") {
+                let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap_or_else(|_| "/root".to_string());
+                vault_dir.replacen("~", &home, 1)
+            } else {
+                vault_dir.clone()
+            };
+            match database.vault_import(&dir) {
+                Ok(report) => print_json(&report),
+                Err(e) => {
+                    eprintln!("mimir: vault import failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Purge {
+            db: ref db_path,
+            dry_run,
+        }) => {
+            check_legacy_db(db_path);
+            let database = open_db_or_exit(db_path);
+            match database.purge(dry_run) {
+                Ok(report) => print_json(&report),
+                Err(e) => {
+                    eprintln!("mimir: purge failed: {}", e);
                     std::process::exit(1);
                 }
             }
@@ -471,6 +678,19 @@ fn main() {
             let db_path = db.clone();
             check_legacy_db(&db_path);
             eprintln!("mimir: using database at {}", db_path);
+
+            // Offline mode: disable network-dependent features
+            let offline = cli.offline;
+            let effective_web = if offline { false } else { *web };
+            let effective_llm = if offline { None } else { llm_endpoint.as_deref() };
+            let effective_embedding = if offline { None } else { embedding_endpoint.as_deref() };
+            let effective_connectors = if offline { None } else { connectors_config.as_deref() };
+
+            if offline {
+                eprintln!("mimir: running in offline / air-gapped mode");
+                eprintln!("mimir: web dashboard, LLM, embedding, and connectors disabled");
+            }
+
             let mut database = match db::Database::open(&db_path) {
                 Ok(db) => db,
                 Err(e) => {
@@ -487,13 +707,13 @@ fn main() {
             }
 
             // Configure LLM for mimir_ask if endpoint is provided
-            if let Some(ref endpoint) = llm_endpoint {
+            if let Some(ref endpoint) = effective_llm {
                 database.set_llm(
                     true,
                     endpoint,
                     llm_model,
                     llm_api_key.as_deref(),
-                    embedding_endpoint.as_deref(),
+                    effective_embedding,
                 );
                 eprintln!(
                     "mimir: LLM enabled (endpoint: {}, model: {})",
@@ -508,7 +728,7 @@ fn main() {
             }
 
             // Load connectors from YAML config if provided
-            if let Some(ref config_path) = connectors_config {
+            if let Some(ref config_path) = effective_connectors {
                 match load_connectors(config_path) {
                     Ok(connectors) => {
                         let count = connectors.len();
@@ -523,7 +743,7 @@ fn main() {
             }
 
             // Start web dashboard in background if requested
-            if *web {
+            if effective_web {
                 let web_port = *port;
                 let web_bind_addr = web_bind.clone();
                 let web_key = encryption_key.clone();
@@ -625,7 +845,7 @@ fn main() {
             }
         }
         None => {
-            let db_path = cli.db.clone();
+            let db_path = default_db_path();
             let mut database = match db::Database::open(&db_path) {
                 Ok(db) => db,
                 Err(e) => {
@@ -875,10 +1095,18 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn parses_direct_server_with_db() {
-        let cli = Cli::parse_from(["mimir", "--db", "/tmp/mimir-direct.db"]);
+    fn parses_direct_server_without_subcommand() {
+        let cli = Cli::parse_from(["mimir"]);
         assert!(cli.command.is_none());
-        assert_eq!(cli.db, "/tmp/mimir-direct.db");
+    }
+
+    #[test]
+    fn parses_serve_with_db() {
+        let cli = Cli::parse_from(["mimir", "serve", "--db", "/tmp/mimir-serve.db"]);
+        match cli.command {
+            Some(Commands::Serve { db, .. }) => assert_eq!(db, "/tmp/mimir-serve.db"),
+            _ => panic!("expected serve subcommand"),
+        }
     }
 
     #[test]

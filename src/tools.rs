@@ -936,6 +936,15 @@ pub fn handle_embed(db: &Database, args: Value) -> Result<String, String> {
 pub fn handle_prune(db: &Database, args: Value) -> Result<String, String> {
     let params: PruneParams =
         serde_json::from_value(args).map_err(|e| format!("Invalid prune arguments: {}", e))?;
+
+    // #202: require a threshold or explicit purge_all — category alone is a footgun
+    if !params.purge_all && params.min_decay.is_none() && params.older_than_days.is_none() {
+        return Err(
+            "prune requires min_decay, older_than_days, or purge_all=true to archive the whole category"
+                .to_string(),
+        );
+    }
+
     match db.prune(&params) {
         Ok(report) => {
             serde_json::to_string(&report).map_err(|e| format!("Serialization failed: {}", e))
@@ -1399,6 +1408,7 @@ pub fn handle_synthesize(db: &Database, args: Value) -> Result<String, String> {
     serde_json::to_string(&result).map_err(|e| format!("Serialization failed: {}", e))
 }
 
+
 // ─── mimir_bench handler ─────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1436,5 +1446,20 @@ pub fn handle_bench(db: &Database, args: Value) -> Result<String, String> {
         .map_err(|e| format!("Bench failed: {}", e))?;
 
     serde_json::to_string(&result).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// Permanently delete all archived entities and VACUUM the database.
+#[derive(Debug, Deserialize)]
+pub struct PurgeArgs {
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+pub fn handle_purge(db: &Database, args: Value) -> Result<String, String> {
+    let a: PurgeArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid purge arguments: {}", e))?;
+    let report = db.purge(a.dry_run)
+        .map_err(|e| format!("Purge failed: {}", e))?;
+    serde_json::to_string(&report).map_err(|e| format!("Serialization failed: {}", e))
 }
 

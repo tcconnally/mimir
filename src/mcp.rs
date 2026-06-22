@@ -1120,6 +1120,45 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     }
   },
   {
+    "name": "mimir_purge",
+    "description": "Permanently delete all archived entities and run VACUUM to reclaim disk space. This is the only operation that actually removes entities \u2014 prune/forget only soft-archive. Archived entities are DELETED and NOT RECOVERABLE. Supports dry_run=true to preview first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "dry_run": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, report what would be deleted without making changes"
+        }
+      },
+      "required": []
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "entities_deleted": {
+          "type": "integer",
+          "description": "Number of archived entities permanently deleted"
+        },
+        "bytes_freed": {
+          "type": "integer",
+          "description": "Bytes reclaimed after VACUUM (0 in dry-run mode)"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Whether this was a dry run"
+        },
+        "completed_at_unix_ms": {
+          "type": "integer",
+          "description": "Completion timestamp"
+        }
+      }
+    },
+    "annotations": {
+      "destructiveHint": true
+    }
+  },
+  {
     "name": "mimir_migrate",
     "description": "Migrate a v0.1.x Mimir database to the current v0.5.0 schema. Reads the old database, converts memories to the entity model, and merges into the current database. Use this once per legacy database during upgrade.",
     "inputSchema": {
@@ -2041,6 +2080,8 @@ fn call_tool(name: &str, db: &Database, args: Value, _id: Option<Value>) -> Stri
         "mimir_stats" => Ok(tools::handle_stats(db)),
 
         "mimir_compact" => Ok(tools::handle_compact(db, args)),
+
+        "mimir_purge" => tools::handle_purge(db, args).map_err(|e| e.to_string()),
 
         "mimir_migrate" => Ok(tools::handle_migrate(db, args)),
 
