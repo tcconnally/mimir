@@ -23,6 +23,12 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
+    /// SQLite database path (default: $MIMIR_DB_PATH or ~/.mimir/data/mimir.db).
+    /// Used when running the server directly without the `serve` subcommand —
+    /// matches the documented MCP host config: `mimir --db /path/to/mimir.db`.
+    #[arg(long)]
+    db: Option<String>,
+
     /// Path to AES-256-GCM encryption key file (base64-encoded, 32 bytes)
     #[arg(long)]
     encryption_key: Option<String>,
@@ -845,7 +851,9 @@ fn main() {
             }
         }
         None => {
-            let db_path = default_db_path();
+            let db_path = cli.db.clone().unwrap_or_else(default_db_path);
+            check_legacy_db(&db_path);
+            eprintln!("mimir: using database at {}", db_path);
             let mut database = match db::Database::open(&db_path) {
                 Ok(db) => db,
                 Err(e) => {
@@ -1098,6 +1106,15 @@ mod tests {
     fn parses_direct_server_without_subcommand() {
         let cli = Cli::parse_from(["mimir"]);
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parses_top_level_db_without_subcommand() {
+        // Regression: the documented MCP host config is `mimir --db <path>`
+        // (no subcommand). This must parse and carry the db path through.
+        let cli = Cli::parse_from(["mimir", "--db", "/tmp/smoke.db"]);
+        assert!(cli.command.is_none());
+        assert_eq!(cli.db.as_deref(), Some("/tmp/smoke.db"));
     }
 
     #[test]
