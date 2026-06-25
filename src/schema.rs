@@ -69,9 +69,26 @@ CREATE TABLE IF NOT EXISTS state (
 );
 ";
 
+/// Current schema migration level, stamped into `PRAGMA user_version` once all
+/// the column-add migrations below have been applied. Bump this whenever you add
+/// a new ALTER-probe migration in `initialize_schema`, or existing databases
+/// (already at the previous level) will skip it.
+const SCHEMA_VERSION: i64 = 1;
+
 /// Initialize the v0.2.0 schema on a fresh database.
 pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    // DDL is all IF NOT EXISTS, so it stays ungated: it both creates a fresh DB
+    // and back-fills newer objects (e.g. idx_entities_recall) on older ones.
     conn.execute_batch(DDL_V0_2_0)?;
+
+    // The column-add migrations below each prepare a throwaway `SELECT col LIMIT 1`
+    // probe. `open` runs several times per process, so on a fully-migrated DB this
+    // is pure wasted work. Gate it on PRAGMA user_version: run once when behind,
+    // then stamp current and skip on every subsequent open. (#208)
+    let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if user_version >= SCHEMA_VERSION {
+        return Ok(());
+    }
 
     // Add embedding column if it doesn't exist (migration from v0.2.0)
     let has_embedding: bool = conn
@@ -128,6 +145,9 @@ pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Er
     if !has_visibility {
         conn.execute_batch("ALTER TABLE entities ADD COLUMN visibility TEXT DEFAULT 'workspace';")?;
     }
+
+    // Stamp the migration level so subsequent opens skip the probe block above.
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 
     Ok(())
 }
@@ -398,6 +418,74 @@ mod tests {
         let (conn, _path) = temp_db();
         initialize_schema(&conn).expect("init schema");
         assert!(is_v0_2_0(&conn).unwrap());
+    }
+
+    #[test]
+    fn stamps_user_version_and_gates_migration_probes() {
+        // Fresh init stamps the current schema version.
+        let (conn, _path) = temp_db();
+        initialize_schema(&conn).expect("init schema");
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION, "fresh init must stamp the schema version");
+
+        // Re-running on an already-current DB is a no-op that preserves data and
+        // leaves the version untouched (the probe block is skipped).
+        conn.execute(
+            "INSERT INTO entities (id, category, key, body_json, created_at_unix_ms, last_accessed_unix_ms)
+             VALUES ('v-test', 'insight', 'k', '{}', 0, 0)",
+            [],
+        )
+        .unwrap();
+        initialize_schema(&conn).expect("re-init should be a no-op");
+        let v2: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v2, SCHEMA_VERSION);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities WHERE id='v-test'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "re-init must not drop data");
+    }
+
+    #[test]
+    fn migrates_pre_versioned_db_missing_a_column() {
+        // Simulate a legacy DB at user_version=0 that predates the visibility
+        // column: the gate must still run the probes and add the column, then
+        // stamp the version so later opens skip.
+        let (conn, _path) = temp_db();
+        // Base v0.2.0 columns the DDL's indexes reference, but WITHOUT the
+        // later ALTER-added columns (embedding/always_on/certainty/
+        // workspace_hash/agent_id/visibility, journal agent_id/audit_hash).
+        conn.execute_batch(
+            "CREATE TABLE entities (
+                id TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT 'general', key TEXT NOT NULL,
+                body_json TEXT NOT NULL DEFAULT '{}', archived INTEGER DEFAULT 0,
+                retrieval_count INTEGER DEFAULT 0,
+                created_at_unix_ms INTEGER NOT NULL, last_accessed_unix_ms INTEGER NOT NULL
+             );
+             CREATE TABLE journal (
+                id TEXT PRIMARY KEY, entity_id TEXT DEFAULT '',
+                created_at_unix_ms INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+        assert!(
+            conn.prepare("SELECT visibility FROM entities LIMIT 1").is_err(),
+            "precondition: legacy table lacks visibility"
+        );
+
+        initialize_schema(&conn).expect("migrate legacy db");
+
+        assert!(
+            conn.prepare("SELECT visibility FROM entities LIMIT 1").is_ok(),
+            "visibility column must be added during gated migration"
+        );
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
     }
 
     #[test]
