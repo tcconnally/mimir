@@ -1229,7 +1229,21 @@ impl Database {
         if params.mode == crate::models::SearchMode::Dense
             || params.mode == crate::models::SearchMode::Hybrid
         {
-            if let Some(ref query_vec) = params.embedding {
+            // Use the caller-supplied query vector, or embed the query text. An
+            // empty query has nothing to embed and falls through to FTS5; a
+            // non-empty query with no embedding backend surfaces a clear error
+            // rather than silently degrading to keyword search.
+            let embedded;
+            let query_vec: Option<&[f32]> = match params.embedding {
+                Some(ref v) => Some(v.as_slice()),
+                None if !params.query.trim().is_empty() => {
+                    embedded = self.generate_embedding_with_fallback(&params.query)?;
+                    Some(embedded.as_slice())
+                }
+                None => None,
+            };
+
+            if let Some(query_vec) = query_vec {
                 let dense_results = self.dense_search(query_vec, params.limit as usize)?;
 
                 if params.mode == crate::models::SearchMode::Dense {
@@ -1256,7 +1270,7 @@ impl Database {
                 );
                 return Ok(fused.into_iter().map(|(e, _)| e).collect());
             }
-            // Fall through to FTS5 if no embedding vector provided
+            // Empty query: nothing to embed, fall through to FTS5
         }
 
         self.fts5_search(params)
@@ -4337,6 +4351,46 @@ mod tests {
         assert!(
             !results.iter().any(|(e, _)| e.key == "arch"),
             "archived entity must not be returned"
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    // #226: dense/hybrid recall must embed the query, not silently fall back to
+    // FTS5. With no embedding backend configured, a dense recall over a
+    // non-empty query surfaces the backend error instead of returning keyword
+    // results — the silent fallback was what masked the missing embedding.
+    #[test]
+    fn dense_recall_without_backend_errors_instead_of_silent_fts5() {
+        let (db, path) = temp_db();
+        // Seed a row a keyword search WOULD match, so the pre-fix silent FTS5
+        // fallback would have wrongly returned it as an Ok result.
+        db.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO entities (id, category, key, body_json, type, status,
+                    retrieval_count, last_accessed_unix_ms, created_at_unix_ms, decay_score, layer)
+                 VALUES ('e1', 'insight', 'alpha', '{\"content\":\"alpha beta\"}', 'insight', 'active', 0, 0, 0, 1.0, 'working')",
+                params![],
+            )
+            .unwrap();
+
+        let res = db.recall(&RecallParams {
+            query: "alpha".to_string(),
+            mode: crate::models::SearchMode::Dense,
+            limit: 5,
+            skip_side_effects: true,
+            ..RecallParams::default()
+        });
+
+        assert!(
+            res.is_err(),
+            "dense recall with no embedding backend must error, not silently return FTS5 results"
+        );
+        let msg = format!("{}", res.unwrap_err());
+        assert!(
+            msg.contains("embedding backend"),
+            "error should name the missing embedding backend, got: {msg}"
         );
 
         let _ = fs::remove_file(&path);
