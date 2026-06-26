@@ -19,7 +19,7 @@ use axum::{
 use futures::stream::Stream;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -35,19 +35,22 @@ pub enum TransportMode {
 
 /// Shared state for the MCP HTTP transport, stored as a global static.
 struct TransportState {
-    db: Arc<Mutex<Database>>,
-    mcp_state: Arc<Mutex<MCPState>>,
+    // #210: no Mutex — Database is now Sync (internally pooled), and MCPState
+    // tracks `initialized` via an AtomicBool, so concurrent requests share these
+    // by shared reference and read in parallel instead of serializing on a lock.
+    db: Arc<Database>,
+    mcp_state: Arc<MCPState>,
     sse_tx: broadcast::Sender<String>,
 }
 
 static TRANSPORT_STATE: OnceLock<TransportState> = OnceLock::new();
 
 /// Initialize the global transport state. Must be called before starting the server.
-pub fn init_transport_state(db: Arc<Mutex<Database>>) {
+pub fn init_transport_state(db: Arc<Database>) {
     let (sse_tx, _) = broadcast::channel::<String>(256);
     let state = TransportState {
         db,
-        mcp_state: Arc::new(Mutex::new(MCPState::new())),
+        mcp_state: Arc::new(MCPState::new()),
         sse_tx,
     };
     TRANSPORT_STATE.set(state).ok();
@@ -153,27 +156,16 @@ async fn handle_message(
     };
 
     let state = get_state()?;
-    // #210: the handler holds the DB mutex and can make synchronous LLM
-    // round-trips (mimir_ask / mimir_synthesize), so run it on the blocking
-    // thread pool. Running it directly here would occupy a Tokio async worker for
-    // the full handler/LLM latency and stall the runtime that drives SSE streams
-    // and connection accept. The std Mutexes are taken inside the blocking task
-    // and never held across an await. (stdio transport is unaffected.)
-    let response = tokio::task::spawn_blocking(
-        move || -> Result<Option<mcp::JsonRpcResponse>, StatusCode> {
-            let mut mcp_state = state
-                .mcp_state
-                .lock()
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let db = state
-                .db
-                .lock()
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            Ok(mcp::handle_request(&req, &mut mcp_state, &db))
-        },
-    )
+    // #210: the handler is blocking and can make synchronous LLM round-trips
+    // (mimir_ask / mimir_synthesize), so run it on the blocking thread pool to
+    // keep the Tokio async workers (SSE streams, connection accept) free (#217).
+    // No locks: the DB checks out its own pooled connection and MCPState's
+    // `initialized` is atomic, so concurrent requests run in parallel.
+    let response = tokio::task::spawn_blocking(move || {
+        mcp::handle_request(&req, &state.mcp_state, &state.db)
+    })
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     match response {
         Some(resp) => {

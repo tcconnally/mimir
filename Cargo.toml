@@ -15,6 +15,10 @@ path = "src/main.rs"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
+# Connection pool so HTTP/SSE requests can read concurrently under WAL instead of
+# serializing on a single Mutex<Connection> (rusqlite Connection is !Sync). (#210)
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
 rust-stemmers = "1.2"

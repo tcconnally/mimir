@@ -803,7 +803,7 @@ fn main() {
             };
 
             if let Some(mode) = tmode {
-                let transport_db = std::sync::Arc::new(std::sync::Mutex::new(database));
+                let transport_db = std::sync::Arc::new(database);
                 crate::transport::init_transport_state(transport_db);
                 let transport_router =
                     crate::transport::build_transport_router(mode, mcp_token.clone());
@@ -950,7 +950,7 @@ fn main() {
             };
 
             if let Some(mode) = transport_mode {
-                let transport_db = std::sync::Arc::new(std::sync::Mutex::new(database));
+                let transport_db = std::sync::Arc::new(database);
                 crate::transport::init_transport_state(transport_db);
                 let transport_router =
                     crate::transport::build_transport_router(mode, cli.mcp_token.clone());

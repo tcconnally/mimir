@@ -34,12 +34,17 @@ pub struct JsonRpcError {
 }
 
 pub struct MCPState {
-    pub initialized: bool,
+    // #210: AtomicBool so the HTTP/SSE transport can share &MCPState across
+    // concurrent requests without a Mutex (which would re-serialize them now
+    // that the DB pool removed the other lock). handle_request takes &MCPState.
+    pub initialized: std::sync::atomic::AtomicBool,
 }
 
 impl MCPState {
     pub fn new() -> Self {
-        MCPState { initialized: false }
+        MCPState {
+            initialized: std::sync::atomic::AtomicBool::new(false),
+        }
     }
 }
 
@@ -48,7 +53,7 @@ pub fn run_server(db: Database) {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let reader = BufReader::new(stdin.lock());
-    let mut state = MCPState::new();
+    let state = MCPState::new();
 
     eprintln!("mimir: MCP server ready");
 
@@ -80,7 +85,7 @@ pub fn run_server(db: Database) {
             }
         };
 
-        let response = handle_request(&request, &mut state, &db);
+        let response = handle_request(&request, &state, &db);
 
         if let Some(resp) = response {
             let resp_str = serde_json::to_string(&resp).unwrap_or_else(|_| {
@@ -99,7 +104,7 @@ pub fn run_server(db: Database) {
 
 pub fn handle_request(
     req: &JsonRpcRequest,
-    state: &mut MCPState,
+    state: &MCPState,
     db: &Database,
 ) -> Option<JsonRpcResponse> {
     let id = req.id.clone();
@@ -131,7 +136,7 @@ pub fn handle_request(
                 })),
                 error: None,
             };
-            state.initialized = true;
+            state.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
             Some(response)
         }
 
@@ -141,14 +146,14 @@ pub fn handle_request(
         }
 
         "tools/list" => {
-            if !state.initialized {
+            if !state.initialized.load(std::sync::atomic::Ordering::Relaxed) {
                 return Some(error_response(id, -32002, "Not initialized"));
             }
             Some(list_tools(id))
         }
 
         "tools/call" => {
-            if !state.initialized {
+            if !state.initialized.load(std::sync::atomic::Ordering::Relaxed) {
                 return Some(error_response(id, -32002, "Not initialized"));
             }
 
@@ -2167,11 +2172,11 @@ mod tests {
             method: "initialize".to_string(),
             params: None,
         };
-        let mut state = MCPState::new();
+        let state = MCPState::new();
 
-        let resp = handle_request(&req, &mut state, &db).expect("error response");
+        let resp = handle_request(&req, &state, &db).expect("error response");
         assert_eq!(resp.error.expect("json-rpc error").code, -32600);
-        assert!(!state.initialized);
+        assert!(!state.initialized.load(std::sync::atomic::Ordering::Relaxed));
 
         let _ = fs::remove_file(db_path);
     }

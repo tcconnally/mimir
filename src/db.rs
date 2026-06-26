@@ -1,5 +1,11 @@
-use rusqlite::{params, Connection};
+use rusqlite::params;
+use r2d2_sqlite::SqliteConnectionManager;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// A connection checked out from the pool. Derefs to `rusqlite::Connection`, so
+/// every existing `conn.prepare/execute/query_row/...` call works unchanged once
+/// a method binds `let conn = self.conn()?;`. (#210)
+type PooledConn = r2d2::PooledConnection<SqliteConnectionManager>;
 
 use crate::connectors::Connector;
 use crate::encryption::EncryptionManager;
@@ -55,7 +61,7 @@ impl EmbeddingCache {
 }
 
 pub struct Database {
-    conn: Connection,
+    pool: r2d2::Pool<SqliteConnectionManager>,
     db_path: String,
     encryption: Option<EncryptionManager>,
     llm_config: LlmConfig,
@@ -94,24 +100,30 @@ impl Default for LlmConfig {
 impl Database {
     /// Open a database at `path`, initializing the v0.2.0 schema if needed.
     pub fn open(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let conn = Connection::open(path)?;
-
-        // Enable WAL for better concurrent read performance
+        // #210: a connection pool lets concurrent HTTP/SSE requests read in
+        // parallel under WAL instead of serializing on one Mutex<Connection>
+        // (rusqlite Connection is !Sync). The PRAGMAs must be applied to EVERY
+        // pooled connection (not once), so set them on checkout via with_init.
         // synchronous=NORMAL is durable under WAL (only risks the last txn on an
-        // OS crash) and avoids an fsync per commit — important given recall and
-        // bulk writes. cache_size/mmap_size/temp_store reduce cold-scan cost. (#208)
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=1000; \
-             PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; \
-             PRAGMA synchronous=NORMAL; PRAGMA cache_size=-8000; \
-             PRAGMA mmap_size=268435456; PRAGMA temp_store=MEMORY;",
-        )?;
+        // OS crash) and avoids an fsync per commit; cache/mmap/temp_store reduce
+        // cold-scan cost. (#208)
+        let manager = SqliteConnectionManager::file(path).with_init(|c| {
+            c.execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=1000; \
+                 PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; \
+                 PRAGMA synchronous=NORMAL; PRAGMA cache_size=-8000; \
+                 PRAGMA mmap_size=268435456; PRAGMA temp_store=MEMORY;",
+            )
+        });
+        let pool = r2d2::Pool::builder().max_size(16).build(manager)?;
 
-        // Initialize schema if this is a new database
-        schema::initialize_schema(&conn)?;
+        // Initialize schema once if this is a new database.
+        let setup_conn = pool.get()?;
+        schema::initialize_schema(&setup_conn)?;
+        drop(setup_conn);
 
         Ok(Database {
-            conn,
+            pool,
             db_path: path.to_string(),
             encryption: None,
             llm_config: LlmConfig::default(),
@@ -121,9 +133,19 @@ impl Database {
         })
     }
 
+    /// Check out a pooled connection. Each DB method binds one of these and uses
+    /// it for the duration of the call (so a method's statements — including any
+    /// transaction — share a single connection). (#210)
+    fn conn(&self) -> Result<PooledConn, Box<dyn std::error::Error>> {
+        Ok(self.pool.get()?)
+    }
+
     /// Simple health check — verify the DB responds.
     pub fn health_check(&self) -> bool {
-        self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
+        match self.conn() {
+            Ok(conn) => conn.query_row("SELECT 1", [], |_| Ok(())).is_ok(),
+            Err(_) => false,
+        }
     }
 
     /// Enable encryption by loading the AES-256-GCM key from `key_file`.
@@ -338,8 +360,9 @@ impl Database {
         id: &str,
         embedding: &[f32],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
-        self.conn.execute(
+        conn.execute(
             "UPDATE entities SET embedding = ?1 WHERE id = ?2",
             params![blob, id],
         )?;
@@ -351,9 +374,10 @@ impl Database {
         &self,
         params: &EmbedParams,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         // Batch mode: embed all entities in a category that lack embeddings
         if let Some(ref cat) = params.batch_category {
-            let mut stmt = self.conn.prepare(
+            let mut stmt = conn.prepare(
                 "SELECT id, body_json FROM entities WHERE category = ?1 AND archived = 0 AND embedding IS NULL LIMIT ?2",
             )?;
             let rows = stmt.query_map(params![cat, params.batch_limit as i64], |r| {
@@ -517,6 +541,7 @@ impl Database {
 
     /// Bulk archive entities matching criteria (category, decay threshold, age).
     pub fn prune(&self, params: &PruneParams) -> Result<PruneReport, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let mut conditions = vec!["archived = 0".to_string()];
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -546,8 +571,7 @@ impl Database {
         );
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
-        let examined: usize = self
-            .conn
+        let examined: usize = conn
             .query_row(&count_sql, param_refs.as_slice(), |r| r.get::<_, i64>(0))?
             as usize;
 
@@ -578,7 +602,7 @@ impl Database {
         let select_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
         let rowids: Vec<i64> = {
-            let mut stmt = self.conn.prepare(&select_rowids_sql)?;
+            let mut stmt = conn.prepare(&select_rowids_sql)?;
             let rows = stmt.query_map(select_refs.as_slice(), |r| r.get::<_, i64>(0))?;
             rows.collect::<Result<Vec<i64>, _>>()?
         };
@@ -594,7 +618,7 @@ impl Database {
 
         // Wrap the entity UPDATE and the FTS5 DELETE in a single transaction so the
         // index can never drift out of sync if one statement fails (matches forget()).
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = conn.unchecked_transaction()?;
         let placeholders = rowids
             .iter()
             .map(|_| "?")
@@ -638,7 +662,8 @@ impl Database {
     /// archived rows stop surfacing in recall/search. Returns the number of rows
     /// indexed.
     pub fn reindex_fts(&self) -> Result<usize, Box<dyn std::error::Error>> {
-        let tx = self.conn.unchecked_transaction()?;
+        let conn = self.conn()?;
+        let tx = conn.unchecked_transaction()?;
         // Drop everything currently in the FTS index.
         tx.execute("DELETE FROM entities_fts", [])?;
         // Repopulate from live (non-archived) entities only.
@@ -658,6 +683,7 @@ impl Database {
         query_vec: &[f32],
         limit: usize,
     ) -> Result<Vec<(Entity, f64)>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let max_scan = 50_000; // safety ceiling — databases beyond this should use HNSW
         let dim = query_vec.len();
 
@@ -665,7 +691,7 @@ impl Database {
         // The old query hydrated EVERY candidate (decrypt body, parse tags/links)
         // up to max_scan just to score and then keep top-k. Defer full hydration
         // to the surviving top-k in phase 3.
-        let mut stmt = self.conn.prepare(&format!(
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, embedding FROM entities \
              WHERE archived = 0 AND embedding IS NOT NULL LIMIT {}",
             max_scan
@@ -740,7 +766,7 @@ impl Database {
             placeholders
         );
         let enc = self.encryption.as_ref();
-        let mut hstmt = self.conn.prepare(&hydrate_sql)?;
+        let mut hstmt = conn.prepare(&hydrate_sql)?;
         let id_refs: Vec<&dyn rusqlite::types::ToSql> = scored_ids
             .iter()
             .map(|(id, _)| id as &dyn rusqlite::types::ToSql)
@@ -815,6 +841,7 @@ impl Database {
         &self,
         ids: &[String],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         if ids.is_empty() {
             return Ok(());
         }
@@ -840,7 +867,7 @@ impl Database {
         for id in ids {
             param_values.push(id);
         }
-        self.conn.execute(&sql, param_values.as_slice())?;
+        conn.execute(&sql, param_values.as_slice())?;
         Ok(())
     }
 
@@ -857,8 +884,9 @@ impl Database {
         &self,
         max_entities: Option<i64>,
     ) -> Result<DecayReport, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let now = now_ms();
-        let total: i64 = self.conn.query_row(
+        let total: i64 = conn.query_row(
             "SELECT COUNT(*) FROM entities WHERE archived = 0",
             [],
             |r| r.get(0),
@@ -873,7 +901,7 @@ impl Database {
         } else {
             "SELECT id, last_accessed_unix_ms FROM entities WHERE archived = 0".to_string()
         };
-        let mut stmt = self.conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
 
         let mut updated = 0i64;
@@ -889,7 +917,7 @@ impl Database {
             if batch.is_empty() {
                 return Ok(());
             }
-            let tx = self.conn.unchecked_transaction()?;
+            let tx = conn.unchecked_transaction()?;
             for (id, last_access) in batch.drain(..) {
                 let new_decay = Self::compute_decay(last_access, now_val);
                 tx.execute(
@@ -989,8 +1017,8 @@ impl Database {
         }
         let target = Self::trigrams(body_json);
 
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+        let mut stmt = conn
             .prepare("SELECT id, body_json FROM entities WHERE category = ?1 AND archived = 0")?;
         let rows = stmt.query_map(params![category], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -1019,6 +1047,7 @@ impl Database {
         &self,
         entity: &Entity,
     ) -> Result<(String, String), Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let tags_json = serde_json::to_string(&entity.tags)?;
         let links_json = serde_json::to_string(&entity.links)?;
         let archived_int = if entity.archived { 1 } else { 0 };
@@ -1033,8 +1062,7 @@ impl Database {
             entity.body_json.clone()
         };
 
-        let existing_id: Option<String> = self
-            .conn
+        let existing_id: Option<String> = conn
             .query_row(
                 "SELECT id FROM entities WHERE category = ?1 AND key = ?2",
                 params![entity.category, entity.key],
@@ -1049,16 +1077,14 @@ impl Database {
             // Update existing entity — compute decay + boost (it's being remembered)
             id = ex_id;
             let now = now_ms();
-            let old_decay: f64 = self
-                .conn
+            let old_decay: f64 = conn
                 .query_row(
                     "SELECT decay_score FROM entities WHERE id = ?1",
                     params![id],
                     |r| r.get(0),
                 )
                 .unwrap_or(1.0);
-            let old_count: i64 = self
-                .conn
+            let old_count: i64 = conn
                 .query_row(
                     "SELECT retrieval_count FROM entities WHERE id = ?1",
                     params![id],
@@ -1069,7 +1095,7 @@ impl Database {
             let new_layer = Self::compute_layer(old_count + 1);
 
             // M-1: wrap entity UPDATE + FTS UPDATE in a transaction
-            let tx = self.conn.unchecked_transaction()?;
+            let tx = conn.unchecked_transaction()?;
             tx.execute(
                 "UPDATE entities SET
                     body_json = ?1, status = ?2, type = ?3, tags = ?4,
@@ -1117,7 +1143,7 @@ impl Database {
                 self.find_near_duplicate(&entity.category, &entity.body_json, dup_threshold)
             {
                 // Near-duplicate found — bump its importance instead of creating new
-                let _ = self.conn.execute(
+                let _ = conn.execute(
                     "UPDATE entities SET decay_score = MIN(1.0, decay_score + 0.15),
                      retrieval_count = retrieval_count + 1,
                      last_accessed_unix_ms = ?1 WHERE id = ?2",
@@ -1131,7 +1157,7 @@ impl Database {
 
             // M-1: wrap entity row + FTS index write in a transaction
             // so a failure in one doesn't leave the other orphaned.
-            let tx = self.conn.unchecked_transaction()?;
+            let tx = conn.unchecked_transaction()?;
             tx.execute(
                 "INSERT INTO entities
                  (id, category, key, body_json, status, type, tags,
@@ -1227,6 +1253,7 @@ impl Database {
         &self,
         params: &RecallParams,
     ) -> Result<Vec<Entity>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let mut conditions: Vec<String> = Vec::new();
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -1373,7 +1400,7 @@ impl Database {
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
 
-        let mut stmt = self.conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let enc = self.encryption.as_ref();
         let rows = stmt.query_map(param_refs.as_slice(), |row| entity_from_row(row, enc))?;
 
@@ -1541,8 +1568,9 @@ impl Database {
         category: &str,
         key: &str,
     ) -> Result<Option<Entity>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         // Find the entity by category + key
-        let mut stmt = self.conn.prepare(
+        let mut stmt = conn.prepare(
             "SELECT id, category, key, body_json, status, type, tags,
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
@@ -1569,8 +1597,9 @@ impl Database {
         key: &str,
         reason: &str,
     ) -> Result<bool, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         // M-1 extended: wrap forget's entity UPDATE + FTS DELETE in a transaction
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = conn.unchecked_transaction()?;
         let affected = tx.execute(
             "UPDATE entities SET archived = 1, archive_reason = ?1,
              last_accessed_unix_ms = ?2
@@ -1596,12 +1625,12 @@ impl Database {
         to_id: &str,
         relationship: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         // Verify both entities exist
         let from = self
             .get_entity(from_category, from_key)?
             .ok_or("Source entity not found")?;
-        let _to: String = self
-            .conn
+        let _to: String = conn
             .query_row(
                 "SELECT id FROM entities WHERE id = ?1",
                 params![to_id],
@@ -1610,8 +1639,7 @@ impl Database {
             .map_err(|_| "Target entity not found")?;
 
         // Get existing links (default to empty array if missing)
-        let links_str: String = self
-            .conn
+        let links_str: String = conn
             .query_row(
                 "SELECT links FROM entities WHERE id = ?1",
                 params![from.id],
@@ -1629,7 +1657,7 @@ impl Database {
             });
         }
         let new_links = serde_json::to_string(&links)?;
-        self.conn.execute(
+        conn.execute(
             "UPDATE entities SET links = ?1, last_accessed_unix_ms = ?2 WHERE id = ?3",
             params![new_links, now_ms(), from.id],
         )?;
@@ -1644,11 +1672,12 @@ impl Database {
         from_key: &str,
         to_id: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let from = self
             .get_entity(from_category, from_key)?
             .ok_or("Source entity not found")?;
 
-        let links_str: String = self.conn.query_row(
+        let links_str: String = conn.query_row(
             "SELECT links FROM entities WHERE id = ?1",
             params![from.id],
             |r| r.get(0),
@@ -1663,7 +1692,7 @@ impl Database {
         }
 
         let new_links = serde_json::to_string(&links)?;
-        self.conn.execute(
+        conn.execute(
             "UPDATE entities SET links = ?1, last_accessed_unix_ms = ?2 WHERE id = ?3",
             params![new_links, now_ms(), from.id],
         )?;
@@ -1675,8 +1704,9 @@ impl Database {
 
     /// Append a journal event.
     pub fn journal(&self, event: &JournalEvent) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         // Compute audit chain hash: SHA-256(prev_hash || event_id || created_at_ms)
-        let prev_hash: Option<String> = self.conn.query_row(
+        let prev_hash: Option<String> = conn.query_row(
             "SELECT audit_hash FROM journal ORDER BY created_at_unix_ms DESC LIMIT 1",
             [],
             |r| r.get::<_, Option<String>>(0),
@@ -1688,7 +1718,7 @@ impl Database {
             crate::db::sha256_genesis(&event.id, event.created_at_unix_ms)
         };
 
-        self.conn.execute(
+        conn.execute(
             "INSERT INTO journal
              (id, event_type, evaluated_json, acted_json, forward_json,
               category, key, entity_id, agent_id, audit_hash, created_at_unix_ms)
@@ -1715,6 +1745,7 @@ impl Database {
         &self,
         params: &TimelineParams,
     ) -> Result<Vec<JournalEvent>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let mut conditions: Vec<String> = Vec::new();
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -1775,7 +1806,7 @@ impl Database {
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
 
-        let mut stmt = self.conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
             Ok(JournalEvent {
                 id: row.get(0)?,
@@ -1802,13 +1833,14 @@ impl Database {
 
     /// Set a state key-value pair with optional TTL.
     pub fn state_set(&self, entry: &StateEntry) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         // Clean expired entries first (opportunistic)
-        let _ = self.conn.execute(
+        let _ = conn.execute(
             "DELETE FROM state WHERE expires_at_unix_ms IS NOT NULL AND expires_at_unix_ms < ?1",
             params![now_ms()],
         );
 
-        self.conn.execute(
+        conn.execute(
             "INSERT OR REPLACE INTO state (key, value_json, expires_at_unix_ms, created_at_unix_ms)
              VALUES (?1, ?2, ?3, ?4)",
             params![
@@ -1823,7 +1855,8 @@ impl Database {
 
     /// Get a state value. Returns None if the key doesn't exist or has expired.
     pub fn state_get(&self, key: &str) -> Result<Option<StateEntry>, Box<dyn std::error::Error>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
             "SELECT key, value_json, expires_at_unix_ms, created_at_unix_ms
              FROM state WHERE key = ?1",
         )?;
@@ -1843,8 +1876,7 @@ impl Database {
             if let Some(expires) = entry.expires_at_unix_ms {
                 if expires < now_ms() {
                     // Expired — delete and return None
-                    let _ = self
-                        .conn
+                    let _ = conn
                         .execute("DELETE FROM state WHERE key = ?1", params![key]);
                     return Ok(None);
                 }
@@ -1857,22 +1889,23 @@ impl Database {
 
     /// Delete a state entry.
     pub fn state_delete(&self, key: &str) -> Result<bool, Box<dyn std::error::Error>> {
-        let affected = self
-            .conn
+        let conn = self.conn()?;
+        let affected = conn
             .execute("DELETE FROM state WHERE key = ?1", params![key])?;
         Ok(affected > 0)
     }
 
     /// List state keys matching an optional prefix.
     pub fn state_list(&self, prefix: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         // Delete expired entries first
-        let _ = self.conn.execute(
+        let _ = conn.execute(
             "DELETE FROM state WHERE expires_at_unix_ms IS NOT NULL AND expires_at_unix_ms < ?1",
             params![now_ms()],
         );
 
         let keys: Vec<String> = if prefix.is_empty() {
-            let mut stmt = self.conn.prepare("SELECT key FROM state ORDER BY key")?;
+            let mut stmt = conn.prepare("SELECT key FROM state ORDER BY key")?;
             let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
             let mut v = Vec::new();
             for row in rows {
@@ -1880,8 +1913,7 @@ impl Database {
             }
             v
         } else {
-            let mut stmt = self
-                .conn
+            let mut stmt = conn
                 .prepare("SELECT key FROM state WHERE key LIKE ?1 ORDER BY key")?;
             let pattern = format!("{}%", prefix);
             let rows = stmt.query_map(params![pattern], |r| r.get::<_, String>(0))?;
@@ -1899,7 +1931,8 @@ impl Database {
 
     /// Database statistics.
     pub fn stats(&self) -> Result<Stats, Box<dyn std::error::Error>> {
-        schema::gather_stats(&self.conn, &self.db_path)
+        let conn = self.conn()?;
+        schema::gather_stats(&conn, &self.db_path)
     }
 
     /// Get database file size in bytes.
@@ -1914,7 +1947,8 @@ impl Database {
         &self,
         old_path: &str,
     ) -> Result<crate::models::MigrationReport, Box<dyn std::error::Error>> {
-        schema::migrate_from_v0_1(old_path, &self.conn)
+        let conn = self.conn()?;
+        schema::migrate_from_v0_1(old_path, &conn)
     }
 
     // ─── Memory Synthesis ───────────────────────────────────────────
@@ -1928,13 +1962,13 @@ impl Database {
         max_depth: i64,
         max_nodes: i64,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let root = self
             .get_entity(category, key)?
             .ok_or_else(|| format!("entity not found: {}/{}", category, key))?;
 
         // Get root links
-        let links_json: String = self
-            .conn
+        let links_json: String = conn
             .query_row(
                 "SELECT links FROM entities WHERE id = ?1",
                 params![root.id],
@@ -1952,6 +1986,7 @@ impl Database {
 
         visited.insert(root.id.clone());
         self._traverse_links(
+            &conn,
             &root.id,
             &mut traversed,
             &mut visited,
@@ -1976,6 +2011,10 @@ impl Database {
 
     fn _traverse_links(
         &self,
+        // #210: thread one pooled connection through the recursion instead of
+        // checking one out per level — otherwise a deep chain would hold a
+        // connection at every frame and exhaust/deadlock the pool.
+        conn: &rusqlite::Connection,
         entity_id: &str,
         traversed: &mut Vec<serde_json::Value>,
         visited: &mut std::collections::HashSet<String>,
@@ -1987,8 +2026,7 @@ impl Database {
             return;
         }
 
-        let links_json: String = self
-            .conn
+        let links_json: String = conn
             .query_row(
                 "SELECT links FROM entities WHERE id = ?1",
                 params![entity_id],
@@ -2008,8 +2046,7 @@ impl Database {
                     visited.insert(link.target_id.clone());
 
                     // Get this entity's outgoing links
-                    let child_links_json: String = self
-                        .conn
+                    let child_links_json: String = conn
                         .query_row(
                             "SELECT links FROM entities WHERE id = ?1",
                             params![entity.id],
@@ -2035,6 +2072,7 @@ impl Database {
                     traversed.push(node.clone());
 
                     self._traverse_links(
+                        conn,
                         &entity.id,
                         traversed,
                         visited,
@@ -2063,7 +2101,8 @@ impl Database {
         status: &str,
         reason: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.conn.execute(
+        let conn = self.conn()?;
+        conn.execute(
             "UPDATE entities SET status = ?1, archive_reason = ?2, last_accessed_unix_ms = ?3 WHERE id = ?4",
             params![status, reason, now_ms(), id],
         )?;
@@ -2073,10 +2112,11 @@ impl Database {
     /// Find entities with identical (category, key) and merge/archive duplicates, keeping the newest.
     /// Returns the number of entities archived.
     pub fn deduplicate_entities(&self, dry_run: bool) -> Result<i64, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let mut archived_count = 0i64;
 
         // Find duplicate (category, key) pairs, keeping the newest `created_at_unix_ms`.
-        let mut stmt = self.conn.prepare(
+        let mut stmt = conn.prepare(
             "SELECT T1.id, T1.category, T1.key FROM entities AS T1 JOIN (
                 SELECT category, key, MAX(created_at_unix_ms) as max_created_at
                 FROM entities
@@ -2107,7 +2147,7 @@ impl Database {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            let tx = self.conn.unchecked_transaction()?;
+            let tx = conn.unchecked_transaction()?;
             let now = now_ms();
 
             // Archive duplicates
@@ -2142,7 +2182,8 @@ impl Database {
     /// Detect journal entries pointing to archived/deleted entities.
     /// Returns the number of orphan journal entries found.
     pub fn detect_orphan_journal_entries(&self) -> Result<i64, Box<dyn std::error::Error>> {
-        let count: i64 = self.conn.query_row(
+        let conn = self.conn()?;
+        let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM journal WHERE entity_id IS NOT NULL AND entity_id != '' AND entity_id NOT IN (SELECT id FROM entities)",
             [],
             |r| r.get(0),
@@ -2153,11 +2194,12 @@ impl Database {
     /// Detect links pointing to archived/deleted entities.
     /// Returns the number of orphan links found.
     pub fn detect_orphan_links(&self) -> Result<i64, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         // Load all entity ids once and check link targets against an in-memory
         // set, instead of a COUNT(*) point query per link (which was N+1 — one
         // query per edge in the whole graph). #209
         let all_ids: std::collections::HashSet<String> = {
-            let mut id_stmt = self.conn.prepare("SELECT id FROM entities")?;
+            let mut id_stmt = conn.prepare("SELECT id FROM entities")?;
             let ids = id_stmt
                 .query_map([], |row| row.get::<_, String>(0))?
                 .filter_map(|r| r.ok())
@@ -2166,7 +2208,7 @@ impl Database {
         };
 
         let mut orphan_count = 0i64;
-        let mut stmt = self.conn.prepare(
+        let mut stmt = conn.prepare(
             "SELECT links FROM entities WHERE links != '[]'"
         )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
@@ -2188,13 +2230,15 @@ impl Database {
 
     /// Run SQLite VACUUM command to reclaim space.
     pub fn vacuum(&self) -> Result<(), Box<dyn std::error::Error>> {
-        self.conn.execute_batch("VACUUM")?;
+        let conn = self.conn()?;
+        conn.execute_batch("VACUUM")?;
         Ok(())
     }
 
     /// Get a single entity by ID (internal helper).
     fn get_entity_by_id(&self, id: &str) -> Result<Option<Entity>, Box<dyn std::error::Error>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
             "SELECT id, category, key, body_json, status, type, tags,
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
@@ -2228,6 +2272,7 @@ impl Database {
         category: Option<&str>,
         layer: Option<&str>,
     ) -> Result<Vec<Entity>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let mut sql = String::from(
             "SELECT id, category, key, body_json, status, type, tags,
                     decay_score, retrieval_count, layer, topic_path,
@@ -2260,7 +2305,7 @@ impl Database {
         params.push(Box::new(limit));
         params.push(Box::new(offset));
 
-        let mut stmt = self.conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
         let enc = self.encryption.as_ref();
@@ -2278,7 +2323,8 @@ impl Database {
         &self,
         limit: i64,
     ) -> Result<Vec<JournalEvent>, Box<dyn std::error::Error>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
             "SELECT id, event_type, evaluated_json, acted_json, forward_json,
                     category, key, entity_id, agent_id, created_at_unix_ms
              FROM journal ORDER BY created_at_unix_ms DESC LIMIT ?1",
@@ -2308,8 +2354,8 @@ impl Database {
     pub fn get_entity_graph(
         &self,
     ) -> Result<(Vec<GraphNode>, Vec<GraphEdge>), Box<dyn std::error::Error>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+        let mut stmt = conn
             .prepare("SELECT id, category, key, links FROM entities WHERE archived = 0")?;
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
@@ -2351,8 +2397,9 @@ impl Database {
         key: &str,
         score: f64,
     ) -> Result<bool, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let score = score.clamp(0.0, 1.0);
-        let affected = self.conn.execute(
+        let affected = conn.execute(
             "UPDATE entities SET verified = ?1, decay_score = ?2,
              last_accessed_unix_ms = ?3 WHERE category = ?4 AND key = ?5",
             params![(score >= 0.7) as i32, score, now_ms(), category, key],
@@ -2372,7 +2419,8 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
             "SELECT id, key, body_json, certainty FROM entities WHERE category = ?1 AND archived = 0
              ORDER BY last_accessed_unix_ms DESC LIMIT 200 OFFSET ?2"
         )?;
@@ -2431,13 +2479,14 @@ impl Database {
     /// This is the only way to actually remove entities; prune/forget only soft-archive.
     /// Deleted entities are NOT recoverable. Use dry_run=true to preview first.
     pub fn purge(&self, dry_run: bool) -> Result<PurgeReport, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let before_size = match std::fs::metadata(&self.db_path) {
             Ok(m) => m.len() as i64,
             Err(_) => 0i64,
         };
 
         // Count archived entities
-        let mut stmt = self.conn.prepare("SELECT COUNT(*) FROM entities WHERE archived = 1")?;
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM entities WHERE archived = 1")?;
         let count: i64 = stmt.query_row([], |r| r.get(0))?;
         stmt.finalize()?;
 
@@ -2460,15 +2509,15 @@ impl Database {
         }
 
         // Delete archived entities from FTS5 index first, then the entities table
-        let tx = self.conn.unchecked_transaction()?;
-        self.conn.execute_batch(
+        let tx = conn.unchecked_transaction()?;
+        conn.execute_batch(
             "DELETE FROM entities_fts WHERE rowid IN (SELECT rowid FROM entities WHERE archived = 1);
              DELETE FROM entities WHERE archived = 1;"
         )?;
         tx.commit()?;
 
         // VACUUM to reclaim disk space
-        self.conn.execute_batch("VACUUM;")?;
+        conn.execute_batch("VACUUM;")?;
 
         let after_size = match std::fs::metadata(&self.db_path) {
             Ok(m) => m.len() as i64,
@@ -2490,21 +2539,22 @@ impl Database {
         min_decay: f64,
         dry_run: bool,
     ) -> Result<CompactReport, Box<dyn std::error::Error>> {
-        let examined: i64 = self.conn.query_row(
+        let conn = self.conn()?;
+        let examined: i64 = conn.query_row(
             "SELECT COUNT(*) FROM entities WHERE archived = 0",
             [],
             |r| r.get(0),
         )?;
 
         let archived = if dry_run {
-            self.conn.query_row(
+            conn.query_row(
                 "SELECT COUNT(*) FROM entities WHERE archived = 0 AND decay_score < ?1",
                 params![min_decay],
                 |r| r.get(0),
             )?
         } else {
             // M-1 extended: wrap compact UPDATE + FTS DELETE in a transaction
-            let tx = self.conn.unchecked_transaction()?;
+            let tx = conn.unchecked_transaction()?;
             let count = tx.execute(
                 "UPDATE entities SET archived = 1, archive_reason = 'decay threshold',
                  last_accessed_unix_ms = ?1
@@ -2544,6 +2594,7 @@ impl Database {
         vault_dir: &str,
         workspace_hash: Option<&str>,
     ) -> Result<VaultReport, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         use std::fs;
         use std::path::Path;
 
@@ -2564,7 +2615,7 @@ impl Database {
                     created_at_unix_ms, last_accessed_unix_ms
              FROM entities WHERE archived = 0".to_string()
         };
-        let mut stmt = self.conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(&sql)?;
 
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -2937,7 +2988,8 @@ last_accessed: {}
 
     /// List all distinct categories in the entities table.
     pub fn workspace_list_categories(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
             "SELECT DISTINCT category FROM entities WHERE archived = 0 ORDER BY category",
         )?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
@@ -2956,6 +3008,7 @@ last_accessed: {}
         context: &str,
         limit: i64,
     ) -> Result<Vec<Entity>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let words: Vec<&str> = context
             .split_whitespace()
             .filter(|w| w.len() >= 3)
@@ -2999,7 +3052,7 @@ last_accessed: {}
              ORDER BY decay_score DESC, retrieval_count DESC
              LIMIT ?2";
 
-        let mut stmt = self.conn.prepare(sql)?;
+        let mut stmt = conn.prepare(sql)?;
         let enc = self.encryption.as_ref();
         let rows =
             stmt.query_map(params![fts_query, scan_cap], |row| entity_from_row(row, enc))?;
@@ -3045,6 +3098,7 @@ last_accessed: {}
         &self,
         params: &crate::models::CohereParams,
     ) -> Result<crate::models::CohereReport, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
         let now = now_ms();
         let mut promoted: i64 = 0;
         let mut decayed: i64 = 0;
@@ -3052,7 +3106,7 @@ last_accessed: {}
         let mut archived: i64 = 0;
 
         // Count total examined
-        let examined: i64 = self.conn.query_row(
+        let examined: i64 = conn.query_row(
             "SELECT COUNT(*) FROM entities WHERE archived = 0",
             [],
             |r| r.get(0),
@@ -3072,25 +3126,25 @@ last_accessed: {}
 
         // Wrap all mutations in a transaction so partial writes are not left
         // behind if any step fails (cohere runs multiple statements on self.conn).
-        self.conn.execute("BEGIN IMMEDIATE", [])?;
+        conn.execute("BEGIN IMMEDIATE", [])?;
         let promote_threshold = if params.promote_threshold > 0 {
             params.promote_threshold
         } else {
             3
         };
-        promoted = self.conn.execute(
+        promoted = conn.execute(
             "UPDATE entities SET layer = 'working' WHERE layer = 'buffer' AND retrieval_count >= ?1",
             params![promote_threshold],
         )? as i64;
 
         // 2. Decay: apply Ebbinghaus decay to all non-archived entities
         // Formula: new_score = current_score * 0.95 (gentle decay)
-        let decayed_count: i64 = self.conn.query_row(
+        let decayed_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM entities WHERE archived = 0 AND decay_score > 0.01",
             [],
             |r| r.get(0),
         )?;
-        self.conn.execute(
+        conn.execute(
             "UPDATE entities SET decay_score = decay_score * 0.95 WHERE archived = 0 AND decay_score > 0.01",
             [],
         )?;
@@ -3106,7 +3160,7 @@ last_accessed: {}
         let mut pending: std::collections::HashMap<String, Vec<MemoryLink>> =
             std::collections::HashMap::new();
         {
-            let mut stmt = self.conn.prepare(
+            let mut stmt = conn.prepare(
                 "SELECT e1.id, e1.links, e2.id as e2_id
                  FROM entities e1
                  JOIN entities e2 ON e1.category = e2.category AND e1.id < e2.id
@@ -3140,7 +3194,7 @@ last_accessed: {}
         let link_ts = now_ms();
         for (id, links) in &pending {
             let new_links = serde_json::to_string(links)?;
-            self.conn.execute(
+            conn.execute(
                 "UPDATE entities SET links = ?1, last_accessed_unix_ms = ?2 WHERE id = ?3",
                 params![new_links, link_ts, id],
             )?;
@@ -3152,7 +3206,7 @@ last_accessed: {}
         } else {
             0.05
         };
-        archived = self.conn.execute(
+        archived = conn.execute(
             "UPDATE entities SET archived = 1, archive_reason = 'auto-archived by coherence daemon (decay < threshold)'
              WHERE archived = 0 AND decay_score < ?1",
             params![archive_threshold],
@@ -3160,13 +3214,13 @@ last_accessed: {}
 
         // Clean FTS5 entries for archived entities
         if archived > 0 {
-            self.conn.execute(
+            conn.execute(
                 "DELETE FROM entities_fts WHERE rowid IN (SELECT rowid FROM entities WHERE archived = 1)",
                 [],
             )?;
         }
 
-        self.conn.execute("COMMIT", [])?;
+        conn.execute("COMMIT", [])?;
 
         Ok(crate::models::CohereReport {
             promoted,
@@ -3474,7 +3528,8 @@ fn sha256_genesis(event_id: &str, created_at_ms: i64) -> String {
 // path) but not yet wired to a CLI/MCP command, so it has no in-crate caller.
 #[allow(dead_code)]
 pub fn verify_audit_chain(db: &Database) -> Result<i64, String> {
-    let mut stmt = db.conn.prepare(
+    let conn = db.conn().map_err(|e| format!("connection: {}", e))?;
+    let mut stmt = conn.prepare(
         "SELECT id, audit_hash, created_at_unix_ms FROM journal WHERE audit_hash != '' ORDER BY created_at_unix_ms ASC",
     ).map_err(|e| format!("prepare: {}", e))?;
 
@@ -3841,7 +3896,7 @@ mod tests {
 
         // helper: is a given entity id present in the FTS index?
         let in_fts = |id: &str| -> bool {
-            db.conn
+            db.conn().unwrap()
                 .query_row(
                     "SELECT COUNT(*) FROM entities_fts
                      WHERE rowid = (SELECT rowid FROM entities WHERE id = ?1)",
@@ -3888,11 +3943,10 @@ mod tests {
         db.remember(&e).unwrap();
 
         // Corrupt the index by deleting the FTS row directly (simulating drift).
-        db.conn
+        db.conn().unwrap()
             .execute("DELETE FROM entities_fts", [])
             .unwrap();
-        let count_before: i64 = db
-            .conn
+        let count_before: i64 = db.conn().unwrap()
             .query_row("SELECT COUNT(*) FROM entities_fts", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count_before, 0);
@@ -3900,8 +3954,7 @@ mod tests {
         // Reindex repairs it.
         let n = db.reindex_fts().unwrap();
         assert_eq!(n, 1);
-        let count_after: i64 = db
-            .conn
+        let count_after: i64 = db.conn().unwrap()
             .query_row("SELECT COUNT(*) FROM entities_fts", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count_after, 1);
@@ -4177,7 +4230,7 @@ mod tests {
             ("se-archived", 7, 0.5, 1),         // filtered out → never bumped
         ];
         for (id, count, decay, archived) in rows {
-            db.conn
+            db.conn().unwrap()
                 .execute(
                     "INSERT INTO entities (id, category, key, body_json, type, status,
                         retrieval_count, last_accessed_unix_ms, created_at_unix_ms,
@@ -4243,7 +4296,7 @@ mod tests {
         let (db, path) = temp_db();
         let blob = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|f| f.to_le_bytes()).collect() };
         let insert = |id: &str, key: &str, emb: &[f32], archived: i64| {
-            db.conn
+            db.conn().unwrap()
                 .execute(
                     "INSERT INTO entities (id, category, key, body_json, type, status,
                         retrieval_count, last_accessed_unix_ms, created_at_unix_ms,
@@ -4275,12 +4328,75 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    // #210: a single Database (pooled internally) shared as Arc<Database> across
+    // threads must serve concurrent reads + writes without panicking, locking up,
+    // or losing writes — the property the transport now relies on (no Mutex).
+    #[test]
+    fn pooled_database_shared_across_threads() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let (db, path) = temp_db();
+        let db = Arc::new(db);
+
+        // Raw inserts through the pool (each thread checks out its own pooled
+        // connection) — this tests concurrent pooled writes directly, without
+        // remember's near-duplicate dedup confounding the row count.
+        let insert = |conn: &rusqlite::Connection, id: &str| {
+            conn.execute(
+                "INSERT INTO entities (id, category, key, body_json, type, status,
+                    retrieval_count, last_accessed_unix_ms, created_at_unix_ms, decay_score, layer)
+                 VALUES (?1, 'insight', ?1, '{\"content\":\"x\"}', 'insight', 'active', 0, 0, 0, 0.5, 'working')",
+                params![id],
+            )
+        };
+
+        let mut handles = Vec::new();
+        // 4 writer threads, each inserting 50 rows through the shared Arc<Database>.
+        for w in 0..4 {
+            let d = Arc::clone(&db);
+            handles.push(thread::spawn(move || {
+                for i in 0..50 {
+                    let conn = d.conn().expect("pooled connection");
+                    insert(&conn, &format!("w{}-{:03}", w, i)).expect("concurrent insert");
+                }
+            }));
+        }
+        // 4 reader threads recalling concurrently (pure reads through the pool).
+        for _ in 0..4 {
+            let d = Arc::clone(&db);
+            handles.push(thread::spawn(move || {
+                for _ in 0..50 {
+                    d.recall(&RecallParams {
+                        limit: 5,
+                        skip_side_effects: true,
+                        ..RecallParams::default()
+                    })
+                    .expect("concurrent recall should not fail");
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("worker thread panicked");
+        }
+
+        // All 200 writer rows landed (no lost writes under concurrency).
+        let count: i64 = db
+            .conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 200, "expected 200 rows after concurrent writes, got {}", count);
+
+        let _ = fs::remove_file(&path);
+    }
+
     // #207: duplicate ids in one batch bump only once (the property the
     // query-expansion path relies on after merging variant results).
     #[test]
     fn apply_recall_side_effects_dedupes_ids() {
         let (db, path) = temp_db();
-        db.conn
+        db.conn().unwrap()
             .execute(
                 "INSERT INTO entities (id, category, key, body_json, type, status,
                     retrieval_count, last_accessed_unix_ms, created_at_unix_ms,
@@ -4294,8 +4410,7 @@ mod tests {
         db.apply_recall_side_effects(&["dup-1".to_string(), "dup-1".to_string()])
             .unwrap();
 
-        let n: i64 = db
-            .conn
+        let n: i64 = db.conn().unwrap()
             .query_row(
                 "SELECT retrieval_count FROM entities WHERE id = 'dup-1'",
                 [],
@@ -4342,8 +4457,7 @@ mod tests {
         assert_eq!(found.body_json, r#"{"content": "top secret data"}"#);
 
         // Verify the raw DB column is encrypted (not plaintext)
-        let raw_body: String = db
-            .conn
+        let raw_body: String = db.conn().unwrap()
             .query_row(
                 "SELECT body_json FROM entities WHERE category = ?1 AND key = ?2",
                 rusqlite::params!["insight", "secret-note"],
@@ -4359,7 +4473,7 @@ mod tests {
         // Test that a Database without encryption sees the garbled text
         let (db2, path2) = temp_db();
         // Copy the raw encrypted row into db2 (without setting encryption)
-        db2.conn.execute(
+        db2.conn().unwrap().execute(
             "INSERT INTO entities (id, category, key, body_json, status, type, tags, decay_score, retrieval_count, layer, topic_path, archived, archive_reason, links, verified, source, created_at_unix_ms, last_accessed_unix_ms) VALUES (?1, ?2, ?3, ?4, 'active', 'insight', '[]', 1.0, 0, 'working', '', 0, '', '[]', 0, 'agent', 0, 0)",
             rusqlite::params!["e-enc", "insight", "secret-note", raw_body],
         ).unwrap();
@@ -4426,7 +4540,8 @@ mod tests {
         let start_insert = Instant::now();
         let mut count = 0;
         for chunk in (0..n).collect::<Vec<_>>().chunks(5000) {
-            let tx = db.conn.unchecked_transaction().unwrap();
+            let conn = db.conn().unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
             for i in chunk {
                 let i = *i;
                 let key = format!("entity-{:06}", i);
@@ -4534,7 +4649,8 @@ mod tests {
 
         // Pre-populate 1000 entities so the reader has something to search.
         {
-            let tx = db.conn.unchecked_transaction().unwrap();
+            let conn = db.conn().unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
             for i in 0..1000u32 {
                 let body = format!(r#"{{"content":"entity {}"}}"#, i);
                 tx.execute(
@@ -4565,7 +4681,8 @@ mod tests {
             for i in 0..500 {
                 let body = format!(r#"{{"content":"writer entity {}"}}"#, i);
                 if let Err(e) = (|| -> Result<(), Box<dyn std::error::Error>> {
-                    let tx = wdb.conn.unchecked_transaction()?;
+                    let conn = wdb.conn().expect("pool conn");
+                    let tx = conn.unchecked_transaction()?;
                     tx.execute(
                         "INSERT INTO entities (id, category, key, body_json, type, status, retrieval_count, last_accessed_unix_ms, created_at_unix_ms, decay_score, layer)
                          VALUES (?1, 'stress', ?2, ?3, 'insight', 'active', 0, 0, 0, 0.5, 'working')",
