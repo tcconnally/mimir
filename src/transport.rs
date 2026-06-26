@@ -286,4 +286,245 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         assert!(resp.headers().contains_key(header::WWW_AUTHENTICATE));
     }
+
+    /// #223: concurrent-client load test for the DB connection pool, driven
+    /// through the REAL HTTP transport — the same `init_transport_state` +
+    /// `build_transport_router` + `axum::serve` path `main.rs` uses — rather
+    /// than direct `Database` calls. This exercises the full request path under
+    /// contention: `handle_message` -> `spawn_blocking` -> `mcp::handle_request`
+    /// -> `call_tool` -> a pooled connection.
+    ///
+    /// `#[ignore]` on purpose: this is a load/soak test, not a CI correctness
+    /// gate (the durability/throughput characteristics under contention "can't
+    /// be proven by CI" — see #223). Run it explicitly and sweep the pool knobs:
+    ///
+    /// ```text
+    /// cargo test --release pool_load_test_http_transport -- --ignored --nocapture
+    ///
+    /// # sweep: small pool, default busy_timeout, more clients
+    /// MIMIR_POOL_MAX_SIZE=4 MIMIR_BUSY_TIMEOUT_MS=5000 MIMIR_LOADTEST_CLIENTS=32 \
+    ///   cargo test --release pool_load_test_http_transport -- --ignored --nocapture
+    /// ```
+    ///
+    /// Tunables (env): `MIMIR_LOADTEST_CLIENTS` (default 16),
+    /// `MIMIR_LOADTEST_WRITES` / `MIMIR_LOADTEST_READS` per client (default 25 / 75),
+    /// plus the pool's `MIMIR_POOL_MAX_SIZE` / `MIMIR_BUSY_TIMEOUT_MS`
+    /// (consumed by `Database::open`).
+    ///
+    /// Asserts the four properties #223 calls out: no `database is locked` /
+    /// `SQLITE_BUSY` after the busy_timeout, no lost writes (final row count ==
+    /// writes that returned success), no deadlock (the run completes and joins),
+    /// and reports p50/p99/max latency so the operator can judge tail behavior.
+    #[test]
+    #[ignore = "load test: run explicitly with --ignored --nocapture"]
+    fn pool_load_test_http_transport() {
+        use crate::db::Database;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        fn env_usize(key: &str, default: usize) -> usize {
+            std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+        }
+
+        // Classify one response body. A pooled-write/lock failure surfaces as an
+        // MCP tool error (`isError:true`) whose text carries rusqlite's message,
+        // so we scan for the SQLITE_BUSY signature explicitly and bucket the rest.
+        fn classify(
+            text: &str,
+            lock: &AtomicU64,
+            other: &AtomicU64,
+            writes_ok: &AtomicU64,
+            is_write: bool,
+        ) {
+            let lower = text.to_lowercase();
+            let is_lock =
+                lower.contains("database is locked") || lower.contains("sqlite_busy");
+            let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+            let is_err = is_lock
+                || text.starts_with("TRANSPORT_ERROR")
+                || v.get("error").is_some()
+                || v.pointer("/result/isError").and_then(|b| b.as_bool()).unwrap_or(false);
+            if is_lock {
+                lock.fetch_add(1, Ordering::Relaxed);
+            } else if is_err {
+                other.fetch_add(1, Ordering::Relaxed);
+            } else if is_write {
+                writes_ok.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let clients = env_usize("MIMIR_LOADTEST_CLIENTS", 16);
+        let writes_per = env_usize("MIMIR_LOADTEST_WRITES", 25);
+        let reads_per = env_usize("MIMIR_LOADTEST_READS", 75);
+
+        let path = std::env::temp_dir()
+            .join(format!("mimir-loadtest-{}.db", uuid::Uuid::new_v4()));
+        let path_str = path.to_str().unwrap().to_string();
+        let db = Database::open(&path_str).expect("open load-test db");
+        init_transport_state(Arc::new(db));
+
+        // Real HTTP server on an ephemeral port (mirrors main.rs wiring).
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+        rt.spawn(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind ephemeral port");
+            addr_tx.send(listener.local_addr().unwrap()).unwrap();
+            let router = build_transport_router(TransportMode::Http, None);
+            axum::serve(listener, router).await.unwrap();
+        });
+        let addr = addr_rx.recv().expect("server address");
+        let base = format!("http://{}/message", addr);
+
+        // One MCP handshake; `initialized` lives in the shared global state, so a
+        // single initialize unblocks tools/call for every client.
+        let init = ureq::post(&base)
+            .set("Content-Type", "application/json")
+            .send_string(
+                &serde_json::json!({
+                    "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}
+                })
+                .to_string(),
+            );
+        assert!(init.is_ok(), "initialize failed: {:?}", init.err());
+
+        let lock_errors = Arc::new(AtomicU64::new(0));
+        let other_errors = Arc::new(AtomicU64::new(0));
+        let writes_ok = Arc::new(AtomicU64::new(0));
+
+        let start = Instant::now();
+        let mut handles = Vec::new();
+        for c in 0..clients {
+            let base = base.clone();
+            let lock_errors = Arc::clone(&lock_errors);
+            let other_errors = Arc::clone(&other_errors);
+            let writes_ok = Arc::clone(&writes_ok);
+            handles.push(std::thread::spawn(move || {
+                let mut latencies: Vec<u128> = Vec::with_capacity(writes_per + 2 * reads_per);
+                let call = |name: &str, args: serde_json::Value| -> (String, u128) {
+                    let t = Instant::now();
+                    let body = serde_json::json!({
+                        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": name, "arguments": args}
+                    });
+                    let text = match ureq::post(&base)
+                        .set("Content-Type", "application/json")
+                        .send_string(&body.to_string())
+                    {
+                        Ok(resp) => resp.into_string().unwrap_or_default(),
+                        Err(ureq::Error::Status(_, resp)) => {
+                            resp.into_string().unwrap_or_default()
+                        }
+                        Err(e) => format!("TRANSPORT_ERROR: {}", e),
+                    };
+                    (text, t.elapsed().as_micros())
+                };
+
+                // Interleave writes and reads so the two contend on the pool.
+                let ops = writes_per.max(reads_per);
+                for i in 0..ops {
+                    if i < writes_per {
+                        // High-entropy unique content so each write is a real
+                        // create — mimir_remember dedups bodies above 70% trigram
+                        // similarity, so near-identical payloads would collapse
+                        // and `persisted == issued` would no longer test durability.
+                        let nonce = format!(
+                            "{}{}",
+                            uuid::Uuid::new_v4().simple(),
+                            uuid::Uuid::new_v4().simple()
+                        );
+                        let (text, us) = call("mimir_remember", serde_json::json!({
+                            "category": "loadtest",
+                            "key": format!("c{}-w{}", c, i),
+                            "body_json": format!("{{\"content\":\"{}\"}}", nonce),
+                        }));
+                        latencies.push(us);
+                        classify(&text, &lock_errors, &other_errors, &writes_ok, true);
+                    }
+                    if i < reads_per {
+                        let (text, us) = call("mimir_recall", serde_json::json!({
+                            "query": "client", "category": "loadtest", "limit": 10
+                        }));
+                        latencies.push(us);
+                        classify(&text, &lock_errors, &other_errors, &writes_ok, false);
+
+                        let (text2, us2) = call("mimir_context", serde_json::json!({}));
+                        latencies.push(us2);
+                        classify(&text2, &lock_errors, &other_errors, &writes_ok, false);
+                    }
+                }
+                latencies
+            }));
+        }
+
+        let mut all: Vec<u128> = Vec::new();
+        for h in handles {
+            all.extend(h.join().expect("client thread panicked (possible deadlock)"));
+        }
+        let elapsed = start.elapsed();
+
+        all.sort_unstable();
+        let pct = |p: f64| -> u128 {
+            if all.is_empty() {
+                return 0;
+            }
+            let idx = (((all.len() - 1) as f64) * p).round() as usize;
+            all[idx]
+        };
+        let lock = lock_errors.load(Ordering::Relaxed);
+        let other = other_errors.load(Ordering::Relaxed);
+        let ok_writes = writes_ok.load(Ordering::Relaxed);
+        let issued_writes = (clients * writes_per) as u64;
+
+        // Independently verify no lost writes: reopen the file with a raw
+        // connection and count the rows that actually persisted.
+        let verify = rusqlite::Connection::open(&path_str)
+            .expect("reopen for verification");
+        let persisted: i64 = verify
+            .query_row(
+                "SELECT COUNT(*) FROM entities WHERE category = 'loadtest'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        drop(verify);
+
+        eprintln!(
+            "\n#223 pool load test\n\
+             clients={clients} writes/client={writes_per} reads/client={reads_per}\n\
+             pool max_size={} busy_timeout={}ms\n\
+             requests={} wall={:.2}s throughput={:.0} req/s\n\
+             latency p50={}us p99={}us max={}us\n\
+             lock_errors={lock} other_errors={other}\n\
+             writes: issued={issued_writes} ok={ok_writes} persisted={persisted}",
+            std::env::var("MIMIR_POOL_MAX_SIZE").unwrap_or_else(|_| "16".into()),
+            std::env::var("MIMIR_BUSY_TIMEOUT_MS").unwrap_or_else(|_| "5000".into()),
+            all.len(),
+            elapsed.as_secs_f64(),
+            all.len() as f64 / elapsed.as_secs_f64().max(1e-9),
+            pct(0.50),
+            pct(0.99),
+            all.last().copied().unwrap_or(0),
+        );
+
+        let _ = std::fs::remove_file(&path_str);
+
+        // The four properties #223 asks us to prove:
+        assert_eq!(lock, 0, "SQLITE_BUSY / 'database is locked' after busy_timeout");
+        assert_eq!(other, 0, "unexpected tool/transport errors under load");
+        assert_eq!(
+            persisted, issued_writes as i64,
+            "lost writes: {issued_writes} issued, {persisted} persisted"
+        );
+        assert_eq!(
+            ok_writes, issued_writes,
+            "every issued write should have returned success"
+        );
+        // (Reaching here at all proves no deadlock — all client threads joined.)
+    }
 }

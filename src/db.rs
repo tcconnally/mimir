@@ -107,15 +107,29 @@ impl Database {
         // synchronous=NORMAL is durable under WAL (only risks the last txn on an
         // OS crash) and avoids an fsync per commit; cache/mmap/temp_store reduce
         // cold-scan cost. (#208)
-        let manager = SqliteConnectionManager::file(path).with_init(|c| {
-            c.execute_batch(
+        //
+        // Pool size and busy_timeout are tunable via env so operators can match
+        // the pool to their workload and so the concurrent-client load test can
+        // sweep them (#223). Defaults preserve the prior hard-coded values
+        // (max_size=16, busy_timeout=5000ms).
+        let max_size: u32 = std::env::var("MIMIR_POOL_MAX_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(16);
+        let busy_timeout_ms: u64 = std::env::var("MIMIR_BUSY_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5000);
+        let manager = SqliteConnectionManager::file(path).with_init(move |c| {
+            c.execute_batch(&format!(
                 "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=1000; \
-                 PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; \
+                 PRAGMA foreign_keys=ON; PRAGMA busy_timeout={busy_timeout_ms}; \
                  PRAGMA synchronous=NORMAL; PRAGMA cache_size=-8000; \
                  PRAGMA mmap_size=268435456; PRAGMA temp_store=MEMORY;",
-            )
+            ))
         });
-        let pool = r2d2::Pool::builder().max_size(16).build(manager)?;
+        let pool = r2d2::Pool::builder().max_size(max_size).build(manager)?;
 
         // Initialize schema once if this is a new database.
         let setup_conn = pool.get()?;
