@@ -16,8 +16,8 @@ Zero runtime dependencies. Structured entity model with journal events and state
 
 ## Status — 2026-06-27
 
-- **Latest release:** `v2.1.0` (Performance & Reliability)
-- **`main`:** `2.2.0` (unreleased) — bundles offline embeddings by default, adds time-aware recall, and finishes all-platform CI
+- **Latest release:** `v2.2.0` (Local-First Semantic Memory, Out of the Box)
+- **`main`:** `2.2.1` (unreleased) — Docker/Alpine lean-build fix on top of 2.2.0
 - **MCP tools:** **40**, spanning entities, search/RAG, journal, state, graph, lifecycle, multi-agent/federation, and vault
 - **In one line:** everything originally planned from v0.1 through the v2.0 "Platform" milestone has shipped. This document is being corrected to reflect that, and the forward section is deliberately short and honest.
 

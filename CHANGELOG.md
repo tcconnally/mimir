@@ -5,6 +5,16 @@ All notable changes to Mimir are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-06-27
+
+### Fixed
+- **Docker/Alpine image builds again (#242).** The bundled-embeddings default
+  (#237/#238) broke the musl Docker build — `ort` (ONNX Runtime) prebuilt
+  binaries are glibc-only and the download chain needs `openssl-sys`, absent on
+  Alpine. The Firecracker/sandbox image now builds **lean** (`--no-default-features`),
+  restoring a working static-musl binary and the GHCR publish. (Native binaries
+  remain bundled-by-default; a semantic-search Docker image would need a glibc base.)
+
 ## [2.2.0] - 2026-06-27
 
 Local-first semantic memory, now true out of the box and on every platform, plus
@@ -40,4 +50,5 @@ search works with zero config and zero network by default.
   semantic-search claim on every platform a developer runs. Added a `lite-build`
   job guarding `--no-default-features`.
 
+[2.2.1]: https://github.com/Perseus-Computing-LLC/mimir/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/Perseus-Computing-LLC/mimir/compare/v2.1.0...v2.2.0

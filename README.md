@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://rust-lang.org)
-[![Version](https://img.shields.io/badge/version-2.2.0-green.svg)](https://github.com/Perseus-Computing-LLC/mimir/releases)
+[![Version](https://img.shields.io/badge/version-2.2.1-green.svg)](https://github.com/Perseus-Computing-LLC/mimir/releases)
 [![LangGraph](https://img.shields.io/badge/integrations-LangGraph-blue)](integrations/langgraph/)
 [![CrewAI](https://img.shields.io/badge/integrations-CrewAI-orange)](integrations/crewai/)
 [![AutoGen](https://img.shields.io/badge/integrations-AutoGen-purple)](integrations/autogen/)
