@@ -1,0 +1,1182 @@
+{
+  "benchmark": "mimir-recall-quality",
+  "dataset": "mimir-recall-mini",
+  "n_memories": 24,
+  "n_queries": 24,
+  "k": [
+    1,
+    3,
+    5
+  ],
+  "modes": [
+    "fts5",
+    "dense",
+    "hybrid"
+  ],
+  "metrics": {
+    "fts5": {
+      "recall@1": 0.0417,
+      "recall@3": 0.125,
+      "recall@5": 0.2083,
+      "mrr": 0.1314
+    },
+    "dense": {
+      "recall@1": 0.9167,
+      "recall@3": 0.9583,
+      "recall@5": 1.0,
+      "mrr": 0.9479
+    },
+    "hybrid": {
+      "recall@1": 0.2083,
+      "recall@3": 0.625,
+      "recall@5": 0.8333,
+      "mrr": 0.4379
+    }
+  },
+  "binary": "mimir.exe",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "offline": true,
+  "embedding": {
+    "source": "bundled-onnx",
+    "embedded": 24,
+    "dimensions": null
+  },
+  "signature_sha256": "95544cb66772841d363fbe6f7502457c7ace89d8d03c02702606e35ec20421e0",
+  "signature_covers": [
+    "fts5",
+    "dense"
+  ],
+  "nondeterministic_modes": [
+    "hybrid"
+  ],
+  "per_query": [
+    {
+      "q": "what hot beverage does the user have each day",
+      "relevant": [
+        "coffee"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "team",
+            "deadline",
+            "diet",
+            "music",
+            "exercise"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.0
+        },
+        "dense": {
+          "top": [
+            "coffee",
+            "exercise",
+            "cooking",
+            "commute",
+            "dentist"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "exercise",
+            "diet",
+            "coffee",
+            "pet"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 1.0,
+          "rr": 0.25
+        }
+      }
+    },
+    {
+      "q": "how does the user get to work",
+      "relevant": [
+        "commute"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "dense": {
+          "top": [
+            "learning",
+            "security",
+            "phone",
+            "commute",
+            "job"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 1.0,
+          "rr": 0.25
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "exercise",
+            "phone",
+            "job",
+            "plant"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        }
+      }
+    },
+    {
+      "q": "which coding language does the user prefer",
+      "relevant": [
+        "lang"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.14285714285714285
+        },
+        "dense": {
+          "top": [
+            "lang",
+            "learning",
+            "music",
+            "sister",
+            "cooking"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "music",
+            "commute",
+            "lang",
+            "exercise",
+            "learning"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.3333333333333333
+        }
+      }
+    },
+    {
+      "q": "does the user own any animals",
+      "relevant": [
+        "pet"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.0
+        },
+        "dense": {
+          "top": [
+            "pet",
+            "diet",
+            "allergy",
+            "plant",
+            "music"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "diet",
+            "music",
+            "pet",
+            "commute",
+            "exercise"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.3333333333333333
+        }
+      }
+    },
+    {
+      "q": "what foods should the user avoid for health reasons",
+      "relevant": [
+        "allergy"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.0
+        },
+        "dense": {
+          "top": [
+            "allergy",
+            "diet",
+            "coffee",
+            "cooking",
+            "fear"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "diet",
+            "exercise",
+            "security",
+            "dentist",
+            "commute"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.16666666666666666
+        }
+      }
+    },
+    {
+      "q": "when is the user's marriage celebration date",
+      "relevant": [
+        "anniversary"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.1111111111111111
+        },
+        "dense": {
+          "top": [
+            "anniversary",
+            "dentist",
+            "deadline",
+            "commute",
+            "phone"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "deadline",
+            "anniversary",
+            "exercise",
+            "dentist"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.3333333333333333
+        }
+      }
+    },
+    {
+      "q": "what does the user do to stay fit",
+      "relevant": [
+        "exercise"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.5
+        },
+        "dense": {
+          "top": [
+            "exercise",
+            "commute",
+            "coffee",
+            "phone",
+            "security"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "exercise",
+            "phone",
+            "plant",
+            "music"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.5
+        }
+      }
+    },
+    {
+      "q": "what novel is the user reading right now",
+      "relevant": [
+        "book"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.1
+        },
+        "dense": {
+          "top": [
+            "book",
+            "phone",
+            "cooking",
+            "lang",
+            "deadline"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "deadline",
+            "book",
+            "lang",
+            "dentist"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.3333333333333333
+        }
+      }
+    },
+    {
+      "q": "what vehicle does the user own",
+      "relevant": [
+        "car"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.0
+        },
+        "dense": {
+          "top": [
+            "car",
+            "commute",
+            "lang",
+            "job",
+            "phone"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "music",
+            "car",
+            "exercise",
+            "lang"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.3333333333333333
+        }
+      }
+    },
+    {
+      "q": "where does the user's sibling reside",
+      "relevant": [
+        "sister"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.0
+        },
+        "dense": {
+          "top": [
+            "sister",
+            "pet",
+            "team",
+            "childhood",
+            "plant"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "team",
+            "music",
+            "sister",
+            "commute",
+            "exercise"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.3333333333333333
+        }
+      }
+    },
+    {
+      "q": "what is the user's profession",
+      "relevant": [
+        "job"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.0
+        },
+        "dense": {
+          "top": [
+            "job",
+            "commute",
+            "security",
+            "lang",
+            "team"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "music",
+            "lang",
+            "team",
+            "dentist"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.16666666666666666
+        }
+      }
+    },
+    {
+      "q": "what instrument can the user play",
+      "relevant": [
+        "music"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.3333333333333333
+        },
+        "dense": {
+          "top": [
+            "music",
+            "plant",
+            "learning",
+            "phone",
+            "security"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "music",
+            "commute",
+            "exercise",
+            "plant",
+            "learning"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        }
+      }
+    },
+    {
+      "q": "does the user eat meat",
+      "relevant": [
+        "diet"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 1.0,
+          "rr": 0.25
+        },
+        "dense": {
+          "top": [
+            "diet",
+            "allergy",
+            "music",
+            "cooking",
+            "coffee"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "diet",
+            "music",
+            "exercise",
+            "commute",
+            "allergy"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        }
+      }
+    },
+    {
+      "q": "which country did the user travel to recently",
+      "relevant": [
+        "travel"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.0
+        },
+        "dense": {
+          "top": [
+            "travel",
+            "phone",
+            "learning",
+            "commute",
+            "sister"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "exercise",
+            "phone",
+            "diet",
+            "childhood"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.16666666666666666
+        }
+      }
+    },
+    {
+      "q": "what kind of smartphone does the user carry",
+      "relevant": [
+        "phone"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.0
+        },
+        "dense": {
+          "top": [
+            "phone",
+            "learning",
+            "commute",
+            "security",
+            "fear"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "music",
+            "fear",
+            "team",
+            "phone"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 1.0,
+          "rr": 0.2
+        }
+      }
+    },
+    {
+      "q": "when must the proposal be submitted",
+      "relevant": [
+        "deadline"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 1.0,
+          "rr": 0.2
+        },
+        "dense": {
+          "top": [
+            "deadline",
+            "anniversary",
+            "dentist",
+            "job",
+            "cooking"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "deadline",
+            "commute",
+            "exercise",
+            "anniversary",
+            "music"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        }
+      }
+    },
+    {
+      "q": "how does the user protect their online accounts",
+      "relevant": [
+        "security"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.0
+        },
+        "dense": {
+          "top": [
+            "security",
+            "phone",
+            "learning",
+            "coffee",
+            "team"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "team",
+            "diet",
+            "security",
+            "phone"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 1.0,
+          "rr": 0.25
+        }
+      }
+    },
+    {
+      "q": "what houseplant is the user caring for",
+      "relevant": [
+        "plant"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.0
+        },
+        "dense": {
+          "top": [
+            "plant",
+            "allergy",
+            "phone",
+            "coffee",
+            "dentist"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "diet",
+            "dentist",
+            "plant",
+            "exercise"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 1.0,
+          "rr": 0.25
+        }
+      }
+    },
+    {
+      "q": "where did the user spend their early years",
+      "relevant": [
+        "childhood"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.0
+        },
+        "dense": {
+          "top": [
+            "phone",
+            "childhood",
+            "team",
+            "diet",
+            "travel"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.5
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "diet",
+            "team",
+            "deadline",
+            "phone"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.14285714285714285
+        }
+      }
+    },
+    {
+      "q": "which basketball team does the user support",
+      "relevant": [
+        "team"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.16666666666666666
+        },
+        "dense": {
+          "top": [
+            "team",
+            "security",
+            "sister",
+            "learning",
+            "phone"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "team",
+            "exercise",
+            "deadline",
+            "commute",
+            "security"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        }
+      }
+    },
+    {
+      "q": "when is the user seeing the dentist",
+      "relevant": [
+        "dentist"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.125
+        },
+        "dense": {
+          "top": [
+            "dentist",
+            "anniversary",
+            "commute",
+            "phone",
+            "coffee"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "dentist",
+            "exercise",
+            "diet",
+            "anniversary"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.5
+        }
+      }
+    },
+    {
+      "q": "what does the user bake on weekends",
+      "relevant": [
+        "cooking"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.125
+        },
+        "dense": {
+          "top": [
+            "cooking",
+            "commute",
+            "exercise",
+            "dentist",
+            "diet"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "commute",
+            "exercise",
+            "cooking",
+            "diet",
+            "anniversary"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.3333333333333333
+        }
+      }
+    },
+    {
+      "q": "what is the user scared of",
+      "relevant": [
+        "fear"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.1
+        },
+        "dense": {
+          "top": [
+            "fear",
+            "allergy",
+            "lang",
+            "plant",
+            "diet"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "diet",
+            "lang",
+            "fear",
+            "music",
+            "dentist"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 0.3333333333333333
+        }
+      }
+    },
+    {
+      "q": "what foreign language is the user studying",
+      "relevant": [
+        "learning"
+      ],
+      "modes": {
+        "fts5": {
+          "top": [
+            "commute",
+            "exercise",
+            "music",
+            "diet",
+            "deadline"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.0
+        },
+        "dense": {
+          "top": [
+            "learning",
+            "lang",
+            "travel",
+            "music",
+            "phone"
+          ],
+          "recall@1": 1.0,
+          "recall@3": 1.0,
+          "recall@5": 1.0,
+          "rr": 1.0
+        },
+        "hybrid": {
+          "top": [
+            "music",
+            "lang",
+            "diet",
+            "learning",
+            "commute"
+          ],
+          "recall@1": 0.0,
+          "recall@3": 0.0,
+          "recall@5": 1.0,
+          "rr": 0.25
+        }
+      }
+    }
+  ]
+}
