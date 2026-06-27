@@ -77,6 +77,50 @@ CREATE TABLE IF NOT EXISTS state (
     expires_at_unix_ms INTEGER,
     created_at_unix_ms INTEGER NOT NULL
 );
+
+-- Superseded fact versions (v2.4.0 — bi-temporal facts). When a remember()
+-- overwrites an existing (category,key) with new content, the prior row is
+-- snapshotted here with invalidated_at set, so live reads stay one-row-per-key
+-- (entities + its UNIQUE(category,key) are untouched) while history is kept for
+-- as-of / time-travel queries. A version was live during
+-- [recorded_at_unix_ms, invalidated_at_unix_ms). superseded_by points at the
+-- live entity id that replaced it. body_json carries the same encryption as
+-- entities (ciphertext if a key is configured).
+CREATE TABLE IF NOT EXISTS entity_history (
+    history_id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'general',
+    key TEXT NOT NULL,
+    body_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT DEFAULT 'active',
+    type TEXT DEFAULT 'insight',
+    tags TEXT DEFAULT '[]',
+    decay_score REAL DEFAULT 1.0,
+    retrieval_count INTEGER DEFAULT 0,
+    layer TEXT DEFAULT 'working',
+    topic_path TEXT DEFAULT '',
+    archived INTEGER DEFAULT 0,
+    archive_reason TEXT DEFAULT '',
+    links TEXT DEFAULT '[]',
+    verified INTEGER DEFAULT 0,
+    source TEXT DEFAULT 'agent',
+    always_on INTEGER DEFAULT 0,
+    certainty REAL DEFAULT 0.5,
+    workspace_hash TEXT DEFAULT '',
+    agent_id TEXT DEFAULT '',
+    visibility TEXT DEFAULT 'workspace',
+    valid_from_unix_ms INTEGER,
+    valid_to_unix_ms INTEGER,
+    recorded_at_unix_ms INTEGER,
+    invalidated_at_unix_ms INTEGER,
+    supersedes TEXT DEFAULT '',
+    superseded_by TEXT DEFAULT '',
+    created_at_unix_ms INTEGER NOT NULL,
+    last_accessed_unix_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_history_id ON entity_history(id);
+CREATE INDEX IF NOT EXISTS idx_entity_history_catkey ON entity_history(category, key, invalidated_at_unix_ms);
 ";
 
 /// Current schema migration level, stamped into `PRAGMA user_version` once all
