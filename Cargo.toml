@@ -1,6 +1,6 @@
 [package]
 name = "mimir"
-version = "2.2.1"
+version = "2.3.0"
 edition = "2021"
 description = "Persistent memory engine for AI agents — MCP JSON-RPC stdio server"
 repository = "https://github.com/Perseus-Computing-LLC/mimir"

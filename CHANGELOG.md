@@ -5,6 +5,12 @@ All notable changes to Mimir are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-06-27
+
+Local, offline knowledge tooling — structured extraction and multimodal document
+ingestion — plus a reproducible recall-quality benchmark and a relevance-aware,
+deterministic hybrid retrieval path.
+
 ### Added
 - **Local multimodal document ingestion (#236).** New `mimir_ingest_file` tool
   extracts a document's text **locally** (no cloud, no network) and stores it as a
@@ -20,6 +26,28 @@ All notable changes to Mimir are documented here. This project adheres to
   paths and the zero-dependency story are unchanged. An `Extractor` trait is the
   plugin point for future strategies (`strategy: "none"` is a no-op). Brings the
   MCP tool count to **41**.
+- **Reproducible offline recall-quality benchmark (#247).** New `benchmark/recall/`
+  measures recall@k / MRR across `fts5` / `dense` / `hybrid` modes by driving the
+  real binary over MCP stdio with the **bundled** ONNX model — no network, no API
+  key, no LLM — and emits a signed, re-runnable `report.json`. On the
+  paraphrase-heavy `mimir-recall-mini` set the offline dense model reaches **91.7%
+  recall@1 / 100% recall@5**, making the local-first promise measurable.
+
+### Changed
+- **Relevance-aware, deterministic hybrid recall (#247).** The hybrid (Reciprocal
+  Rank Fusion) keyword arm now drops stopwords and ranks by **BM25 relevance**
+  instead of popularity, is dropped entirely when it finds no content match, and
+  is fused at a reduced dense-primary weight — so a paraphrase query no longer
+  dilutes a confident dense ranking. RRF breaks score ties by entity id and the
+  hybrid recall path is fully read-only, making all three modes **byte-stable
+  run-to-run**. Hybrid recall@1 on `mimir-recall-mini`: **20.8% → 87.5%** (MRR
+  0.44 → 0.92).
+
+### Documentation
+- **Threat model + encryption spec (#246).** Added `docs/THREAT-MODEL.md` and
+  `docs/ENCRYPTION.md` and corrected SECURITY.md overclaims. AES-256-GCM encrypts
+  only `entities.body_json`; the FTS5 index and metadata are **plaintext** (pair
+  with OS disk encryption).
 
 ## [2.2.1] - 2026-06-27
 
