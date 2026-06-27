@@ -512,6 +512,45 @@ pub fn handle_get_entity(db: &Database, args: Value) -> Result<String, String> {
     Ok(result.to_string())
 }
 
+pub fn handle_as_of(db: &Database, args: Value) -> Result<String, String> {
+    let category = args
+        .get("category")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'category' parameter".to_string())?;
+    let key = args
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'key' parameter".to_string())?;
+    let as_of = args
+        .get("as_of_unix_ms")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| "Missing 'as_of_unix_ms' parameter (integer unix ms)".to_string())?;
+
+    let found = db
+        .as_of(category, key, as_of)
+        .map_err(|e| format!("as_of failed: {}", e))?;
+
+    let result = match found {
+        Some(e) => json!({
+            "found": true,
+            "id": e.id,
+            "category": e.category,
+            "key": e.key,
+            "body_json": e.body_json,
+            "status": e.status,
+            "entity_type": e.entity_type,
+            "as_of_unix_ms": as_of,
+        }),
+        None => json!({
+            "found": false,
+            "category": category,
+            "key": key,
+            "as_of_unix_ms": as_of,
+        }),
+    };
+    Ok(result.to_string())
+}
+
 pub fn handle_forget(db: &Database, args: Value) -> Result<String, String> {
     let a: ForgetArgs =
         serde_json::from_value(args).map_err(|e| format!("Invalid forget arguments: {}", e))?;

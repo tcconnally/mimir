@@ -203,7 +203,7 @@ pub fn handle_request(
     }
 }
 
-/// Build the tools/list response with all 42 tools including outputSchema and annotations.
+/// Build the tools/list response with all 43 tools including outputSchema and annotations.
 fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     // The tool registry is a compile-time constant. Parse it exactly once per
     // process and reuse the cached Value instead of re-parsing ~1.8k lines of
@@ -506,6 +506,39 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
         "layer": { "type": "string" },
         "always_on": { "type": "boolean" },
         "certainty": { "type": "number" }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "mimir_as_of",
+    "description": "Bi-temporal time-travel: return the version of a fact (category + key) that Mimir believed at a given past instant. When a fact is overwritten, the prior version is kept in history; this returns whichever version was live at as_of_unix_ms. Use to answer 'what did we believe about X back then?' or to audit how a fact changed. Returns found=false if the fact had not been recorded yet at that time.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "category": { "type": "string", "description": "Entity category" },
+        "key": { "type": "string", "description": "Entity key within the category" },
+        "as_of_unix_ms": { "type": "integer", "description": "Transaction-time instant (unix ms) to travel to" }
+      },
+      "required": [
+        "category",
+        "key",
+        "as_of_unix_ms"
+      ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "found": { "type": "boolean", "description": "False if the fact had not been recorded by as_of_unix_ms" },
+        "id": { "type": "string" },
+        "category": { "type": "string" },
+        "key": { "type": "string" },
+        "body_json": { "type": "string", "description": "The fact's content as it was at as_of_unix_ms" },
+        "status": { "type": "string" },
+        "entity_type": { "type": "string" },
+        "as_of_unix_ms": { "type": "integer" }
       }
     },
     "annotations": {
@@ -2125,6 +2158,7 @@ fn call_tool(name: &str, db: &Database, args: Value, _id: Option<Value>) -> Stri
         "mimir_ask" => tools::handle_ask(db, args).map_err(|e| e.to_string()),
 
         "mimir_get_entity" => tools::handle_get_entity(db, args).map_err(|e| e.to_string()),
+        "mimir_as_of" => tools::handle_as_of(db, args).map_err(|e| e.to_string()),
         "mimir_forget" => tools::handle_forget(db, args).map_err(|e| e.to_string()),
 
         "mimir_ingest" => tools::handle_ingest(db, args).map_err(|e| e.to_string()),

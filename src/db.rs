@@ -2072,6 +2072,68 @@ impl Database {
         Ok(out)
     }
 
+    /// The version of (category, key) that was the live fact at transaction time
+    /// `as_of_unix_ms` — recorded at or before T and not yet superseded at T.
+    /// Bi-temporal time-travel: "what did Mimir believe about this at time T?".
+    /// Returns None if the fact had not been recorded yet at T. (v2.4.0)
+    ///
+    /// Versions partition time contiguously: each historical version was live
+    /// during [recorded_at, invalidated_at) and the current row is live during
+    /// [recorded_at, ∞), so at any T exactly one version matches. A superseded
+    /// version takes precedence when its interval contains T; otherwise the live
+    /// row answers iff it had been recorded by T.
+    pub fn as_of(
+        &self,
+        category: &str,
+        key: &str,
+        as_of_unix_ms: i64,
+    ) -> Result<Option<crate::models::Entity>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        let enc = self.encryption.as_ref();
+        // Column order matches entity_from_row (NULL embedding at index 18).
+        const COLS: &str = "id, category, key, body_json, status, type, tags, decay_score, \
+             retrieval_count, layer, topic_path, archived, archive_reason, links, verified, \
+             source, created_at_unix_ms, last_accessed_unix_ms, NULL as embedding, always_on, \
+             certainty, workspace_hash, agent_id, visibility";
+
+        // A superseded version answers iff it was live across T:
+        // recorded_at <= T < invalidated_at. (recorded_at may be NULL on a row
+        // created before it was populated — fall back to created_at.) Among
+        // matches, the smallest invalidated_at is the interval containing T.
+        let hist_sql = format!(
+            "SELECT {COLS} FROM entity_history
+             WHERE category = ?1 AND key = ?2
+               AND COALESCE(recorded_at_unix_ms, created_at_unix_ms) <= ?3
+               AND invalidated_at_unix_ms > ?3
+             ORDER BY invalidated_at_unix_ms ASC LIMIT 1"
+        );
+        {
+            let mut stmt = conn.prepare(&hist_sql)?;
+            let mut rows = stmt.query_map(params![category, key, as_of_unix_ms], |r| {
+                entity_from_row(r, enc)
+            })?;
+            if let Some(r) = rows.next() {
+                return Ok(Some(r?));
+            }
+        }
+
+        // Otherwise the current live row answers iff it had been recorded by T.
+        let live_sql = format!(
+            "SELECT {COLS} FROM entities
+             WHERE category = ?1 AND key = ?2
+               AND COALESCE(recorded_at_unix_ms, created_at_unix_ms) <= ?3
+             LIMIT 1"
+        );
+        let mut stmt = conn.prepare(&live_sql)?;
+        let mut rows = stmt.query_map(params![category, key, as_of_unix_ms], |r| {
+            entity_from_row(r, enc)
+        })?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
     /// Query journal events with time-range and filter parameters.
     pub fn timeline(
         &self,
@@ -4220,6 +4282,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(recorded, Some(created), "recorded_at must equal created_at on insert");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn as_of_returns_the_version_live_at_a_past_instant() {
+        use std::thread::sleep;
+        use std::time::Duration;
+        let (db, path) = temp_db();
+
+        // v1 recorded "now".
+        let v1 = make_entity("e-asof", "facts", "capital", r#"{"note":"Bonn"}"#);
+        db.remember(&v1).unwrap();
+        let t_created: i64 = {
+            let conn = db.conn().unwrap();
+            conn.query_row(
+                "SELECT created_at_unix_ms FROM entities WHERE id='e-asof'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        // Separate the two transaction times so an instant strictly between exists.
+        sleep(Duration::from_millis(5));
+        let v2 = make_entity("ignored", "facts", "capital", r#"{"note":"Berlin"}"#);
+        db.remember(&v2).unwrap();
+        let t_super: i64 = {
+            let conn = db.conn().unwrap();
+            conn.query_row(
+                "SELECT recorded_at_unix_ms FROM entities WHERE category='facts' AND key='capital'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(t_super > t_created, "supersession must advance recorded_at");
+
+        // Before the fact existed → None.
+        assert!(db.as_of("facts", "capital", t_created - 1).unwrap().is_none());
+        // Strictly between v1 and v2 → the OLD version (from history).
+        let mid = db
+            .as_of("facts", "capital", t_super - 1)
+            .unwrap()
+            .expect("v1 was live just before the supersede");
+        assert!(mid.body_json.contains("Bonn"), "as_of mid must return the old version");
+        // At/after the supersede → the CURRENT version (live row).
+        let now = db
+            .as_of("facts", "capital", t_super)
+            .unwrap()
+            .expect("v2 is live from the supersede onward");
+        assert!(now.body_json.contains("Berlin"), "as_of now must return the current version");
+
         let _ = fs::remove_file(&path);
     }
 
