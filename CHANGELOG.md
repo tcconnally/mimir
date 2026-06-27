@@ -6,6 +6,13 @@ All notable changes to Mimir are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Time-aware / recency-boosted hybrid recall (#235).** `mimir_recall` accepts an
+  optional `recency_half_life_secs` for `mode: "hybrid"`. When set, each fused
+  (RRF) result's score is multiplied by `0.5^(age / half_life)` based on the
+  memory's creation time, so recent context outranks older but lexically/semantically
+  similar hits. **Default off** — omitting it preserves the existing relevance-only
+  ranking exactly. Fully local, no new dependency; memories with no creation
+  timestamp are never penalized.
 - **Offline dense/hybrid search out of the box (#237).** A quantized
   all-MiniLM-L6-v2 model (int8, ~23 MB, 384-dim) is now fetched once by `build.rs`
   and **compiled into the binary**, and the embedding backend is **enabled by

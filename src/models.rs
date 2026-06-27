@@ -194,6 +194,15 @@ pub struct RecallParams {
     /// Per-query reservation share for multi-query diversity (0.0 = disabled).
     #[allow(dead_code)]
     pub diversity_per_query_share: f64,
+    /// Recency half-life in seconds for time-aware hybrid ranking (#235).
+    /// When `Some(hl)` with `hl > 0`, the RRF fusion score of each hybrid result
+    /// is multiplied by a time-decay factor `0.5^(age / hl)`, where `age` is the
+    /// time since the entity was created. A memory `hl` seconds old keeps half its
+    /// fused weight, so recent context outranks an older but lexically-similar hit.
+    /// `None` (default) preserves the existing relevance-only ranking exactly.
+    /// Only applies to `SearchMode::Hybrid`; entities with an unset (<= 0)
+    /// `created_at_unix_ms` are never penalized.
+    pub recency_half_life_secs: Option<f64>,
     /// Workspace scope filter (v1.2.0). When Some, only entities with a
     /// matching workspace_hash are returned. None = no workspace filtering.
     pub workspace_hash: Option<String>,
@@ -266,6 +275,7 @@ impl Default for RecallParams {
             trust_weight: default_trust_weight(),
             diversity_halving: 1.0,
             diversity_per_query_share: 0.0,
+            recency_half_life_secs: None,
             workspace_hash: None,
             agent_id: None,
             visibility: None,

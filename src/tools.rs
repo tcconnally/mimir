@@ -92,6 +92,10 @@ pub struct RecallArgs {
     pub trust_weight: f64,
     #[serde(default = "default_halving")]
     pub diversity_halving: f64,
+    /// Recency half-life in seconds for time-aware hybrid ranking (#235).
+    /// Omit (default) for relevance-only ranking; set to bias toward recent memories.
+    #[serde(default)]
+    pub recency_half_life_secs: Option<f64>,
     #[serde(default)]
     pub workspace_hash: Option<String>,
     #[serde(default)]
@@ -337,6 +341,7 @@ pub fn handle_recall(db: &Database, args: Value) -> Result<String, String> {
         trust_weight: a.trust_weight,
         diversity_halving: a.diversity_halving,
         diversity_per_query_share: 0.0,
+        recency_half_life_secs: a.recency_half_life_secs,
         workspace_hash: a.workspace_hash.clone(),
         agent_id: a.agent_id.clone(),
         visibility: None,
@@ -411,6 +416,9 @@ fn handle_recall_with_expansion(db: &Database, a: &RecallArgs) -> Result<String,
             trust_weight: a.trust_weight,
             diversity_halving: a.diversity_halving,
             diversity_per_query_share: 0.0,
+            // Query expansion runs in Fts5 mode only, so recency (a hybrid-fusion
+            // re-weighting) never applies on this path.
+            recency_half_life_secs: None,
             workspace_hash: a.workspace_hash.clone(),
             agent_id: a.agent_id.clone(),
             visibility: None,

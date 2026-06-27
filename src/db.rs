@@ -1336,6 +1336,8 @@ impl Database {
                     &sparse_scored,
                     60.0,
                     params.limit as usize,
+                    params.recency_half_life_secs,
+                    now_ms(),
                 );
                 return Ok(fused.into_iter().map(|(e, _)| e).collect());
             }
@@ -3686,11 +3688,20 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
 
 /// Reciprocal Rank Fusion: combine dense and sparse result sets.
 /// k controls the rank penalty (higher k = less penalty for lower ranks).
+///
+/// When `recency_half_life_secs` is `Some(hl)` with `hl > 0` (#235), each fused
+/// score is multiplied by a time-decay factor `0.5^(age / hl)` based on the
+/// entity's `created_at_unix_ms` relative to `now_ms`, so recent memories outrank
+/// older but lexically-similar hits. `None` (or `hl <= 0`) leaves the pure
+/// relevance ranking untouched. Entities with an unset (`<= 0`)
+/// `created_at_unix_ms` are never penalized (factor 1.0).
 pub fn reciprocal_rank_fusion(
     dense_results: &[(crate::models::Entity, f64)],
     sparse_results: &[(crate::models::Entity, f64)],
     k: f64,
     limit: usize,
+    recency_half_life_secs: Option<f64>,
+    now_ms: i64,
 ) -> Vec<(crate::models::Entity, f64)> {
     use std::collections::HashMap;
 
@@ -3713,9 +3724,25 @@ pub fn reciprocal_rank_fusion(
             .or_insert_with(|| entity.clone());
     }
 
+    // Optional recency re-weighting (#235): multiply each fused score by an
+    // exponential decay on the entity's age. half_life seconds → factor 0.5.
+    let recency = recency_half_life_secs.filter(|hl| *hl > 0.0);
+
     let mut fused: Vec<_> = scores
         .into_iter()
-        .filter_map(|(id, score)| entities.remove(&id).map(|entity| (entity, score)))
+        .filter_map(|(id, score)| {
+            entities.remove(&id).map(|entity| {
+                let score = match recency {
+                    Some(hl) if entity.created_at_unix_ms > 0 => {
+                        let age_secs =
+                            ((now_ms - entity.created_at_unix_ms).max(0) as f64) / 1000.0;
+                        score * 0.5_f64.powf(age_secs / hl)
+                    }
+                    _ => score,
+                };
+                (entity, score)
+            })
+        })
         .collect();
 
     fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -4822,7 +4849,8 @@ mod tests {
         let dense_results = vec![(dense_only, 0.95), (both.clone(), 0.80)];
         let sparse_results = vec![(sparse_only, 1.0), (both, 0.9)];
 
-        let fused = crate::db::reciprocal_rank_fusion(&dense_results, &sparse_results, 60.0, 10);
+        let fused =
+            crate::db::reciprocal_rank_fusion(&dense_results, &sparse_results, 60.0, 10, None, 0);
         let fused_ids: Vec<&str> = fused.iter().map(|(e, _)| e.id.as_str()).collect();
 
         assert!(
@@ -4836,6 +4864,69 @@ mod tests {
         assert!(
             fused_ids.contains(&"both-1"),
             "overlapping entity was dropped from hybrid results"
+        );
+    }
+
+    #[test]
+    fn rrf_recency_boost_promotes_newer_entity() {
+        // #235: an optional recency half-life folds a time-decay factor into the
+        // fused score so a recent memory can outrank an older, more lexically /
+        // semantically relevant hit. Default (None) must preserve the existing
+        // relevance-only ranking exactly.
+        let now = 1_000_000_000_000_i64;
+        let day_ms = 24 * 60 * 60 * 1000;
+
+        let mut old = make_entity("old", "insight", "old-key", r#"{"n":"old"}"#);
+        old.created_at_unix_ms = now - 100 * day_ms; // 100 days old
+        let mut fresh = make_entity("fresh", "insight", "fresh-key", r#"{"n":"fresh"}"#);
+        fresh.created_at_unix_ms = now; // brand new
+
+        // `old` is the more-relevant hit (rank 0); `fresh` trails it at rank 1.
+        let dense = vec![(old, 0.99), (fresh, 0.80)];
+        let sparse: Vec<(Entity, f64)> = vec![];
+
+        // Relevance-only (default): the older, more-relevant entity ranks first.
+        let baseline = crate::db::reciprocal_rank_fusion(&dense, &sparse, 60.0, 10, None, now);
+        assert_eq!(
+            baseline[0].0.id, "old",
+            "without recency, the top-relevance entity must win"
+        );
+
+        // With a 1-day half-life, the 100-day-old hit is decayed to ~0 and the
+        // brand-new entity overtakes it.
+        let hl = day_ms as f64 / 1000.0;
+        let boosted =
+            crate::db::reciprocal_rank_fusion(&dense, &sparse, 60.0, 10, Some(hl), now);
+        assert_eq!(
+            boosted[0].0.id, "fresh",
+            "recency boost must promote the newer entity"
+        );
+
+        // A non-positive half-life is treated as disabled (no-op) — same as None.
+        let disabled =
+            crate::db::reciprocal_rank_fusion(&dense, &sparse, 60.0, 10, Some(0.0), now);
+        assert_eq!(
+            disabled[0].0.id, "old",
+            "hl <= 0 must disable recency weighting"
+        );
+    }
+
+    #[test]
+    fn rrf_recency_never_penalizes_unset_created_at() {
+        // Guard: an entity with an unset (<= 0) created_at_unix_ms has no age
+        // signal, so the recency factor must be 1.0 (plain RRF), never ~0 — which
+        // would silently drop it from results.
+        let now = 1_000_000_000_000_i64;
+        let mut unset = make_entity("unset", "insight", "k", r#"{"n":"x"}"#);
+        unset.created_at_unix_ms = 0;
+        let dense = vec![(unset, 0.5)];
+        let sparse: Vec<(Entity, f64)> = vec![];
+
+        let out = crate::db::reciprocal_rank_fusion(&dense, &sparse, 60.0, 10, Some(1.0), now);
+        let expected = 1.0 / (60.0 + 1.0); // rank-0 RRF, unscaled
+        assert!(
+            (out[0].1 - expected).abs() < 1e-12,
+            "entity with unset created_at must not be recency-penalized"
         );
     }
 
@@ -4907,6 +4998,7 @@ mod tests {
                 trust_weight: 0.0,
                 diversity_halving: 1.0,
                 diversity_per_query_share: 0.0,
+                recency_half_life_secs: None,
                 workspace_hash: None,
             agent_id: None,
             visibility: None,
@@ -5038,6 +5130,7 @@ mod tests {
                     trust_weight: 0.0f64,
                     diversity_halving: 1.0f64,
                     diversity_per_query_share: 0.0f64,
+                    recency_half_life_secs: None,
                     workspace_hash: None,
                     agent_id: None,
                     visibility: None,
@@ -5099,6 +5192,7 @@ mod tests {
             trust_weight: 0.0,
             diversity_halving: 1.0,
             diversity_per_query_share: 0.0,
+            recency_half_life_secs: None,
             workspace_hash: ws,
             agent_id: None,
             visibility: None,
@@ -5143,7 +5237,7 @@ mod tests {
             topic_path: None, include_archived: false, skip_side_effects: true,
             mode: crate::models::SearchMode::Fts5, embedding: None, preview_cap: None,
             always_on: None, content_weight: 0.0, trust_weight: 0.0, diversity_halving: 1.0,
-            diversity_per_query_share: 0.0, workspace_hash: None,
+            diversity_per_query_share: 0.0, recency_half_life_secs: None, workspace_hash: None,
             agent_id: None,
             visibility: None,
         };

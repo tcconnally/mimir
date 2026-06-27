@@ -388,6 +388,11 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
           "default": 1,
           "description": "Per-keyword diversity quota factor (1.0=disabled). Each distinct matched keyword gets ceil(N x halving^n) slots — first keyword N, second N/2, etc."
         },
+        "recency_half_life_secs": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Time-aware ranking for mode='hybrid' (default off). When set, each fused result's score is multiplied by 0.5^(age / this), where age is seconds since the memory was created — so a memory this many seconds old keeps half its weight and recent context outranks older but similar hits. Omit for relevance-only ranking."
+        },
         "workspace_hash": {
           "type": "string",
           "description": "Workspace scope filter (v1.2.0). When set, only entities with a matching workspace_hash are returned. Omit for no workspace filtering."
