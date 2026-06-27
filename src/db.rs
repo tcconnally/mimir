@@ -1168,8 +1168,58 @@ impl Database {
             let boosted = Self::boost_decay(old_decay);
             let new_layer = Self::compute_layer(old_count + 1);
 
+            // Bi-temporal supersession (v2.4.0): if this remember() changes the
+            // stored content, snapshot the prior version into entity_history
+            // before overwriting, so history is kept for as-of queries. An
+            // identical re-assertion is NOT a new version (no spurious history).
+            // Compare on plaintext — GCM ciphertext differs every call.
+            let old_raw_body: String = conn
+                .query_row(
+                    "SELECT body_json FROM entities WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default();
+            let old_plain_body = if let Some(ref enc) = self.encryption {
+                let aad = format!("{}:{}", entity.category, entity.key);
+                enc.decrypt(&old_raw_body, aad.as_bytes())
+                    .unwrap_or_else(|_| old_raw_body.clone())
+            } else {
+                old_raw_body.clone()
+            };
+            let content_changed = old_plain_body != entity.body_json;
+            let history_id = format!(
+                "hist-{}",
+                uuid::Uuid::new_v4().to_string().replace('-', "")[..16].to_string()
+            );
+
             // M-1: wrap entity UPDATE + FTS UPDATE in a transaction
             let tx = conn.unchecked_transaction()?;
+
+            // Snapshot the OLD row BEFORE the UPDATE overwrites it. invalidated_at
+            // = now (transaction time it was retired); superseded_by = the live id
+            // that replaces it. Other columns (incl. the prior recorded_at) copied
+            // verbatim, so the version was live during [recorded_at, invalidated_at).
+            if content_changed {
+                tx.execute(
+                    "INSERT INTO entity_history
+                     (history_id, id, category, key, body_json, status, type, tags,
+                      decay_score, retrieval_count, layer, topic_path, archived,
+                      archive_reason, links, verified, source, always_on, certainty,
+                      workspace_hash, agent_id, visibility, valid_from_unix_ms,
+                      valid_to_unix_ms, recorded_at_unix_ms, invalidated_at_unix_ms,
+                      supersedes, superseded_by, created_at_unix_ms, last_accessed_unix_ms)
+                     SELECT ?1, id, category, key, body_json, status, type, tags,
+                      decay_score, retrieval_count, layer, topic_path, archived,
+                      archive_reason, links, verified, source, always_on, certainty,
+                      workspace_hash, agent_id, visibility, valid_from_unix_ms,
+                      valid_to_unix_ms, recorded_at_unix_ms, ?2,
+                      supersedes, ?3, created_at_unix_ms, last_accessed_unix_ms
+                     FROM entities WHERE id = ?3",
+                    params![history_id, now, id],
+                )?;
+            }
+
             tx.execute(
                 "UPDATE entities SET
                     body_json = ?1, status = ?2, type = ?3, tags = ?4,
@@ -1201,6 +1251,16 @@ impl Database {
                     id,
                 ],
             )?;
+
+            // Stamp the now-current version's transaction time and link it back to
+            // the snapshot it replaced. Only on a real content change, so an
+            // identical re-assertion leaves recorded_at/supersedes untouched.
+            if content_changed {
+                tx.execute(
+                    "UPDATE entities SET recorded_at_unix_ms = ?1, supersedes = ?2 WHERE id = ?3",
+                    params![now, history_id, id],
+                )?;
+            }
 
             // Update FTS5 index
             tx.execute(
@@ -1247,11 +1307,11 @@ impl Database {
                   decay_score, retrieval_count, layer, topic_path,
                   archived, archive_reason, links, verified, source,
                   always_on, certainty, created_at_unix_ms, last_accessed_unix_ms,
-                  workspace_hash, agent_id, visibility)
+                  workspace_hash, agent_id, visibility, recorded_at_unix_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
                          ?8, ?9, ?10, ?11,
                          ?12, ?13, ?14, ?15, ?16,
-                         ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                         ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
                 params![
                     id,
                     entity.category,
@@ -1276,6 +1336,8 @@ impl Database {
                     entity.workspace_hash,
                     entity.agent_id,
                     entity.visibility,
+                    // Transaction time: a new fact's recorded_at is its creation time.
+                    entity.created_at_unix_ms,
                 ],
             )?;
 
@@ -1978,6 +2040,36 @@ impl Database {
             ],
         )?;
         Ok(())
+    }
+
+    /// All superseded (historical) versions of a (category, key), newest first.
+    /// Each was the live fact during [recorded_at_unix_ms, invalidated_at_unix_ms);
+    /// the current live version lives in `entities`, not here. Bodies are decrypted
+    /// like a normal recall. (v2.4.0 — bi-temporal facts)
+    pub fn history_versions(
+        &self,
+        category: &str,
+        key: &str,
+    ) -> Result<Vec<crate::models::Entity>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        // Column order matches entity_from_row (incl. NULL embedding at index 18).
+        let mut stmt = conn.prepare(
+            "SELECT id, category, key, body_json, status, type, tags, decay_score,
+                    retrieval_count, layer, topic_path, archived, archive_reason, links,
+                    verified, source, created_at_unix_ms, last_accessed_unix_ms,
+                    NULL as embedding, always_on, certainty, workspace_hash, agent_id,
+                    visibility
+             FROM entity_history
+             WHERE category = ?1 AND key = ?2
+             ORDER BY invalidated_at_unix_ms DESC, recorded_at_unix_ms DESC",
+        )?;
+        let enc = self.encryption.as_ref();
+        let rows = stmt.query_map(params![category, key], |r| entity_from_row(r, enc))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// Query journal events with time-range and filter parameters.
@@ -4063,6 +4155,71 @@ mod tests {
     fn health_check_on_new_db() {
         let (db, path) = temp_db();
         assert!(db.health_check());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn remember_supersedes_changed_content_into_history() {
+        let (db, path) = temp_db();
+        let e1 = make_entity("e-sup", "facts", "fav-color", r#"{"note":"blue"}"#);
+        db.remember(&e1).unwrap();
+        assert!(
+            db.history_versions("facts", "fav-color").unwrap().is_empty(),
+            "no history after the first remember"
+        );
+
+        // Changed content under the same (category,key) -> supersession.
+        let e2 = make_entity("ignored-id", "facts", "fav-color", r#"{"note":"green"}"#);
+        db.remember(&e2).unwrap();
+
+        let hist = db.history_versions("facts", "fav-color").unwrap();
+        assert_eq!(hist.len(), 1, "prior version snapshotted into history");
+        assert!(hist[0].body_json.contains("blue"), "history keeps the OLD content");
+
+        // The live row carries the NEW content, links back to a snapshot, stays live.
+        let conn = db.conn().unwrap();
+        let (live_body, supersedes, invalidated): (String, String, Option<i64>) = conn
+            .query_row(
+                "SELECT body_json, supersedes, invalidated_at_unix_ms FROM entities \
+                 WHERE category='facts' AND key='fav-color'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert!(live_body.contains("green"), "live row has the new content");
+        assert!(supersedes.starts_with("hist-"), "live row links to its snapshot");
+        assert_eq!(invalidated, None, "live row must not be invalidated");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn remember_identical_content_creates_no_history() {
+        let (db, path) = temp_db();
+        let e = make_entity("e-idem", "facts", "k", r#"{"note":"same"}"#);
+        db.remember(&e).unwrap();
+        let again = make_entity("e-idem-2", "facts", "k", r#"{"note":"same"}"#);
+        db.remember(&again).unwrap();
+        assert!(
+            db.history_versions("facts", "k").unwrap().is_empty(),
+            "an identical re-assertion must not create a spurious version"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn remember_sets_recorded_at_to_created_at_on_insert() {
+        let (db, path) = temp_db();
+        let e = make_entity("e-rec", "facts", "k2", r#"{"n":1}"#);
+        db.remember(&e).unwrap();
+        let conn = db.conn().unwrap();
+        let (created, recorded): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT created_at_unix_ms, recorded_at_unix_ms FROM entities WHERE id='e-rec'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(recorded, Some(created), "recorded_at must equal created_at on insert");
         let _ = fs::remove_file(&path);
     }
 
