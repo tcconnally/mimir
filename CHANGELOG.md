@@ -5,6 +5,16 @@ All notable changes to Mimir are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- **Local knowledge extraction (#234).** New `mimir_extract` tool turns raw text
+  (or a stored entity) into structured items — facts, preferences, temporal
+  events, episodes — via a fully **local, deterministic, rule-based** extractor:
+  no cloud LLM, no embedding/API call, no network (unlike GoodMem/Synap, which
+  require a Gemini key). **Read-only and strictly opt-in** — the remember/recall
+  paths and the zero-dependency story are unchanged. An `Extractor` trait is the
+  plugin point for future strategies (`strategy: "none"` is a no-op). Brings the
+  MCP tool count to **41**.
+
 ## [2.2.1] - 2026-06-27
 
 ### Fixed

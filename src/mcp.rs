@@ -203,7 +203,7 @@ pub fn handle_request(
     }
 }
 
-/// Build the tools/list response with all 30 tools including outputSchema and annotations.
+/// Build the tools/list response with all 41 tools including outputSchema and annotations.
 fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     // The tool registry is a compile-time constant. Parse it exactly once per
     // process and reuse the cached Value instead of re-parsing ~1.8k lines of
@@ -1265,6 +1265,31 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     }
   },
   {
+    "name": "mimir_extract",
+    "description": "Extract structured knowledge — facts, preferences, temporal events, episodes — from raw text or a stored entity, using a fully local, deterministic rule-based extractor (no cloud LLM, no embedding/API call, no network). Read-only: never writes to the store. Provide `text`, or `category` + `key` to extract from a stored entity.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "description": "Raw text to extract from. If omitted, category + key of a stored entity are used." },
+        "category": { "type": "string", "description": "Category of a stored entity to extract from (requires key)." },
+        "key": { "type": "string", "description": "Key of a stored entity to extract from (requires category)." },
+        "strategy": { "type": "string", "default": "rule_based", "enum": ["rule_based", "none"], "description": "Extractor strategy: 'rule_based' (local heuristics) or 'none' (no-op)." }
+      },
+      "required": []
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "items": { "type": "array", "items": { "type": "object" }, "description": "Extracted items, each an object with `kind` and `text`." },
+        "total": { "type": "integer", "description": "Number of items extracted" },
+        "strategy": { "type": "string", "description": "Extractor strategy used" }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
     "name": "mimir_traverse",
     "description": "Walk the entity link graph starting from a given entity up to a configurable depth. Returns a chain of linked entities \u2014 useful for exploring dependencies, decision trees, and relationship graphs built via mimir_link.",
     "inputSchema": {
@@ -2108,6 +2133,8 @@ fn call_tool(name: &str, db: &Database, args: Value, _id: Option<Value>) -> Stri
         "mimir_migrate" => Ok(tools::handle_migrate(db, args)),
 
         "mimir_context" => Ok(tools::handle_context(db, args)),
+
+        "mimir_extract" => tools::handle_extract(db, args).map_err(|e| e.to_string()),
 
         "mimir_traverse" => Ok(tools::handle_traverse(db, args)),
         "mimir_score" => Ok(tools::handle_score(db, args)),

@@ -16,8 +16,8 @@ Zero runtime dependencies. Structured entity model with journal events and state
 
 ## Status — 2026-06-27
 
-- **Latest release:** `v2.2.0` (Local-First Semantic Memory, Out of the Box)
-- **`main`:** `2.2.1` (unreleased) — Docker/Alpine lean-build fix on top of 2.2.0
+- **Latest release:** `v2.2.1` (Local-First Semantic Memory + Docker/Alpine fix)
+- **`main`:** unreleased — adds local knowledge extraction (`mimir_extract`, #234); MCP tools → 41
 - **MCP tools:** **40**, spanning entities, search/RAG, journal, state, graph, lifecycle, multi-agent/federation, and vault
 - **In one line:** everything originally planned from v0.1 through the v2.0 "Platform" milestone has shipped. This document is being corrected to reflect that, and the forward section is deliberately short and honest.
 
@@ -98,8 +98,9 @@ The genuinely-unshipped pieces of the "Mimir as infrastructure" goal:
 
 - **Clustering / HA:** leader election and read replicas for high-availability deployments
   (the one part of the v2.0 platform theme not yet built).
-- **Local knowledge extraction (#234):** optional, pluggable, local extractor over stored
-  memories — no cloud key, default off, to preserve the air-gapped path.
+- **Local knowledge extraction (#234):** rule-based extractor + `mimir_extract` tool shipped
+  on `main` (local, deterministic, opt-in, no cloud key). A model-based extractor behind the
+  same `Extractor` trait is the future increment.
 - **Scale:** 100K+ entity stress tests with documented recall latency budgets.
 - **Federation maturation:** sync health/observability (lag, conflict rate, entity drift) for `mimir_federate`.
 

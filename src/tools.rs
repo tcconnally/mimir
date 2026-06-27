@@ -233,6 +233,25 @@ fn default_context_limit() -> i64 {
     10
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ExtractArgs {
+    /// Raw text to extract from. If empty, `category` + `key` of a stored entity
+    /// are used instead.
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Extractor strategy: "rule_based" (default, local heuristics) or "none" (no-op).
+    #[serde(default = "default_extract_strategy")]
+    pub strategy: String,
+}
+
+fn default_extract_strategy() -> String {
+    "rule_based".to_string()
+}
+
 // ─── Tool handlers ──────────────────────────────────────────────
 
 pub fn handle_remember(db: &Database, args: Value) -> Result<String, String> {
@@ -762,6 +781,42 @@ pub fn handle_context(db: &Database, args: Value) -> String {
         }
         Err(e) => json!({"error": format!("Context generation failed: {}", e)}).to_string(),
     }
+}
+
+/// Extract structured knowledge (facts/preferences/temporal events/episodes) from
+/// raw text or a stored entity, using a local, deterministic extractor (#234).
+/// Read-only: this never writes to the store, so the zero-dependency / air-gapped
+/// path is preserved and extraction stays strictly opt-in.
+pub fn handle_extract(db: &Database, args: Value) -> Result<String, String> {
+    let a: ExtractArgs =
+        serde_json::from_value(args).map_err(|e| format!("Invalid extract arguments: {}", e))?;
+
+    // Resolve the source text: explicit `text`, else a stored entity's body.
+    let text = if !a.text.trim().is_empty() {
+        a.text.clone()
+    } else if let (Some(cat), Some(key)) = (a.category.as_ref(), a.key.as_ref()) {
+        match db
+            .get_entity(cat, key)
+            .map_err(|e| format!("get_entity failed: {}", e))?
+        {
+            Some(ent) => ent.body_json,
+            None => return Err(format!("Entity not found: {}/{}", cat, key)),
+        }
+    } else {
+        return Err(
+            "extract requires `text`, or `category` + `key` of a stored entity".to_string(),
+        );
+    };
+
+    let extractor = crate::extraction::extractor_for(&a.strategy);
+    let items = extractor.extract(&text);
+    let items_json = serde_json::to_value(&items).unwrap_or_else(|_| json!([]));
+    Ok(json!({
+        "items": items_json,
+        "total": items.len(),
+        "strategy": a.strategy,
+    })
+    .to_string())
 }
 
 #[derive(Debug, Deserialize)]

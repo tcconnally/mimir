@@ -2,6 +2,7 @@ mod connectors;
 mod db;
 mod embedding;
 mod encryption;
+mod extraction;
 mod mcp;
 mod models;
 mod schema;

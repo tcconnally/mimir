@@ -4931,6 +4931,70 @@ mod tests {
     }
 
     #[test]
+    fn handle_extract_from_text_returns_structured_items() {
+        // #234: the mimir_extract tool runs the local rule-based extractor over
+        // provided text and returns structured items without touching the store.
+        let (db, _path) = temp_db();
+        let args = serde_json::json!({
+            "text": "The database is PostgreSQL. I prefer dark mode."
+        });
+        let out = crate::tools::handle_extract(&db, args).expect("extract should succeed");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["total"], 2);
+        assert_eq!(v["strategy"], "rule_based");
+        let kinds: Vec<&str> = v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["kind"].as_str().unwrap())
+            .collect();
+        assert!(kinds.contains(&"fact"));
+        assert!(kinds.contains(&"preference"));
+    }
+
+    #[test]
+    fn handle_extract_strategy_none_is_noop() {
+        let (db, _path) = temp_db();
+        let args = serde_json::json!({"text": "The database is PostgreSQL.", "strategy": "none"});
+        let out = crate::tools::handle_extract(&db, args).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["total"], 0);
+    }
+
+    #[test]
+    fn handle_extract_from_stored_entity_and_missing_errors() {
+        let (db, _path) = temp_db();
+        // Store an entity, then extract from it by category/key.
+        crate::tools::handle_remember(
+            &db,
+            serde_json::json!({
+                "category": "notes",
+                "key": "stack",
+                "body_json": "{\"content\": \"The service uses OAuth 2.0. We shipped on 2026-06-20.\"}"
+            }),
+        )
+        .expect("remember should succeed");
+
+        let out = crate::tools::handle_extract(
+            &db,
+            serde_json::json!({"category": "notes", "key": "stack"}),
+        )
+        .expect("extract from entity should succeed");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(v["total"].as_i64().unwrap() >= 1, "should extract at least one item");
+
+        // Missing entity surfaces a clear error rather than empty success.
+        let err = crate::tools::handle_extract(
+            &db,
+            serde_json::json!({"category": "notes", "key": "nope"}),
+        );
+        assert!(err.is_err(), "missing entity must error");
+
+        // Neither text nor category+key is a usage error.
+        assert!(crate::tools::handle_extract(&db, serde_json::json!({})).is_err());
+    }
+
+    #[test]
     #[ignore] // Requires ~10s to create entities; run manually with --ignored
     fn stress_100k_entities_recall_and_decay() {
         // Roadmap target: FTS5 recall < 5s, decay tick < 30s at 100K entities.
