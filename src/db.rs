@@ -3275,42 +3275,93 @@ impl Database {
             format!(
                 "SELECT id, category, key, body_json, type, tags, decay_score,
                         retrieval_count, layer, workspace_hash, agent_id,
-                        created_at_unix_ms, last_accessed_unix_ms
+                        created_at_unix_ms, last_accessed_unix_ms, links
                  FROM entities WHERE archived = 0 AND workspace_hash = '{}'",
                 ws.replace('\'', "''")
             )
         } else {
             "SELECT id, category, key, body_json, type, tags, decay_score,
                     retrieval_count, layer, workspace_hash, agent_id,
-                    created_at_unix_ms, last_accessed_unix_ms
+                    created_at_unix_ms, last_accessed_unix_ms, links
              FROM entities WHERE archived = 0".to_string()
         };
-        let mut stmt = conn.prepare(&sql)?;
 
+        // Filesystem-safe id: only alphanumeric, hyphen, underscore. Notes are
+        // written as `<safe_id>.md`, so WikiLink targets must use the same map
+        // for guaranteed Obsidian resolution.
+        fn safe_id(id: &str) -> String {
+            id.chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect()
+        }
+
+        // One row per non-archived entity. Collected up-front so we can do a
+        // two-pass build: first an id -> (safe_id, key) map for link resolution,
+        // then per-note rendering with a `## Links` backlink section.
+        struct VaultRow {
+            id: String,
+            category: String,
+            key: String,
+            body_json: String,
+            etype: String,
+            tags: String,
+            decay: f64,
+            retrievals: i64,
+            layer: String,
+            workspace_hash_val: String,
+            agent_id_val: String,
+            created: i64,
+            accessed: i64,
+            links_json: String,
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?, // id
-                r.get::<_, String>(1)?, // category
-                r.get::<_, String>(2)?, // key
-                r.get::<_, String>(3)?, // body_json
-                r.get::<_, String>(4)?, // type
-                r.get::<_, String>(5)?, // tags
-                r.get::<_, f64>(6)?,    // decay_score
-                r.get::<_, i64>(7)?,    // retrieval_count
-                r.get::<_, String>(8)?, // layer
-                r.get::<_, String>(9)?, // workspace_hash
-                r.get::<_, String>(10)?,// agent_id
-                r.get::<_, i64>(11)?,   // created_at
-                r.get::<_, i64>(12)?,   // last_accessed
-            ))
+            Ok(VaultRow {
+                id: r.get::<_, String>(0)?,
+                category: r.get::<_, String>(1)?,
+                key: r.get::<_, String>(2)?,
+                body_json: r.get::<_, String>(3)?,
+                etype: r.get::<_, String>(4)?,
+                tags: r.get::<_, String>(5)?,
+                decay: r.get::<_, f64>(6)?,
+                retrievals: r.get::<_, i64>(7)?,
+                layer: r.get::<_, String>(8)?,
+                workspace_hash_val: r.get::<_, String>(9)?,
+                agent_id_val: r.get::<_, String>(10)?,
+                created: r.get::<_, i64>(11)?,
+                accessed: r.get::<_, i64>(12)?,
+                links_json: r.get::<_, String>(13)?,
+            })
         })?;
+
+        let mut collected: Vec<VaultRow> = Vec::new();
+        for row in rows {
+            collected.push(row?);
+        }
+
+        // First pass: id -> (safe_id link target, human-readable key) so the
+        // second pass can render `[[<safe_id>|<key>]]` WikiLinks that resolve to
+        // the `<safe_id>.md` note files.
+        let mut id_map: std::collections::HashMap<String, (String, String)> =
+            std::collections::HashMap::with_capacity(collected.len());
+        for row in &collected {
+            id_map.insert(row.id.clone(), (safe_id(&row.id), row.key.clone()));
+        }
 
         let mut files_created = 0i64;
         let mut files_updated = 0i64;
         let mut errors = Vec::new();
 
-        for row in rows {
-            let (
+        // Second pass: render each note, appending a `## Links` backlink section.
+        for row in &collected {
+            let VaultRow {
                 id,
                 category,
                 key,
@@ -3324,23 +3375,47 @@ impl Database {
                 agent_id_val,
                 created,
                 accessed,
-            ) = row?;
-            // Sanitize id for filesystem: only alphanumeric, hyphen, underscore
-            let safe_id: String = id
-                .chars()
-                .map(|c| {
-                    if c.is_alphanumeric() || c == '-' || c == '_' {
-                        c
-                    } else {
-                        '_'
-                    }
-                })
-                .collect();
-            let filename = format!("{}.md", safe_id);
+                links_json,
+            } = row;
+
+            let safe = safe_id(id);
+            let filename = format!("{}.md", safe);
             let filepath = vault.join(&filename);
 
-            let created_str = chrono_like(created);
-            let accessed_str = chrono_like(accessed);
+            let created_str = chrono_like(*created);
+            let accessed_str = chrono_like(*accessed);
+
+            // Structured backlinks (#274): parse the stored MemoryLink array and
+            // render a `## Links` section. Each link resolves BY ID to a note
+            // file; a dangling target (archived/deleted entity) is rendered as a
+            // best-effort, unresolved reference rather than crashing the export.
+            let links: Vec<MemoryLink> = serde_json::from_str(links_json).unwrap_or_default();
+            let mut links_section = String::new();
+            if !links.is_empty() {
+                links_section.push_str("\n## Links\n\n");
+                for link in &links {
+                    let rel = if link.relationship.is_empty() {
+                        "related"
+                    } else {
+                        link.relationship.as_str()
+                    };
+                    match id_map.get(&link.target_id) {
+                        Some((target_safe, target_key)) => {
+                            links_section.push_str(&format!(
+                                "- [[{}|{}]] ({})\n",
+                                target_safe, target_key, rel
+                            ));
+                        }
+                        None => {
+                            links_section.push_str(&format!(
+                                "- [[{}]] ({}) — unresolved\n",
+                                safe_id(&link.target_id),
+                                rel
+                            ));
+                        }
+                    }
+                }
+            }
 
             let md_content = format!(
                 "---
@@ -3359,7 +3434,7 @@ last_accessed: {}
 ---
 
 {}
-",
+{}",
                 id,
                 category,
                 key,
@@ -3372,11 +3447,15 @@ last_accessed: {}
                 layer,
                 created_str,
                 accessed_str,
-                body_json
+                body_json,
+                links_section
             );
 
             let _action = if filepath.exists() {
-                // Only update if content changed
+                // Only update if content changed. The `## Links` section is part
+                // of `md_content`, so the skip-optimization correctly accounts for
+                // link changes (a re-link triggers a rewrite; an unchanged note,
+                // links included, is a no-op).
                 let existing = fs::read_to_string(&filepath).unwrap_or_default();
                 if existing == md_content {
                     continue; // unchanged
@@ -5105,6 +5184,135 @@ mod tests {
         let d3b = db.state_digest().unwrap();
         assert_eq!(d3.digest, d3b.digest);
 
+        let _ = fs::remove_file(&path);
+    }
+
+    // #274: vault export emits a `## Links` section with `[[WikiLink]]` backlinks
+    // for structured entity links. Links resolve BY ID to `<safe_id>.md` notes.
+    #[test]
+    fn vault_export_emits_wikilink_backlinks() {
+        let (db, path) = temp_db();
+        let vault = std::env::temp_dir().join(format!("mimir-vault-{}", uuid::Uuid::new_v4()));
+        let vault_str = vault.to_str().unwrap().to_string();
+
+        // Two entities; the dependent links to the dependency.
+        db.remember(&make_entity(
+            "dep1",
+            "architecture",
+            "database",
+            r#"{"c":"postgres"}"#,
+        ))
+        .unwrap();
+        db.remember(&make_entity("dep2", "architecture", "api", r#"{"c":"axum"}"#))
+            .unwrap();
+        db.link("architecture", "api", "dep1", "depends_on").unwrap();
+
+        let report = db.vault_export(&vault_str, None).unwrap();
+        assert!(
+            report.errors.is_empty(),
+            "export errors: {:?}",
+            report.errors
+        );
+
+        // The dependent note (dep2.md) must contain a Links section pointing at
+        // the dependency note (dep1.md) by id.
+        let dependent = std::fs::read_to_string(vault.join("dep2.md")).unwrap();
+        assert!(
+            dependent.contains("## Links"),
+            "missing Links section:\n{}",
+            dependent
+        );
+        assert!(
+            dependent.contains("[[dep1|database]] (depends_on)"),
+            "missing WikiLink backlink:\n{}",
+            dependent
+        );
+
+        // The dependency note has no outgoing links, so no Links section.
+        let dependency = std::fs::read_to_string(vault.join("dep1.md")).unwrap();
+        assert!(
+            !dependency.contains("## Links"),
+            "unexpected Links section:\n{}",
+            dependency
+        );
+
+        let _ = std::fs::remove_dir_all(&vault);
+        let _ = fs::remove_file(&path);
+    }
+
+    // #274: re-exporting an unchanged DB is a no-op — the skip-optimization must
+    // still hold with the Links section included in the content comparison.
+    #[test]
+    fn vault_export_unchanged_is_noop() {
+        let (db, path) = temp_db();
+        let vault = std::env::temp_dir().join(format!("mimir-vault-{}", uuid::Uuid::new_v4()));
+        let vault_str = vault.to_str().unwrap().to_string();
+
+        db.remember(&make_entity(
+            "n1",
+            "architecture",
+            "database",
+            r#"{"c":"postgres"}"#,
+        ))
+        .unwrap();
+        db.remember(&make_entity("n2", "architecture", "api", r#"{"c":"axum"}"#))
+            .unwrap();
+        db.link("architecture", "api", "n1", "depends_on").unwrap();
+
+        let first = db.vault_export(&vault_str, None).unwrap();
+        assert_eq!(first.files_created, 2);
+
+        // Second export over unchanged state writes nothing.
+        let second = db.vault_export(&vault_str, None).unwrap();
+        assert_eq!(second.files_created, 0, "no new files on unchanged re-export");
+        assert_eq!(
+            second.files_updated, 0,
+            "no rewrites on unchanged re-export (skip-optimization holds with Links)"
+        );
+
+        let _ = std::fs::remove_dir_all(&vault);
+        let _ = fs::remove_file(&path);
+    }
+
+    // #274: a dangling link target (linked entity later archived) must not crash
+    // the export — it renders as a best-effort unresolved reference.
+    #[test]
+    fn vault_export_dangling_link_does_not_crash() {
+        let (db, path) = temp_db();
+        let vault = std::env::temp_dir().join(format!("mimir-vault-{}", uuid::Uuid::new_v4()));
+        let vault_str = vault.to_str().unwrap().to_string();
+
+        db.remember(&make_entity("keep", "architecture", "api", r#"{"c":"axum"}"#))
+            .unwrap();
+        db.remember(&make_entity(
+            "gone",
+            "architecture",
+            "cache",
+            r#"{"c":"redis"}"#,
+        ))
+        .unwrap();
+        db.link("architecture", "api", "gone", "depends_on").unwrap();
+
+        // Archive the link target so it leaves the export scope, leaving "api"
+        // with a dangling link.
+        db.forget("architecture", "cache", "test").unwrap();
+
+        let report = db.vault_export(&vault_str, None).unwrap();
+        assert!(
+            report.errors.is_empty(),
+            "export errors: {:?}",
+            report.errors
+        );
+
+        let note = std::fs::read_to_string(vault.join("keep.md")).unwrap();
+        assert!(note.contains("## Links"), "missing Links section:\n{}", note);
+        assert!(
+            note.contains("[[gone]] (depends_on) — unresolved"),
+            "dangling link not rendered as unresolved:\n{}",
+            note
+        );
+
+        let _ = std::fs::remove_dir_all(&vault);
         let _ = fs::remove_file(&path);
     }
 

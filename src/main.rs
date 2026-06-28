@@ -330,6 +330,23 @@ enum Commands {
         vault_dir: String,
     },
 
+    /// Sync your Mimir memory into an Obsidian (or Logseq/Notion) vault as
+    /// linked Markdown notes. Wraps vault export and writes `[[WikiLink]]`
+    /// backlinks between related entities so your AI memory becomes a
+    /// navigable personal knowledge base. Pass `--watch` to re-export on every
+    /// change (polls the cheap state digest; naturally catches `remember`
+    /// writes — no filesystem watcher dependency).
+    ObsidianSync {
+        /// Target Obsidian vault directory (created if needed)
+        vault_path: String,
+        /// SQLite database path (defaults to $MIMIR_DB_PATH or ~/.mimir/data/mimir.db)
+        #[arg(long)]
+        db: Option<String>,
+        /// Continuously re-export whenever memory changes
+        #[arg(long)]
+        watch: bool,
+    },
+
     /// Permanently delete archived entities and run VACUUM to reclaim disk space
     Purge {
         /// SQLite database path
@@ -390,6 +407,14 @@ fn open_db_or_exit(db_path: &str) -> db::Database {
             std::process::exit(1);
         }
     }
+}
+
+/// Decide whether a `--watch` resync should fire, given the previously synced
+/// state digest and the latest one. Pure logic, extracted so the digest-change
+/// trigger can be tested in isolation from the polling loop and the database.
+/// Returns `true` iff the digest changed (memory was written/edited/archived).
+fn should_resync(previous: &str, latest: &str) -> bool {
+    previous != latest
 }
 
 /// Print a serializable value as pretty JSON to stdout.
@@ -644,6 +669,69 @@ fn main() {
                 Err(e) => {
                     eprintln!("mimir: vault import failed: {}", e);
                     std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::ObsidianSync {
+            ref vault_path,
+            ref db,
+            watch,
+        }) => {
+            let db_path = db.clone().unwrap_or_else(default_db_path);
+            check_legacy_db(&db_path);
+            let database = open_db_or_exit(&db_path);
+            let dir = if vault_path.starts_with("~/") {
+                let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap_or_else(|_| "/root".to_string());
+                vault_path.replacen("~", &home, 1)
+            } else {
+                vault_path.clone()
+            };
+
+            // Initial export.
+            match database.vault_export(&dir, None) {
+                Ok(report) => print_json(&report),
+                Err(e) => {
+                    eprintln!("mimir: obsidian-sync export failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+
+            if watch {
+                eprintln!(
+                    "mimir: watching for memory changes — re-syncing {} on change (Ctrl-C to stop)",
+                    dir
+                );
+                // Poll the cheap, deterministic state digest (#256). It changes
+                // iff the recall-visible entity set changes, so this catches
+                // `remember` writes without any filesystem-watcher dependency and
+                // without coupling to the server write path.
+                let poll = std::time::Duration::from_secs(
+                    std::env::var("MIMIR_SYNC_INTERVAL_SECS")
+                        .ok()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .filter(|&n| n > 0)
+                        .unwrap_or(2),
+                );
+                let mut last = database.state_digest().map(|d| d.digest).unwrap_or_default();
+                loop {
+                    std::thread::sleep(poll);
+                    let current = match database.state_digest() {
+                        Ok(d) => d.digest,
+                        Err(e) => {
+                            eprintln!("mimir: obsidian-sync digest poll failed: {}", e);
+                            continue;
+                        }
+                    };
+                    if !should_resync(&last, &current) {
+                        continue;
+                    }
+                    last = current;
+                    match database.vault_export(&dir, None) {
+                        Ok(report) => print_json(&report),
+                        Err(e) => eprintln!("mimir: obsidian-sync re-export failed: {}", e),
+                    }
                 }
             }
         }
@@ -1164,5 +1252,65 @@ mod tests {
             }
             _ => panic!("expected migrate subcommand"),
         }
+    }
+
+    #[test]
+    fn parses_obsidian_sync_positional_vault() {
+        // `mimir obsidian-sync <dir>` — vault_path is positional, db optional,
+        // watch off by default.
+        let cli = Cli::parse_from(["mimir", "obsidian-sync", "/tmp/vault"]);
+        match cli.command {
+            Some(Commands::ObsidianSync {
+                vault_path,
+                db,
+                watch,
+            }) => {
+                assert_eq!(vault_path, "/tmp/vault");
+                assert_eq!(db, None);
+                assert!(!watch);
+            }
+            _ => panic!("expected obsidian-sync subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_obsidian_sync_with_watch_and_db() {
+        let cli = Cli::parse_from([
+            "mimir",
+            "obsidian-sync",
+            "/tmp/vault",
+            "--db",
+            "/tmp/m.db",
+            "--watch",
+        ]);
+        match cli.command {
+            Some(Commands::ObsidianSync {
+                vault_path,
+                db,
+                watch,
+            }) => {
+                assert_eq!(vault_path, "/tmp/vault");
+                assert_eq!(db.as_deref(), Some("/tmp/m.db"));
+                assert!(watch);
+            }
+            _ => panic!("expected obsidian-sync subcommand"),
+        }
+    }
+
+    #[test]
+    fn watch_resync_triggers_only_on_digest_change() {
+        // The --watch loop re-exports iff the state digest changes. Tested in
+        // isolation from the polling loop / DB (#274).
+        assert!(
+            !should_resync("abc123", "abc123"),
+            "identical digest must NOT trigger a resync"
+        );
+        assert!(
+            should_resync("abc123", "def456"),
+            "changed digest MUST trigger a resync"
+        );
+        // Empty initial digest (e.g. first poll before any export) followed by a
+        // real digest is a change and must trigger.
+        assert!(should_resync("", "abc123"));
     }
 }

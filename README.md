@@ -215,6 +215,8 @@ mimir decay          --db /data/mimir.db
 mimir reindex        --db /data/mimir.db
 mimir vault-export   --db /data/mimir.db --vault-dir ./export/
 mimir vault-import   --db /data/mimir.db --vault-dir ./export/
+mimir obsidian-sync  ~/obsidian-vault/Mimir/          # one-shot export to an Obsidian vault
+mimir obsidian-sync  ~/obsidian-vault/Mimir/ --watch  # continuous sync on every memory change
 
 # Key management
 mimir keygen --key-file ~/.mimir/secret.key
@@ -236,6 +238,66 @@ mimir keygen --key-file ~/.mimir/secret.key
 | `--llm-api-key` | API key for LLM endpoints (OpenAI, Azure, etc.) |
 | `--embedding-endpoint` | OpenAI-compatible embedding endpoint |
 | `--connectors-config` | Path to connectors.yaml |
+
+## Your AI Memory in Obsidian
+
+Mimir is your AI agent's long-term memory — and it doubles as **your** second
+brain. Every entity your agent remembers exports to a plain Markdown note with
+YAML frontmatter, so your AI's memory becomes a navigable personal knowledge
+base inside the tools you already use: **Obsidian, Logseq, or Notion.**
+
+```bash
+# Export your entire memory to an Obsidian vault as linked Markdown notes
+mimir obsidian-sync ~/obsidian-vault/Mimir/
+
+# Keep it live — re-export automatically on every memory change
+mimir obsidian-sync ~/obsidian-vault/Mimir/ --watch
+```
+
+Open the vault in Obsidian and you get a graph of your agent's knowledge.
+
+**WikiLink backlinks.** When one entity links to another (via `mimir_link` or a
+`depends_on` / `implements` / `references` relationship), the exported note gets
+a `## Links` section with `[[WikiLink]]` backlinks that resolve natively in
+Obsidian's graph view:
+
+```markdown
+---
+id: cli-de8dfb8364b6
+category: architecture
+key: api
+type: insight
+decay_score: 0.5000
+---
+
+{"content":"axum service"}
+
+## Links
+
+- [[cli-99756b494c7d|database]] (depends_on)
+```
+
+Links resolve **by entity id** (notes are written as `<id>.md`) so they never
+break, and Obsidian shows the human-readable `key` as the link label. Open the
+graph view and your agent's architecture, decisions, and insights become a
+clickable knowledge map.
+
+**`--watch`** polls Mimir's cheap, deterministic state digest on an interval and
+re-exports only when memory actually changes. It naturally catches every
+`mimir_remember` write with no filesystem-watcher dependency and no coupling to
+the server. Tune the interval with `MIMIR_SYNC_INTERVAL_SECS` (default: 2s).
+
+### Other PKM tools
+
+| Tool | How |
+|---|---|
+| **Obsidian** | `mimir obsidian-sync <vault>` — WikiLinks resolve in the graph view out of the box. |
+| **Logseq** | Point `obsidian-sync` at your Logseq graph directory. Logseq reads the same `[[WikiLink]]` syntax and Markdown frontmatter. |
+| **Notion** | Run `mimir vault-export`, then use Notion's *Import → Markdown & CSV* to pull the notes in. |
+
+Unlike cloud-only "second brain" tools, Mimir runs **100% local**, is written in
+**Rust**, encrypts at rest with **AES-256-GCM**, and applies **decay scoring** so
+stale memories fade — your knowledge base stays yours and stays fresh.
 
 ## Features
 
