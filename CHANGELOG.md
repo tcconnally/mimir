@@ -5,6 +5,15 @@ All notable changes to Mimir are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- **`mimir_reindex` no longer breaks keyword search on encrypted databases.**
+  `reindex_fts` did a raw `INSERT … SELECT body_json`, which on an encrypted DB
+  copied **ciphertext** into the FTS5 index — silently breaking all keyword and
+  hybrid recall until re-ingest (the recovery tool corrupted the very index it was
+  meant to rebuild). It now decrypts each body (AAD `category:key`) and indexes the
+  plaintext, matching what `remember` writes. Unencrypted DBs keep the fast bulk
+  copy. Regression test added.
+
 ## [2.5.0] - 2026-06-27
 
 Bi-temporal facts, completed: conflicting facts can now be actively resolved
