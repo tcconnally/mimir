@@ -3,11 +3,11 @@
   "name": "io.github.Perseus-Computing-LLC/mimir",
   "title": "Mimir, persistent memory engine for AI agents",
   "description": "MCP-native, local-first persistent memory for AI agents. A single Rust binary: SQLite with FTS5 plus hybrid vector search, AES-256-GCM encryption at rest, bi-temporal fact history, Ebbinghaus decay, journal audit trail, and conflict detection. Zero network calls, no API keys. 43 MCP tools over stdio. Distributed via GHCR and GitHub releases.",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "packages": [{
     "registryType": "oci",
     "identifier": "ghcr.io/perseus-computing-llc/mimir",
-    "version": "2.6.0",
+    "version": "2.7.0",
     "transport": {"type": "stdio"},
     "runtimeHint": "docker",
     "runtimeArguments": [

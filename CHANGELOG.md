@@ -5,6 +5,15 @@ All notable changes to Mimir are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-06-28
+
+### Distribution
+- **Published to the Official MCP Registry (#270).** Fixed `server.json` (valid
+  `oci` package on GHCR, current version and 43 tool count, dropped a stale
+  install line) and added the OCI ownership label to the Docker image, so Mimir
+  is discoverable at registry.modelcontextprotocol.io and the directories that
+  crawl it (Glama, PulseMCP, mcp.so).
+
 ## [2.6.0] - 2026-06-28
 
 Round-3 hardening & efficiency: a data-loss fix on encrypted databases, an
