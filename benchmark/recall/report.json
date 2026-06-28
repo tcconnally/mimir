@@ -18,7 +18,7 @@
       "recall@1": 0.0417,
       "recall@3": 0.125,
       "recall@5": 0.2083,
-      "mrr": 0.1314
+      "mrr": 0.1322
     },
     "dense": {
       "recall@1": 0.9167,
@@ -41,7 +41,7 @@
     "embedded": 24,
     "dimensions": null
   },
-  "signature_sha256": "d78c724090062fffa0ed91b243dfb0938fbdd9fdb0705ad5f16c044bd4f500f5",
+  "signature_sha256": "2bf8b0ef63b571612f55ec5b8a10002e9729d0fc2e50893c9cbf527f179cbfaa",
   "signature_covers": [
     "fts5",
     "dense",
@@ -104,16 +104,16 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
-          "recall@1": 1.0,
-          "recall@3": 1.0,
+          "recall@1": 0.0,
+          "recall@3": 0.0,
           "recall@5": 1.0,
-          "rr": 1.0
+          "rr": 0.25
         },
         "dense": {
           "top": [
@@ -151,11 +151,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -198,11 +198,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -245,11 +245,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -292,11 +292,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -339,16 +339,16 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
-          "recall@3": 1.0,
-          "recall@5": 1.0,
-          "rr": 0.5
+          "recall@3": 0.0,
+          "recall@5": 0.0,
+          "rr": 0.16666666666666666
         },
         "dense": {
           "top": [
@@ -386,11 +386,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -433,11 +433,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -480,11 +480,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -527,11 +527,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -574,16 +574,16 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 1.0,
           "recall@5": 1.0,
-          "rr": 0.3333333333333333
+          "rr": 0.5
         },
         "dense": {
           "top": [
@@ -621,16 +621,16 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
-          "recall@1": 0.0,
-          "recall@3": 0.0,
+          "recall@1": 1.0,
+          "recall@3": 1.0,
           "recall@5": 1.0,
-          "rr": 0.25
+          "rr": 1.0
         },
         "dense": {
           "top": [
@@ -668,11 +668,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -715,11 +715,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -762,16 +762,16 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
-          "recall@3": 0.0,
+          "recall@3": 1.0,
           "recall@5": 1.0,
-          "rr": 0.2
+          "rr": 0.3333333333333333
         },
         "dense": {
           "top": [
@@ -809,11 +809,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -856,11 +856,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -903,11 +903,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -950,16 +950,16 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
-          "recall@5": 0.0,
-          "rr": 0.16666666666666666
+          "recall@5": 1.0,
+          "rr": 0.2
         },
         "dense": {
           "top": [
@@ -997,16 +997,16 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
           "recall@5": 0.0,
-          "rr": 0.125
+          "rr": 0.14285714285714285
         },
         "dense": {
           "top": [
@@ -1044,11 +1044,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -1091,11 +1091,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,
@@ -1138,11 +1138,11 @@
       "modes": {
         "fts5": {
           "top": [
-            "commute",
-            "exercise",
-            "music",
             "diet",
-            "deadline"
+            "music",
+            "deadline",
+            "commute",
+            "team"
           ],
           "recall@1": 0.0,
           "recall@3": 0.0,

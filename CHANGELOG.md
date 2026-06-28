@@ -5,6 +5,19 @@ All notable changes to Mimir are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Changed
+- **Hybrid recall over-fetches each arm before RRF fusion.** The dense and BM25
+  keyword arms were each pre-truncated to `limit` *before* being fused, so a hit
+  ranked just past `limit` in one arm but strong in the other — or one that lands
+  just past `limit` in *both* yet would have the best *fused* score — could never
+  enter fusion. Each arm is now fetched at a larger candidate pool (≈`5×limit`,
+  capped) and RRF truncates to `limit` afterward. Strictly a recall-quality
+  improvement; still fully read-only and byte-deterministic (verified by the
+  existing idempotency/#125 tests + a new `hybrid_over_fetches_arms_before_fusion`
+  test that pins the cross-arm consensus hit). The `mimir-recall-mini` headline
+  metrics are unchanged (24 docs saturate at `limit=10`), but the benchmark
+  signature updates as the fused tail re-orders.
+
 ### Fixed
 - **`mimir_reindex` no longer breaks keyword search on encrypted databases.**
   `reindex_fts` did a raw `INSERT … SELECT body_json`, which on an encrypted DB

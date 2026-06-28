@@ -1412,9 +1412,8 @@ impl Database {
             };
 
             if let Some(query_vec) = query_vec {
-                let dense_results = self.dense_search(query_vec, params.limit as usize)?;
-
                 if params.mode == crate::models::SearchMode::Dense {
+                    let dense_results = self.dense_search(query_vec, params.limit as usize)?;
                     return Ok(dense_results.into_iter().map(|(e, _)| e).collect());
                 }
 
@@ -1423,19 +1422,28 @@ impl Database {
                 // reduced weight (and dropped entirely when it finds nothing) so
                 // it cannot dilute a strong dense ranking (#247).
                 //
+                // Over-fetch each arm to a candidate pool LARGER than `limit`
+                // before fusing, then truncate to `limit` after RRF. Previously
+                // each arm was pre-truncated to `limit`, so a hit ranked just past
+                // `limit` in one arm but strong in the other could never enter
+                // fusion — capping the recall quality RRF is meant to provide.
+                //
                 // Both arms and the fusion are read-only: like `Dense`, the
                 // semantic recall path issues no access-state writes, so repeated
-                // hybrid recalls are idempotent (#247). Nothing in dense/BM25
-                // ordering or the id tie-break depends on access state, so the
-                // result is byte-stable run-to-run.
-                let dense_scored = dense_results;
-                let sparse_scored = self.fts5_bm25_search(params)?;
+                // hybrid recalls are idempotent (#247). Larger candidate sets plus
+                // the id tie-break keep the result byte-stable run-to-run.
+                let limit = params.limit.max(0) as usize;
+                let candidate_k = limit.saturating_mul(5).clamp(1, 1000).max(limit.min(1000));
+                let dense_scored = self.dense_search(query_vec, candidate_k)?;
+                let mut wide = params.clone();
+                wide.limit = candidate_k as i64;
+                let sparse_scored = self.fts5_bm25_search(&wide)?;
                 let sparse_weight = crate::db::sparse_arm_weight(sparse_scored.len());
                 let fused = crate::db::reciprocal_rank_fusion(
                     &dense_scored,
                     &sparse_scored,
                     60.0,
-                    params.limit as usize,
+                    limit,
                     sparse_weight,
                     params.recency_half_life_secs,
                     now_ms(),
@@ -6228,6 +6236,63 @@ mod tests {
         let ids1: Vec<&str> = first.iter().map(|e| e.id.as_str()).collect();
         let ids2: Vec<&str> = second.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids1, ids2, "repeated hybrid recall must be idempotent");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hybrid_over_fetches_arms_before_fusion() {
+        // Each hybrid arm is fetched at a candidate pool LARGER than `limit`, then
+        // RRF truncates to `limit`. This surfaces a cross-arm "consensus" hit that
+        // ranks just past `limit` in BOTH arms individually: pre-truncating each
+        // arm to `limit` would drop it from both inputs entirely, so it could
+        // never win — even though appearing in both arms gives it the best fused
+        // score. With limit=1: A is dense rank-1 (no keyword), B is keyword rank-1
+        // (no dense), and W is rank-2 in *both*. Only over-fetch lets W win.
+        let (db, path) = temp_db();
+        let blob = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|f| f.to_le_bytes()).collect() };
+        let insert = |id: &str, key: &str, body: &str, emb: &[f32]| {
+            db.conn()
+                .unwrap()
+                .execute(
+                    "INSERT INTO entities (id, category, key, body_json, type, status,
+                        retrieval_count, last_accessed_unix_ms, created_at_unix_ms,
+                        decay_score, layer, embedding, archived)
+                     VALUES (?1, 'insight', ?2, ?3, 'insight', 'active', 0, 0, 0, 1.0, 'working', ?4, 0)",
+                    params![id, key, body, blob(emb)],
+                )
+                .unwrap();
+            db.conn()
+                .unwrap()
+                .execute(
+                    "INSERT INTO entities_fts (rowid, body_json)
+                     VALUES ((SELECT rowid FROM entities WHERE id = ?1), ?2)",
+                    params![id, body],
+                )
+                .unwrap();
+        };
+        // A: best dense (cos 1.0), no "zenith" → dense-only, dense rank 1.
+        insert("a-dense", "k1", r#"{"note":"alpha aurora"}"#, &[1.0, 0.0, 0.0]);
+        // B: best keyword (zenith x4), worst dense (cos 0) → sparse-only, sparse rank 1.
+        insert("b-keyword", "k2", r#"{"note":"zenith zenith zenith zenith"}"#, &[0.0, 0.0, 1.0]);
+        // W: rank 2 in BOTH arms — strong-ish dense (cos ~0.9) AND one "zenith".
+        insert("w-both", "k3", r#"{"note":"zenith alpha"}"#, &[0.9, 0.44, 0.0]);
+
+        let params = RecallParams {
+            query: "zenith".to_string(),
+            mode: crate::models::SearchMode::Hybrid,
+            embedding: Some(vec![1.0, 0.0, 0.0]),
+            limit: 1,
+            ..RecallParams::default()
+        };
+
+        let out = db.recall(&params).unwrap();
+        assert_eq!(out.len(), 1, "limit=1 must return exactly one result");
+        assert_eq!(
+            out[0].id, "w-both",
+            "the cross-arm consensus hit (rank 2 in both arms) must win once arms \
+             are over-fetched; pre-truncation would have dropped it and returned a-dense"
+        );
 
         let _ = fs::remove_file(&path);
     }

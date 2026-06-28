@@ -163,6 +163,7 @@ pub struct StateEntry {
 }
 
 /// Parameters for entity recall queries.
+#[derive(Clone)]
 pub struct RecallParams {
     pub query: String,
     pub category: Option<String>,
