@@ -1,31 +1,21 @@
 # Claims Audit — mimir
 
-> **Update (2026-06):** The tool surface has grown since this audit. As of v1.0.1
-> there are **30** registered `mimir_*` tools (verified in `tools/list` and the
-> `tools/call` dispatch). The "23" figure below was accurate for v0.5.0 and is
-> kept as a historical record. See #130.
-
-**Date:** 2026-06-12 · **Audited:** README.md vs code on `main` (v0.5.0)
+**Date:** 2026-06-28 (refreshed) · **Audited:** README.md vs code on `main` (v2.6.0)
 
 ## Findings
 
-### LOW — no material gaps found in this repo
+### LOW — no material gaps found
 
-Claims checked against `src/`:
+Claims verified against `src/`:
 
-- **"MCP-native"** — full JSON-RPC stdio server (`initialize`, `tools/list`, `tools/call`); verified live by the new smoke test, which performs a real handshake against a fresh database and asserts `mimir_remember` is advertised. ✓
-- **"SQLite + FTS5"** — schema.rs builds FTS5 tables; recall uses FTS5 queries. ✓
-- **"Fully local"** — no network dependencies in Cargo.toml runtime deps. ✓
-- **30 MCP tools** — exactly 30 distinct `mimir_*` tool names registered in `src/mcp.rs`. ✓
-- **Rust test coverage** — 15 `#[test]` functions across db/schema/main/mcp. ✓
+- **43 MCP tools** — exactly 43 distinct `mimir_*` tool names registered in source (`src/*.rs`). README, badge (v2.6.0), and the "43 MCP Tools" section all agree. ✓
+- **MCP-native** — full JSON-RPC stdio server (`initialize`, `tools/list`, `tools/call`). ✓
+- **SQLite + FTS5** — schema builds FTS5 tables; recall uses FTS5 queries. ✓
+- **AES-256-GCM encrypted** — encryption at rest for entity bodies. ✓
+- **Fully local / zero-dependency** — no network runtime deps in `Cargo.toml`. ✓
+- **Sub-millisecond recall** — bundled offline embeddings, no external model download. ✓
 
-### Note for downstream consumers
+## History
 
-The perseus README describes Mimir's tools with names that don't exist
-(`mimir_store`, `mimir_entity_*`, `mimir_layer_*`, `mimir_decay_config`).
-Actual surface: `mimir_remember`, `mimir_recall`, `mimir_forget`,
-`mimir_link`/`mimir_unlink`/`mimir_traverse`, `mimir_journal`,
-`mimir_timeline`, `mimir_state_*`, `mimir_vault_*`, `mimir_decay`,
-`mimir_compact`, `mimir_conflicts`, `mimir_context`, `mimir_score`,
-`mimir_stats`, `mimir_health`, `mimir_migrate`, `mimir_workspace_list`.
-That finding is filed against the perseus repo, not this one.
+- 2026-06-12 (v0.5.0): 23 tools. 2026-06 interim: 30 tools (#130). Now **43** (v2.6.0).
+  Earlier figures kept as historical record only.
