@@ -13,6 +13,13 @@ All notable changes to Mimir are documented here. This project adheres to
   meant to rebuild). It now decrypts each body (AAD `category:key`) and indexes the
   plaintext, matching what `remember` writes. Unencrypted DBs keep the fast bulk
   copy. Regression test added.
+### Security
+- **Bounded file size for `mimir_ingest_file` (#236 hardening).** Document ingestion
+  read the entire file into memory with no size limit, then copied the text into a
+  JSON body and the FTS index — a single huge or maliciously-sized file could OOM
+  the server (denial of service). Ingestion now rejects files larger than a
+  configurable cap (`MIMIR_MAX_INGEST_BYTES`, default 50 MiB) **before** reading,
+  for plaintext, DOCX and PDF alike. Regression test added.
 
 ## [2.5.0] - 2026-06-27
 

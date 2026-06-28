@@ -16,8 +16,47 @@ const PLAINTEXT_EXTS: &[&str] = &[
     "toml", "log", "xml", "htm", "html", "tex", "org",
 ];
 
+/// Default cap on the on-disk size of a file ingested via `mimir_ingest_file`,
+/// overridable with `MIMIR_MAX_INGEST_BYTES` (bytes; 0/invalid → default). The
+/// extracted text is materialized in memory and then copied into a
+/// JSON body and the FTS index, so an unbounded read is an OOM / denial-of-service
+/// vector. Enforced before any file read (and before zip/pdf parsing, which can
+/// amplify memory further).
+const DEFAULT_MAX_INGEST_BYTES: u64 = 50 * 1024 * 1024; // 50 MiB
+
+fn max_ingest_bytes() -> u64 {
+    std::env::var("MIMIR_MAX_INGEST_BYTES")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_INGEST_BYTES)
+}
+
+/// Reject a file whose on-disk size exceeds `max_bytes`, before it is read.
+fn enforce_ingest_size(path: &Path, max_bytes: u64) -> Result<(), String> {
+    let len = std::fs::metadata(path)
+        .map_err(|e| format!("cannot stat {}: {}", path.display(), e))?
+        .len();
+    if len > max_bytes {
+        return Err(format!(
+            "{}: file is {} bytes, exceeding the {}-byte ingest limit \
+             (raise MIMIR_MAX_INGEST_BYTES to override)",
+            path.display(),
+            len,
+            max_bytes
+        ));
+    }
+    Ok(())
+}
+
 /// Extract plain text from a document, routing by file extension.
 pub fn extract_text(path: &Path) -> Result<String, String> {
+    extract_text_limited(path, max_ingest_bytes())
+}
+
+/// Inner extractor with an explicit size cap (for deterministic testing without
+/// touching the process environment).
+fn extract_text_limited(path: &Path, max_bytes: u64) -> Result<String, String> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -25,13 +64,14 @@ pub fn extract_text(path: &Path) -> Result<String, String> {
         .unwrap_or_default();
 
     if PLAINTEXT_EXTS.contains(&ext.as_str()) {
+        enforce_ingest_size(path, max_bytes)?;
         return std::fs::read_to_string(path)
             .map_err(|e| format!("failed to read {}: {}", path.display(), e));
     }
 
     match ext.as_str() {
-        "docx" => extract_docx(path),
-        "pdf" => extract_pdf(path),
+        "docx" => extract_docx(path, max_bytes),
+        "pdf" => extract_pdf(path, max_bytes),
         "" => Err(format!(
             "{}: no file extension; cannot determine document format",
             path.display()
@@ -45,8 +85,9 @@ pub fn extract_text(path: &Path) -> Result<String, String> {
 }
 
 #[cfg(feature = "multimodal")]
-fn extract_docx(path: &Path) -> Result<String, String> {
+fn extract_docx(path: &Path, max_bytes: u64) -> Result<String, String> {
     use std::io::Read;
+    enforce_ingest_size(path, max_bytes)?;
     let file =
         std::fs::File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
     let mut zip =
@@ -63,18 +104,19 @@ fn extract_docx(path: &Path) -> Result<String, String> {
 }
 
 #[cfg(not(feature = "multimodal"))]
-fn extract_docx(_path: &Path) -> Result<String, String> {
+fn extract_docx(_path: &Path, _max_bytes: u64) -> Result<String, String> {
     Err("DOCX extraction requires building with --features multimodal".to_string())
 }
 
 #[cfg(feature = "multimodal")]
-fn extract_pdf(path: &Path) -> Result<String, String> {
+fn extract_pdf(path: &Path, max_bytes: u64) -> Result<String, String> {
+    enforce_ingest_size(path, max_bytes)?;
     pdf_extract::extract_text(path)
         .map_err(|e| format!("PDF text extraction failed for {}: {e}", path.display()))
 }
 
 #[cfg(not(feature = "multimodal"))]
-fn extract_pdf(_path: &Path) -> Result<String, String> {
+fn extract_pdf(_path: &Path, _max_bytes: u64) -> Result<String, String> {
     Err("PDF extraction requires building with --features multimodal".to_string())
 }
 
@@ -142,6 +184,27 @@ mod tests {
             .unwrap();
         let text = extract_text(&p).unwrap();
         assert!(text.contains("body text"));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn oversized_file_is_rejected_before_read() {
+        let dir = std::env::temp_dir();
+        let p = dir.join(format!("mimir-mm-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::File::create(&p)
+            .unwrap()
+            .write_all(b"hello world, this is more than ten bytes of text")
+            .unwrap();
+
+        // A cap smaller than the file is rejected with a clear, actionable error.
+        let err = extract_text_limited(&p, 10).unwrap_err();
+        assert!(err.contains("ingest limit"), "got: {err}");
+        assert!(err.contains("MIMIR_MAX_INGEST_BYTES"), "got: {err}");
+
+        // A generous cap reads normally.
+        let ok = extract_text_limited(&p, 10_000).unwrap();
+        assert!(ok.contains("hello world"));
+
         let _ = std::fs::remove_file(&p);
     }
 
