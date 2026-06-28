@@ -683,12 +683,49 @@ impl Database {
         let tx = conn.unchecked_transaction()?;
         // Drop everything currently in the FTS index.
         tx.execute("DELETE FROM entities_fts", [])?;
+
         // Repopulate from live (non-archived) entities only.
-        let indexed = tx.execute(
-            "INSERT INTO entities_fts (rowid, body_json)
-             SELECT rowid, body_json FROM entities WHERE archived = 0",
-            [],
-        )?;
+        let indexed = if let Some(ref enc) = self.encryption {
+            // Under encryption, `entities.body_json` holds CIPHERTEXT, but the FTS5
+            // index must store PLAINTEXT (so keyword/hybrid recall works — see
+            // `remember`, which inserts the plaintext body into FTS). A raw
+            // INSERT … SELECT body_json here would index base64 ciphertext and
+            // silently break all keyword search until re-ingest. Decrypt each row
+            // (AAD = "category:key", matching remember()/entity_from_row) first.
+            let rows: Vec<(i64, String, String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT rowid, category, key, body_json FROM entities WHERE archived = 0",
+                )?;
+                let mapped = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })?;
+                mapped.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            let mut insert =
+                tx.prepare("INSERT INTO entities_fts (rowid, body_json) VALUES (?1, ?2)")?;
+            let mut count = 0usize;
+            for (rowid, category, key, raw_body) in rows {
+                let aad = format!("{}:{}", category, key);
+                // Fall back to raw on decrypt failure (e.g. a row written before
+                // encryption was enabled), mirroring entity_from_row.
+                let plain = enc.decrypt(&raw_body, aad.as_bytes()).unwrap_or(raw_body);
+                insert.execute(params![rowid, plain])?;
+                count += 1;
+            }
+            count
+        } else {
+            // No encryption: body_json is already plaintext — fast bulk copy.
+            tx.execute(
+                "INSERT INTO entities_fts (rowid, body_json)
+                 SELECT rowid, body_json FROM entities WHERE archived = 0",
+                [],
+            )?
+        };
         tx.commit()?;
         Ok(indexed)
     }
@@ -5821,6 +5858,71 @@ mod tests {
         // Cleanup
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(&path2);
+        let _ = fs::remove_file(&key_path);
+    }
+
+    #[test]
+    fn reindex_fts_indexes_plaintext_under_encryption() {
+        // Regression: reindex_fts (the mimir_reindex recovery tool) must repopulate
+        // the FTS5 index with PLAINTEXT even on an encrypted DB. Previously it did a
+        // raw INSERT … SELECT body_json, copying ciphertext into FTS and silently
+        // breaking all keyword/hybrid search until re-ingest.
+        use crate::encryption::EncryptionManager;
+        use std::io::Write;
+
+        let (mut db, path) = temp_db();
+        let key = EncryptionManager::generate_key();
+        let key_path = std::env::temp_dir()
+            .join(format!("mimir-test-key-{}.key", uuid::Uuid::new_v4()));
+        let mut f = std::fs::File::create(&key_path).unwrap();
+        f.write_all(key.as_bytes()).unwrap();
+        drop(f);
+        db.set_encryption(key_path.to_str().unwrap()).unwrap();
+
+        let entity = make_entity(
+            "e-rdx",
+            "insight",
+            "rocket-note",
+            r#"{"content": "interstellar propulsion breakthrough"}"#,
+        );
+        db.remember(&entity).unwrap();
+
+        // The raw entities column is ciphertext (sanity check on the setup).
+        let raw_body: String = db
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT body_json FROM entities WHERE key = 'rocket-note'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !raw_body.contains("propulsion"),
+            "entities.body_json should be encrypted at rest"
+        );
+
+        // Rebuild the FTS index via the recovery path.
+        let n = db.reindex_fts().unwrap();
+        assert_eq!(n, 1);
+
+        // A direct FTS MATCH on a plaintext term must hit the row (proves plaintext
+        // was indexed, not ciphertext — and bypasses any LIKE fallback).
+        let hit: i64 = db
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM entities_fts WHERE entities_fts MATCH 'propulsion'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            hit, 1,
+            "keyword search must survive reindex under encryption (FTS holds plaintext)"
+        );
+
+        let _ = fs::remove_file(&path);
         let _ = fs::remove_file(&key_path);
     }
 
