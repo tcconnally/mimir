@@ -1,0 +1,191 @@
+{
+  "benchmark": "mimir-longmemeval-retrieval",
+  "metric": "session-level recall@k vs answer_session_ids (judge-free, offline)",
+  "dataset": "longmemeval_s_cleaned.json",
+  "n_instances": 500,
+  "n_sessions_ingested": 23867,
+  "k": [
+    1,
+    3,
+    5,
+    10
+  ],
+  "modes": [
+    "fts5",
+    "dense",
+    "hybrid"
+  ],
+  "limit": 10,
+  "metrics": {
+    "fts5": {
+      "recall@1": 0.042,
+      "recall@3": 0.13,
+      "recall@5": 0.236,
+      "recall@10": 0.42,
+      "mrr": 0.1259
+    },
+    "dense": {
+      "recall@1": 0.77,
+      "recall@3": 0.9,
+      "recall@5": 0.938,
+      "recall@10": 0.972,
+      "mrr": 0.8431
+    },
+    "hybrid": {
+      "recall@1": 0.822,
+      "recall@3": 0.934,
+      "recall@5": 0.97,
+      "recall@10": 0.986,
+      "mrr": 0.884
+    }
+  },
+  "by_question_type": {
+    "single-session-user": {
+      "fts5": {
+        "recall@1": 0.0429,
+        "recall@3": 0.1,
+        "recall@5": 0.1286,
+        "recall@10": 0.2857,
+        "n": 70
+      },
+      "dense": {
+        "recall@1": 0.5429,
+        "recall@3": 0.7,
+        "recall@5": 0.7714,
+        "recall@10": 0.8857,
+        "n": 70
+      },
+      "hybrid": {
+        "recall@1": 0.6143,
+        "recall@3": 0.8286,
+        "recall@5": 0.9143,
+        "recall@10": 0.9857,
+        "n": 70
+      }
+    },
+    "multi-session": {
+      "fts5": {
+        "recall@1": 0.0301,
+        "recall@3": 0.1203,
+        "recall@5": 0.3008,
+        "recall@10": 0.4887,
+        "n": 133
+      },
+      "dense": {
+        "recall@1": 0.8647,
+        "recall@3": 0.9549,
+        "recall@5": 0.9774,
+        "recall@10": 1.0,
+        "n": 133
+      },
+      "hybrid": {
+        "recall@1": 0.8947,
+        "recall@3": 0.9774,
+        "recall@5": 0.985,
+        "recall@10": 0.9925,
+        "n": 133
+      }
+    },
+    "single-session-preference": {
+      "fts5": {
+        "recall@1": 0.0667,
+        "recall@3": 0.1,
+        "recall@5": 0.1333,
+        "recall@10": 0.3,
+        "n": 30
+      },
+      "dense": {
+        "recall@1": 0.5333,
+        "recall@3": 0.8333,
+        "recall@5": 0.9333,
+        "recall@10": 0.9333,
+        "n": 30
+      },
+      "hybrid": {
+        "recall@1": 0.6333,
+        "recall@3": 0.8333,
+        "recall@5": 0.9333,
+        "recall@10": 0.9667,
+        "n": 30
+      }
+    },
+    "temporal-reasoning": {
+      "fts5": {
+        "recall@1": 0.0376,
+        "recall@3": 0.0902,
+        "recall@5": 0.188,
+        "recall@10": 0.406,
+        "n": 133
+      },
+      "dense": {
+        "recall@1": 0.7519,
+        "recall@3": 0.9323,
+        "recall@5": 0.9624,
+        "recall@10": 0.9774,
+        "n": 133
+      },
+      "hybrid": {
+        "recall@1": 0.8195,
+        "recall@3": 0.9173,
+        "recall@5": 0.9774,
+        "recall@10": 0.9774,
+        "n": 133
+      }
+    },
+    "knowledge-update": {
+      "fts5": {
+        "recall@1": 0.0769,
+        "recall@3": 0.2821,
+        "recall@5": 0.4103,
+        "recall@10": 0.6026,
+        "n": 78
+      },
+      "dense": {
+        "recall@1": 0.8205,
+        "recall@3": 0.9103,
+        "recall@5": 0.9615,
+        "recall@10": 1.0,
+        "n": 78
+      },
+      "hybrid": {
+        "recall@1": 0.8718,
+        "recall@3": 0.9872,
+        "recall@5": 0.9872,
+        "recall@10": 1.0,
+        "n": 78
+      }
+    },
+    "single-session-assistant": {
+      "fts5": {
+        "recall@1": 0.0179,
+        "recall@3": 0.0893,
+        "recall@5": 0.1429,
+        "recall@10": 0.2679,
+        "n": 56
+      },
+      "dense": {
+        "recall@1": 0.9286,
+        "recall@3": 0.9643,
+        "recall@5": 0.9643,
+        "recall@10": 0.9821,
+        "n": 56
+      },
+      "hybrid": {
+        "recall@1": 0.9464,
+        "recall@3": 0.9821,
+        "recall@5": 0.9821,
+        "recall@10": 0.9821,
+        "n": 56
+      }
+    }
+  },
+  "binary": "mimir.exe",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "offline": true,
+  "embedding": {
+    "source": "bundled-onnx"
+  },
+  "elapsed_secs": 440.2,
+  "signature_sha256": "f82bee433d25627a2039f557b7fb88e568c5aa6c3ef6ae7b344de5f59a7732e9",
+  "per_question_note": "omitted from committed report (500 entries); regenerate with run.py for the full per-question detail"
+}
