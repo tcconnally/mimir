@@ -403,6 +403,31 @@ on-premises, classified environments).
 Perseus Computing LLC is a US-owned small business. SAM.gov registration in progress.
 NAICS: 541715, 541511, 541512.
 
+## Privacy Policy
+
+Mimir is a **local-first MCP server** — it runs entirely on your machine.
+
+### Data Collection
+- **No data collection.** Mimir does not collect, transmit, or phone home any user data, usage statistics, or telemetry.
+- All data remains in your local SQLite database file.
+
+### Data Usage & Storage
+- All memory entities, journal entries, and state are stored locally in a SQLite database at the path you specify via `--db`.
+- Optional **AES-256-GCM encryption at rest** is available — when enabled, entity bodies are encrypted before storage.
+- No data is shared with Perseus Computing LLC or any third party.
+
+### Third-Party Sharing
+- **None.** Mimir is fully air-gapped by default. No API calls, no cloud services, no external network requests.
+- The optional dense vector embeddings feature uses a locally-compiled model — no external embedding API is called.
+
+### Data Retention
+- You control retention: entities can be soft-deleted (`mimir_forget`), archived (via decay/compact), or permanently purged (`mimir_purge`).
+- No automatic off-machine backup is performed.
+
+### Contact
+- **Email:** privacy@perseus.observer
+- **GitHub:** [Perseus-Computing-LLC/mimir](https://github.com/Perseus-Computing-LLC/mimir)
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
