@@ -28,6 +28,8 @@ pub struct RememberArgs {
     pub topic_path: String,
     #[serde(default)]
     pub recall_when: Vec<String>,
+    #[serde(default)]
+    pub layer: Option<String>,
 }
 
 fn default_status() -> String {
@@ -64,6 +66,8 @@ pub struct RecallArgs {
     pub expansion: crate::models::QueryExpansionConfig,
     #[serde(default)]
     pub mode: String, // "fts5", "dense", or "hybrid"
+    #[serde(default)]
+    pub layer: Option<String>,
 }
 
 fn default_limit() -> i64 {
@@ -223,6 +227,13 @@ pub fn handle_remember(db: &Database, args: Value) -> Result<String, String> {
     let id = format!("mem-{}", &raw_id[..12.min(raw_id.len())]);
     let now = now_ms();
 
+    let layer = a.layer.map(|l| match l.as_str() {
+        "world" => "core".to_string(),
+        "episodic" => "buffer".to_string(),
+        "semantic" => "working".to_string(),
+        _ => l,
+    }).unwrap_or_else(|| "buffer".to_string());
+
     let entity = Entity {
         id,
         category: a.category,
@@ -233,7 +244,7 @@ pub fn handle_remember(db: &Database, args: Value) -> Result<String, String> {
         tags: a.tags,
         decay_score: a.importance,
         retrieval_count: 0,
-        layer: "buffer".to_string(),
+        layer,
         topic_path: a.topic_path,
         archived: false,
         archive_reason: String::new(),
@@ -285,6 +296,7 @@ pub fn handle_recall(db: &Database, args: Value) -> Result<String, String> {
         skip_side_effects: false,
         mode,
         embedding: None,
+        layer: a.layer,
     };
 
     let entities = db
@@ -343,6 +355,7 @@ fn handle_recall_with_expansion(db: &Database, a: &RecallArgs) -> Result<String,
             skip_side_effects: false,
             mode: SearchMode::Fts5,
             embedding: None,
+            layer: a.layer.clone(),
         };
 
         if let Ok(entities) = db.recall(&params) {
@@ -435,6 +448,33 @@ pub fn handle_unlink(db: &Database, args: Value) -> Result<String, String> {
         "to": a.to_id,
     });
     Ok(result.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RecallLayerArgs {
+    pub layer: String,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+}
+
+pub fn handle_recall_layer(db: &Database, args: Value) -> Result<String, String> {
+    let a: RecallLayerArgs =
+        serde_json::from_value(args).map_err(|e| format!("Invalid recall_layer arguments: {}", e))?;
+
+    let layer = match a.layer.as_str() {
+        "world" => "core",
+        "episodic" => "buffer",
+        "semantic" => "working",
+        _ => &a.layer,
+    };
+
+    let recall_args = json!({
+        "query": "",
+        "limit": a.limit,
+        "layer": layer,
+    });
+
+    handle_recall(db, recall_args)
 }
 
 pub fn handle_journal(db: &Database, args: Value) -> Result<String, String> {

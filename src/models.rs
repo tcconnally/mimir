@@ -141,6 +141,7 @@ pub struct RecallParams {
     pub skip_side_effects: bool,
     pub mode: SearchMode,
     pub embedding: Option<Vec<f32>>,
+    pub layer: Option<String>,
 }
 
 /// Search mode for recall: FTS5 keyword, dense vector, or hybrid fusion.
@@ -194,6 +195,7 @@ impl Default for RecallParams {
             skip_side_effects: false,
             mode: SearchMode::Fts5,
             embedding: None,
+            layer: None,
         }
     }
 }

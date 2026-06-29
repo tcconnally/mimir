@@ -80,6 +80,16 @@ Mimir is for teams that want **production memory without infrastructure** — no
 
 ## Features
 
+### Memory Layers
+
+Mimir models memory using three biomimetic layers, inspired by human memory pathways:
+
+- **World (Core):** Slow-decaying, global facts about the environment.
+- **Episodic (Buffer):** Fast-decaying, session-specific interaction history.
+- **Semantic (Working):** Medium-decaying, general knowledge and learned concepts.
+
+You can interact with these layers directly using the `mimir_recall_layer` tool or by specifying the `layer` parameter in `mimir_remember`.
+
 ### Hybrid Search
 - **FTS5 keyword search** with LIKE fallback and stemming expansion
 - **Dense vector search** via cosine similarity on stored embeddings
@@ -124,6 +134,7 @@ Mimir is for teams that want **production memory without infrastructure** — no
 |---|---|
 | `mimir_remember` | Store/update entity. Idempotent by (category, key). |
 | `mimir_recall` | Search with FTS5/dense/hybrid modes, filters, stemming expansion. |
+| `mimir_recall_layer` | Recall from a specific biomimetic layer (world, episodic, semantic). |
 | `mimir_forget` | Soft-delete (archived=1). |
 | `mimir_link` | Create relationship links between entities. |
 | `mimir_unlink` | Remove entity links. |

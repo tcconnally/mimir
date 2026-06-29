@@ -336,6 +336,10 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
             }
           },
           "description": "Configuration for FTS5 query expansion using Porter stemming"
+        },
+        "layer": {
+            "type": "string",
+            "description": "Filter by memory layer (world, episodic, semantic)."
         }
       },
       "required": [
@@ -1493,6 +1497,43 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     "annotations": {
       "destructiveHint": true
     }
+  },
+  {
+    "name": "mimir_recall_layer",
+    "description": "Recall entities from a specific biomimetic memory layer (world, episodic, semantic).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "layer": {
+          "type": "string",
+          "description": "The memory layer to recall from.",
+          "enum": ["world", "episodic", "semantic"]
+        },
+        "limit": {
+          "type": "integer",
+          "default": 10,
+          "description": "Maximum number of results to return (max 1000)."
+        }
+      },
+      "required": ["layer"]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "Matching entities with expanded body_json fields at top level."
+        },
+        "total": {
+          "type": "integer",
+          "description": "Number of results returned."
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
   }
 ]"###
     ).expect("tools JSON must be valid");
@@ -1519,6 +1560,10 @@ fn call_tool(
 
         "mimir_recall" => {
             tools::handle_recall(db, args).map_err(|e| error_response(id, -32603, &e))
+        }
+
+        "mimir_recall_layer" => {
+            tools::handle_recall_layer(db, args).map_err(|e| error_response(id, -32603, &e))
         }
 
         "mimir_ask" => {
