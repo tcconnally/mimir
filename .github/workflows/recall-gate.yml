@@ -1,0 +1,54 @@
+name: Recall regression gate
+
+# Guards the #271 invariant: a bare mimir_remember + mimir_recall (no manual
+# embed, no mode) must use semantic search by default and clearly beat keyword
+# only. If auto-embed-on-write or the hybrid default ever regresses, recall
+# collapses toward FTS5 and this fails. Fast and dependency-free (no network,
+# no API key, 24-memory in-repo dataset). The full LongMemEval proof lives in
+# benchmark/longmemeval/ and is run manually.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "src/**"
+      - "benchmark/recall/**"
+      - ".github/workflows/recall-gate.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "src/**"
+      - "benchmark/recall/**"
+      - ".github/workflows/recall-gate.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  MIMIR_BUNDLED_MODEL_DIR: ${{ github.workspace }}/.model-cache
+
+jobs:
+  recall-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: .model-cache
+          key: minilm-l6-v2-qint8-v1
+      - name: Fetch embedding model (if not cached)
+        shell: bash
+        run: |
+          mkdir -p .model-cache
+          base=https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main
+          [ -s .model-cache/model_qint8_avx512_vnni.onnx ] || curl -fL "$base/onnx/model_qint8_avx512_vnni.onnx" -o .model-cache/model_qint8_avx512_vnni.onnx
+          [ -s .model-cache/tokenizer.json ] || curl -fL "$base/tokenizer.json" -o .model-cache/tokenizer.json
+          cp .model-cache/model_qint8_avx512_vnni.onnx .model-cache/model_quantized.onnx
+      - name: Build (release, bundled embeddings)
+        run: cargo build --release
+      - name: Recall regression gate
+        run: python benchmark/recall/gate.py
