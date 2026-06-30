@@ -97,6 +97,22 @@ impl Default for LlmConfig {
     }
 }
 
+/// Categories kept out of the shared recall/context ranking surface unless a
+/// caller asks for them explicitly (by `category`). Default: `conversation` —
+/// raw auto-captured turns otherwise dominate broad recall and bury curated
+/// facts (#298/#525). Override the list — or disable it entirely with an empty
+/// value — via the `MIMIR_EXCLUDE_CATEGORIES` env var (comma-separated).
+fn excluded_recall_categories() -> Vec<String> {
+    match std::env::var("MIMIR_EXCLUDE_CATEGORIES") {
+        Ok(v) => v
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Err(_) => vec!["conversation".to_string()],
+    }
+}
+
 impl Database {
     /// Open a database at `path`, initializing the v0.2.0 schema if needed.
     pub fn open(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
@@ -1658,6 +1674,17 @@ impl Database {
             }
         }
 
+        // #298/#525: when no explicit category was requested, keep free-form
+        // high-volume categories (default: conversation) out of the ranking
+        // surface so raw auto-captured turns don't bury curated facts. An
+        // explicit category filter (above) is the opt-in to see them.
+        if params.category.as_deref().map_or(true, |c| c.is_empty()) {
+            for cat in excluded_recall_categories() {
+                conditions.push(format!("category != ?{}", param_values.len() + 1));
+                param_values.push(Box::new(cat));
+            }
+        }
+
         // Filter by type
         if let Some(ref t) = params.entity_type {
             if !t.is_empty() {
@@ -1928,6 +1955,14 @@ impl Database {
             if !cat.is_empty() {
                 conditions.push(format!("e.category = ?{}", param_values.len() + 1));
                 param_values.push(Box::new(cat.clone()));
+            }
+        }
+        // #298/#525: mirror the FTS path — exclude free-form categories from the
+        // hybrid keyword arm too when no explicit category was requested.
+        if params.category.as_deref().map_or(true, |c| c.is_empty()) {
+            for cat in excluded_recall_categories() {
+                conditions.push(format!("e.category != ?{}", param_values.len() + 1));
+                param_values.push(Box::new(cat));
             }
         }
         if let Some(ref t) = params.entity_type {
@@ -4733,6 +4768,57 @@ mod tests {
     fn health_check_on_new_db() {
         let (db, path) = temp_db();
         assert!(db.health_check());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn recall_excludes_conversation_by_default_but_returns_it_when_requested() {
+        // #298/#525: broad recall keeps free-form conversation out of the ranking
+        // surface so raw turns don't bury curated facts; an explicit category
+        // filter opts back in.
+        let (db, path) = temp_db();
+        db.remember(&make_entity(
+            "e-conv",
+            "conversation",
+            "turn-z",
+            r#"{"note":"chatter about widgets"}"#,
+        ))
+        .unwrap();
+        db.remember(&make_entity(
+            "e-dec",
+            "decision",
+            "widget-choice",
+            r#"{"note":"we chose widgets"}"#,
+        ))
+        .unwrap();
+
+        let broad = RecallParams {
+            query: "widgets".to_string(),
+            limit: 10,
+            ..RecallParams::default()
+        };
+        let hits = db.recall(&broad).unwrap();
+        assert!(
+            hits.iter().all(|e| e.category != "conversation"),
+            "conversation must be excluded from default recall"
+        );
+        assert!(
+            hits.iter().any(|e| e.category == "decision"),
+            "curated decision should still surface in default recall"
+        );
+
+        let explicit = RecallParams {
+            query: "widgets".to_string(),
+            category: Some("conversation".to_string()),
+            limit: 10,
+            ..RecallParams::default()
+        };
+        let hits2 = db.recall(&explicit).unwrap();
+        assert!(
+            hits2.iter().any(|e| e.category == "conversation"),
+            "explicit category=conversation must return conversation entities"
+        );
+
         let _ = fs::remove_file(&path);
     }
 
