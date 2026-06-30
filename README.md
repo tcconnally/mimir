@@ -10,7 +10,7 @@
 [![LangGraph](https://img.shields.io/badge/integrations-LangGraph-blue)](integrations/langgraph/)
 [![CrewAI](https://img.shields.io/badge/integrations-CrewAI-orange)](integrations/crewai/)
 [![AutoGen](https://img.shields.io/badge/integrations-AutoGen-purple)](integrations/autogen/)
-[![MCP Tools](https://img.shields.io/badge/MCP%20tools-44-brightgreen)]()
+[![MCP Tools](https://img.shields.io/badge/MCP%20tools-46-brightgreen)]()
 
 Mimir is a single Rust binary that gives AI agents durable memory across sessions.
 **One binary. One file. No Docker. No Postgres. No cloud.** Just persistent memory
@@ -83,7 +83,7 @@ local-first, zero-dependency, AND agent-first.
 |---|---|---|---|---|
 | **Deployment** | Single binary (~8MB) | Cloud + self-host | Docker/Postgres | Docker/Postgres |
 | **Dependencies** | None (SQLite embedded) | Python + vector DB | Postgres + Python | Postgres + Go |
-| **MCP-Native** | ✅ 43 tools | ❌ Not MCP-native | ❌ Not MCP-native | ❌ Not MCP-native |
+| **MCP-Native** | ✅ 46 tools | ❌ Not MCP-native | ❌ Not MCP-native | ❌ Not MCP-native |
 | **Offline/Local** | ✅ Fully local | Cloud-dependent | Docker needed | Docker needed |
 | **Encryption** | AES-256-GCM ✅ | ❌ | ❌ | ❌ |
 | **Hybrid Search** | BM25 + Dense + RRF | Vector only | Vector only | Vector + Graph |
@@ -91,7 +91,7 @@ local-first, zero-dependency, AND agent-first.
 | **Entity Graph** | Link + Traverse | ❌ | ❌ | ✅ |
 | **Journal Audit Trail** | ✅ Immutable | ❌ | ❌ | ❌ |
 | **State Management** | ✅ Key-value + TTL | ❌ | ❌ | ❌ |
-| **MCP Tools** | 44 | 5 | 8 | 0 |
+| **MCP Tools** | 46 | 5 | 8 | 0 |
 | **GitHub Stars** | ~20 | ~55K | ~15K | ~3K |
 | **License** | MIT | Apache 2.0 | Apache 2.0 | Apache 2.0 |
 
@@ -133,7 +133,7 @@ Each adapter:
 Any MCP-compatible framework works with Mimir directly. See
 [Awesome Mimir](awesome-mimir.md) for the full list.
 
-## 44 MCP Tools
+## 46 MCP Tools
 
 ### Entity CRUD
 | Tool | Description |
@@ -144,6 +144,7 @@ Any MCP-compatible framework works with Mimir directly. See
 | `mimir_recall_when` | Proactive just-in-time recall: surface entities whose `recall_when` triggers match. |
 | `mimir_get_entity` | Fetch one entity by ID with full `body_json`. |
 | `mimir_as_of` | Bi-temporal time-travel: the version of a fact (category + key) that was live at a past instant. |
+| `mimir_history` | List every superseded version of a fact (category + key), newest first — the full version trail (companion to `mimir_as_of`). |
 | `mimir_forget` | Soft-delete (archived=1). |
 
 ### Search & RAG

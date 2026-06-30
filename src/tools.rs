@@ -698,6 +698,32 @@ pub fn handle_as_of(db: &Database, args: Value) -> Result<String, String> {
     Ok(result.to_string())
 }
 
+/// #269/#272 review follow-up: surface the bi-temporal version trail.
+/// `history_versions` existed + was tested but no tool reached it.
+pub fn handle_history(db: &Database, args: Value) -> Result<String, String> {
+    let category = args
+        .get("category")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'category' parameter".to_string())?;
+    let key = args
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'key' parameter".to_string())?;
+
+    let versions = db
+        .history_versions(category, key)
+        .map_err(|e| format!("history failed: {}", e))?;
+
+    let items: Vec<serde_json::Value> = versions.iter().map(|e| e.to_json_expanded()).collect();
+    let result = json!({
+        "category": category,
+        "key": key,
+        "versions": items,
+        "total": items.len(),
+    });
+    Ok(result.to_string())
+}
+
 pub fn handle_forget(db: &Database, args: Value) -> Result<String, String> {
     let a: ForgetArgs =
         serde_json::from_value(args).map_err(|e| format!("Invalid forget arguments: {}", e))?;

@@ -6,6 +6,18 @@ All notable changes to Mimir are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **`mimir_history` tool (code-review follow-up).** The bi-temporal `history_versions`
+  reader (v2.4.0) was complete and tested but no tool exposed it — you could time-travel
+  to one instant via `mimir_as_of` but couldn't list a fact's full version trail. Wired a
+  `mimir_history` tool that returns all superseded versions of a (category, key), newest
+  first. Tool count 45 → **46**; README badge/table/section, `server.json`, and
+  `CLAIMS-AUDIT.md` reconciled (they had drifted to 44/43).
+
+### Removed
+- **Dead `EncryptionManager::decrypt`.** Fully superseded by `decrypt_body` (the
+  legacy/auth-failure-classifying variant); the old method had zero callers and was the
+  exact footgun the security fix replaced. Removed so it can't be reintroduced.
+
 - **`mimir doctor` + verified client compatibility matrix (#272).** New `mimir doctor`
   subcommand validates the local install (binary path, db path) and prints the MCP
   stdio config plus a compatibility matrix for Claude Desktop, Claude Code/Hermes,

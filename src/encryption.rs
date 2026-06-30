@@ -90,33 +90,6 @@ impl EncryptionManager {
         Ok(B64.encode(&combined))
     }
 
-    /// Decrypt a base64-encoded ciphertext (nonce prepended) back to plaintext.
-    /// aad must match what was passed to encrypt — otherwise decryption fails.
-    pub fn decrypt(&self, encoded: &str, aad: &[u8]) -> Result<String, String> {
-        let combined = B64
-            .decode(encoded)
-            .map_err(|e| format!("Invalid base64 ciphertext: {}", e))?;
-
-        if combined.len() < 12 {
-            return Err("Ciphertext too short".to_string());
-        }
-
-        let (nonce_bytes, ciphertext) = combined.split_at(12);
-        let nonce = Nonce::from_slice(nonce_bytes);
-
-        let payload = aes_gcm::aead::Payload {
-            msg: ciphertext,
-            aad: if aad.is_empty() { b"" } else { aad },
-        };
-        let plaintext = self
-            .cipher
-            .decrypt(nonce, payload)
-            .map_err(|e| format!("Decryption failed: incorrect key or corrupted data ({})", e))?;
-
-        String::from_utf8(plaintext)
-            .map_err(|e| format!("Decrypted data is not valid UTF-8: {}", e))
-    }
-
     /// Mixed-DB-aware decrypt for stored bodies. Distinguishes a legacy plaintext
     /// row (not ciphertext at all -> safe to pass through) from authentic-looking
     /// ciphertext that fails GCM authentication (wrong key or tampering -> the raw

@@ -125,6 +125,7 @@ fn extract_pdf(_path: &Path, _max_bytes: u64) -> Result<String, String> {
 /// every other tag. Dependency-free and always compiled (so it is unit-testable
 /// without the `multimodal` feature) — good enough for memory ingestion, where we
 /// want the text, not faithful layout.
+#[allow(dead_code)] // live under the `multimodal` feature + always unit-tested
 pub fn docx_xml_to_text(xml: &str) -> String {
     let mut out = String::new();
     let mut chars = xml.char_indices().peekable();
@@ -161,6 +162,7 @@ pub fn docx_xml_to_text(xml: &str) -> String {
 }
 
 /// Minimal XML entity unescape for the five predefined entities.
+#[allow(dead_code)] // called by docx_xml_to_text (multimodal feature + tests)
 fn unescape_xml(s: &str) -> String {
     s.replace("&lt;", "<")
         .replace("&gt;", ">")

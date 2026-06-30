@@ -651,6 +651,27 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     "title": "Get Entity by ID"
   },
   {
+    "name": "mimir_history",
+    "description": "List every superseded (historical) version of a fact (category + key), newest first. Each entry was the live fact for an interval before it was overwritten. The companion to mimir_as_of: as_of returns the single version live at one instant; history returns the full version trail. Returns an empty list if the fact has never been overwritten (its only version is the current live one in recall).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string",
+          "description": "Entity category"
+        },
+        "key": {
+          "type": "string",
+          "description": "Entity key within the category"
+        }
+      },
+      "required": [
+        "category",
+        "key"
+      ]
+    }
+  },
+  {
     "name": "mimir_as_of",
     "description": "Bi-temporal time-travel: return the version of a fact (category + key) that Mimir believed at a given past instant. When a fact is overwritten, the prior version is kept in history; this returns whichever version was live at as_of_unix_ms. Use to answer 'what did we believe about X back then?' or to audit how a fact changed. Returns found=false if the fact had not been recorded yet at that time.",
     "inputSchema": {
@@ -2662,6 +2683,7 @@ fn call_tool(name: &str, db: &Database, args: Value, _id: Option<Value>) -> Stri
         "mimir_ask" => tools::handle_ask(db, args).map_err(|e| e.to_string()),
 
         "mimir_get_entity" => tools::handle_get_entity(db, args).map_err(|e| e.to_string()),
+        "mimir_history" => tools::handle_history(db, args).map_err(|e| e.to_string()),
         "mimir_as_of" => tools::handle_as_of(db, args).map_err(|e| e.to_string()),
         "mimir_forget" => tools::handle_forget(db, args).map_err(|e| e.to_string()),
 
@@ -2809,6 +2831,43 @@ mod tests {
             .as_f64()
             .expect("confidence number");
         assert!((0.0..=1.0).contains(&c), "confidence {} out of range", c);
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn history_tool_lists_superseded_versions() {
+        let db_path =
+            std::env::temp_dir().join(format!("mimir-history-{}.db", uuid::Uuid::new_v4()));
+        let db = Database::open(db_path.to_str().expect("temp db path")).expect("open temp db");
+
+        tools::handle_remember(
+            &db,
+            json!({"category":"facts","key":"color","body_json":"{\"content\":\"blue\"}"}),
+        )
+        .expect("v1");
+        // A content change snapshots the prior version into history.
+        tools::handle_remember(
+            &db,
+            json!({"category":"facts","key":"color","body_json":"{\"content\":\"green\"}"}),
+        )
+        .expect("v2");
+
+        let resp =
+            tools::handle_history(&db, json!({"category":"facts","key":"color"})).expect("history");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["total"].as_i64().unwrap(), 1, "one superseded version: {}", resp);
+        let body = v["versions"][0]["content"]
+            .as_str()
+            .or_else(|| v["versions"][0]["body_json"].as_str())
+            .unwrap_or("");
+        assert!(body.contains("blue"), "history should hold the old 'blue' value: {}", resp);
+
+        // Unknown key -> empty trail.
+        let empty =
+            tools::handle_history(&db, json!({"category":"facts","key":"nope"})).expect("history");
+        let ev: Value = serde_json::from_str(&empty).unwrap();
+        assert_eq!(ev["total"].as_i64().unwrap(), 0);
 
         let _ = fs::remove_file(db_path);
     }
