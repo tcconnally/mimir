@@ -1056,6 +1056,25 @@ impl Database {
         // Flush final partial batch
         flush_batch(&mut batch, &mut updated, &mut auto_archived)?;
 
+        // #298: demote cold, non-verified entities so layer is no longer a
+        // one-way ratchet. Layer is otherwise only ever promoted (by retrieval
+        // count on the recall path), so a turn that once went hot stays in
+        // `core` forever. decay_tick is the demotion authority: as an entity's
+        // decay falls (it has stopped being recalled), its layer drops back
+        // toward `buffer`. This only ever LOWERS a layer — promotion stays
+        // recall-count driven — and exempts verified/always-on entities
+        // (curated / pinned). Runs once over the freshly-recomputed decay
+        // scores; pairs with the verified decay floor above.
+        conn.execute(
+            "UPDATE entities SET layer = CASE \
+                WHEN decay_score < 0.2 THEN 'buffer' \
+                WHEN decay_score < 0.5 AND layer = 'core' THEN 'working' \
+                ELSE layer END \
+             WHERE archived = 0 AND verified = 0 AND always_on = 0 \
+               AND layer != 'buffer'",
+            [],
+        )?;
+
         Ok(DecayReport {
             entities_checked: total,
             entities_updated: updated,
@@ -4698,6 +4717,59 @@ mod tests {
             "unverified decay_score {} should be below archive threshold",
             u_decay
         );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn decay_tick_demotes_cold_unverified_layers_but_not_verified() {
+        // #298: layer is otherwise a one-way ratchet. A cold unverified entity
+        // in `core` must demote as its decay falls; a verified one is exempt
+        // (and floored), so it stays put.
+        let (db, path) = temp_db();
+        db.remember(&make_entity("e-cold", "general", "cold-fact", r#"{"note":"x"}"#))
+            .unwrap();
+        db.remember(&make_entity("e-kept", "decision", "kept-fact", r#"{"note":"y"}"#))
+            .unwrap();
+
+        // 15 days stale → decay ≈ 0.12: below the 0.2 demotion band, above the
+        // 0.05 archive floor. Both start pinned in `core`.
+        let stale = now_ms() - 15 * 24 * 60 * 60 * 1000;
+        {
+            let conn = db.conn().unwrap();
+            conn.execute(
+                "UPDATE entities SET layer='core', last_accessed_unix_ms=?1, decay_score=1.0, verified=0 WHERE category='general'",
+                rusqlite::params![stale],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE entities SET layer='core', last_accessed_unix_ms=?1, decay_score=1.0, verified=1 WHERE category='decision'",
+                rusqlite::params![stale],
+            )
+            .unwrap();
+        }
+
+        db.decay_tick().unwrap();
+
+        let layer_of = |cat: &str, key: &str| -> (String, bool) {
+            let conn = db.conn().unwrap();
+            conn.query_row(
+                "SELECT layer, archived FROM entities WHERE category=?1 AND key=?2",
+                rusqlite::params![cat, key],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
+            )
+            .unwrap()
+        };
+
+        let (cold_layer, cold_archived) = layer_of("general", "cold-fact");
+        assert!(!cold_archived, "decay ~0.12 stays above the 0.05 archive floor");
+        assert_eq!(
+            cold_layer, "buffer",
+            "cold unverified core entity must demote to buffer"
+        );
+
+        let (kept_layer, _) = layer_of("decision", "kept-fact");
+        assert_eq!(kept_layer, "core", "verified entity must not be demoted");
 
         let _ = fs::remove_file(&path);
     }
