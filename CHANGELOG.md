@@ -5,6 +5,12 @@ All notable changes to Mimir are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- **`include_confidence` on `mimir_recall` (#287).** Opt-in (default false): each result
+  gains a normalized `confidence` (0.0–1.0) rolled up from rank, trust (verified/certainty),
+  and decay — a single number for callers/UIs instead of eyeballing raw signals. Purely
+  presentation-layer; ranking math and existing snapshots are unchanged.
+
 ### Security
 - **Decryption failures no longer silently return ciphertext.** On an encrypted DB,
   the read path (`entity_from_row`), FTS reindex, and the history content-change

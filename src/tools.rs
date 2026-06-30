@@ -104,6 +104,39 @@ pub struct RecallArgs {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub layer: Option<String>,
+    /// #287: opt-in. When true, each result gets a normalized `confidence`
+    /// (0.0–1.0) rolled up from rank, trust, and decay. Default false so
+    /// existing callers and snapshot tests are unaffected; ranking is unchanged.
+    #[serde(default)]
+    pub include_confidence: bool,
+}
+
+/// #287: presentation-layer confidence rollup over signals Mimir already has.
+/// Does NOT affect ranking — purely a convenience score for the caller.
+fn confidence_for(entity: &crate::models::Entity, rank: usize, total: usize) -> f64 {
+    let relevance = if total > 1 {
+        (total - rank) as f64 / total as f64
+    } else {
+        1.0
+    };
+    let trust = if entity.verified {
+        1.0
+    } else {
+        entity.certainty.clamp(0.0, 1.0)
+    };
+    let freshness = entity.decay_score.clamp(0.0, 1.0);
+    let c = 0.5 * relevance + 0.3 * trust + 0.2 * freshness;
+    (c.clamp(0.0, 1.0) * 1000.0).round() / 1000.0
+}
+
+/// Inject a `confidence` field into each already-serialized recall item.
+fn apply_confidence(items: &mut [serde_json::Value], entities: &[crate::models::Entity]) {
+    let total = entities.len();
+    for (i, (item, ent)) in items.iter_mut().zip(entities.iter()).enumerate() {
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert("confidence".to_string(), json!(confidence_for(ent, i, total)));
+        }
+    }
 }
 
 fn default_halving() -> f64 {
@@ -395,8 +428,12 @@ pub fn handle_recall(db: &Database, args: Value) -> Result<String, String> {
         .recall(&params)
         .map_err(|e| format!("Recall failed: {}", e))?;
 
-    let items_expanded: Vec<serde_json::Value> =
+    let mut items_expanded: Vec<serde_json::Value> =
         entities.iter().map(|e| e.to_json_expanded()).collect();
+
+    if a.include_confidence {
+        apply_confidence(&mut items_expanded, &entities);
+    }
 
     let result = json!({
         "items": items_expanded,
@@ -542,10 +579,19 @@ fn handle_recall_with_expansion(db: &Database, a: &RecallArgs) -> Result<String,
     let hit_ids: Vec<String> = merged.iter().map(|(e, _)| e.id.clone()).collect();
     let _ = db.apply_recall_side_effects(&hit_ids);
 
-    let items_expanded: Vec<serde_json::Value> = merged
+    let mut items_expanded: Vec<serde_json::Value> = merged
         .iter()
         .map(|(entity, _)| entity.to_json_expanded())
         .collect();
+
+    if a.include_confidence {
+        let total = merged.len();
+        for (i, (item, (entity, _))) in items_expanded.iter_mut().zip(merged.iter()).enumerate() {
+            if let Some(obj) = item.as_object_mut() {
+                obj.insert("confidence".to_string(), json!(confidence_for(entity, i, total)));
+            }
+        }
+    }
 
     let result = json!({
         "items": items_expanded,

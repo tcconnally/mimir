@@ -352,6 +352,11 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
           "default": false,
           "description": "Include archived (soft-deleted) entities in results"
         },
+        "include_confidence": {
+          "type": "boolean",
+          "default": false,
+          "description": "Add a normalized confidence score (0.0-1.0) to each result, rolled up from rank, trust (verified/certainty), and decay. Presentation-only; does not change ranking."
+        },
         "expansion": {
           "type": "object",
           "properties": {
@@ -2771,6 +2776,39 @@ mod tests {
         let resp = handle_request(&req, &state, &db).expect("error response");
         assert_eq!(resp.error.expect("json-rpc error").code, -32600);
         assert!(!state.initialized.load(std::sync::atomic::Ordering::Relaxed));
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn recall_confidence_is_opt_in_and_normalized() {
+        let db_path =
+            std::env::temp_dir().join(format!("mimir-confidence-{}.db", uuid::Uuid::new_v4()));
+        let db = Database::open(db_path.to_str().expect("temp db path")).expect("open temp db");
+
+        tools::handle_remember(
+            &db,
+            json!({"category": "demo", "key": "k1", "body_json": "{\"content\":\"alpha bravo\"}"}),
+        )
+        .expect("remember");
+
+        // Default: confidence is absent (opt-in, non-breaking).
+        let plain = tools::handle_recall(&db, json!({"query": "alpha"})).expect("recall");
+        let plain_v: Value = serde_json::from_str(&plain).unwrap();
+        assert!(
+            plain_v["items"][0].get("confidence").is_none(),
+            "confidence must be opt-in"
+        );
+
+        // Opt-in: confidence present and normalized to [0,1].
+        let withc =
+            tools::handle_recall(&db, json!({"query": "alpha", "include_confidence": true}))
+                .expect("recall");
+        let withc_v: Value = serde_json::from_str(&withc).unwrap();
+        let c = withc_v["items"][0]["confidence"]
+            .as_f64()
+            .expect("confidence number");
+        assert!((0.0..=1.0).contains(&c), "confidence {} out of range", c);
 
         let _ = fs::remove_file(db_path);
     }
