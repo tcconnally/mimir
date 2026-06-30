@@ -37,7 +37,7 @@ def find_binary(explicit: "str | None") -> str:
         candidates.append(explicit)
     if os.environ.get("MIMIR_BIN"):
         candidates.append(os.environ["MIMIR_BIN"])
-    exe = "mimir.exe" if os.name == "nt" else "mimir"
+    exe = "mneme.exe" if os.name == "nt" else "mneme"
     candidates += [str(REPO / "target" / "release" / exe),
                    str(REPO / "target" / "debug" / exe)]
     for c in candidates:

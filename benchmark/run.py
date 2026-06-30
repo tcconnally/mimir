@@ -33,7 +33,7 @@ REPO = HERE.parent
 
 def find_binary(explicit):
     cands = [explicit, os.environ.get("MIMIR_BIN")]
-    exe = "mimir.exe" if os.name == "nt" else "mimir"
+    exe = "mneme.exe" if os.name == "nt" else "mneme"
     cands += [str(REPO / "target" / "release" / exe), str(REPO / "target" / "debug" / exe)]
     for c in cands:
         if c and Path(c).exists():

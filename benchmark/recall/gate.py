@@ -39,7 +39,7 @@ MAX_AUTO_BELOW_DENSE_MRR = 0.15    # and within this of pure dense on MRR
 
 def find_binary(explicit):
     cands = [explicit, os.environ.get("MIMIR_BIN")]
-    exe = "mimir.exe" if os.name == "nt" else "mimir"
+    exe = "mneme.exe" if os.name == "nt" else "mneme"
     cands += [str(REPO / "target" / "release" / exe), str(REPO / "target" / "debug" / exe)]
     for c in cands:
         if c and Path(c).exists():
