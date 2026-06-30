@@ -35,5 +35,5 @@ The adapter pattern:
 All integrations require Mimir v1.0.0+ installed:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mimir/main/scripts/bootstrap.sh | bash
+curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mneme/main/scripts/bootstrap.sh | bash
 ```

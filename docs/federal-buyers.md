@@ -102,7 +102,7 @@ pip install perseus-ctx
 perseus --help
 
 # Mimir — persistent memory (MCP server)
-# Download binary from https://github.com/Perseus-Computing-LLC/mimir/releases
+# Download binary from https://github.com/Perseus-Computing-LLC/mneme/releases
 ./mimir --help
 ```
 

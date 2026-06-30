@@ -10,10 +10,10 @@ across coding sessions.
 
 ```bash
 # One-shot bootstrap (recommended)
-curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mimir/main/scripts/bootstrap.sh | bash
+curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mneme/main/scripts/bootstrap.sh | bash
 
 # Or build from source via cargo
-cargo install --git https://github.com/Perseus-Computing-LLC/mimir
+cargo install --git https://github.com/Perseus-Computing-LLC/mneme
 ```
 
 Verify:

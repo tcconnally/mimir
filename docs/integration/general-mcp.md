@@ -6,7 +6,7 @@ Mimir is an MCP stdio server. It works with **any** MCP-compatible client.
 
 ```bash
 # Install Mimir
-curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mimir/main/scripts/bootstrap.sh | bash
+curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mneme/main/scripts/bootstrap.sh | bash
 
 # Create data directory
 mkdir -p ~/.mimir/data
@@ -110,7 +110,7 @@ mimir keygen --key-file ~/.mimir/secret.key
 ## Docker
 
 ```bash
-docker run -v ~/.mimir/data:/data ghcr.io/Perseus-Computing-LLC/mimir:latest --db /data/mimir.db
+docker run -v ~/.mimir/data:/data ghcr.io/Perseus-Computing-LLC/mneme:latest --db /data/mimir.db
 ```
 
 ## What Mimir Is Not

@@ -7,7 +7,7 @@ ideas.
 ## Development Setup
 
 ```bash
-git clone https://github.com/Perseus-Computing-LLC/mimir.git
+git clone https://github.com/Perseus-Computing-LLC/mneme.git
 cd mimir
 
 # Build (requires Rust 1.70+)
@@ -49,5 +49,5 @@ Keep PRs focused — one concern per PR. If you're fixing a bug, add a test.
 
 ## Questions?
 
-Open a [discussion](https://github.com/Perseus-Computing-LLC/mimir/discussions) or file an
+Open a [discussion](https://github.com/Perseus-Computing-LLC/mneme/discussions) or file an
 issue with the `question` label.

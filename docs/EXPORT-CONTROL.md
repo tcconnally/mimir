@@ -30,7 +30,7 @@ This document provides the analysis and rationale for federal procurement and SB
 - **Type:** Rust binary — persistent memory MCP server for AI agents
 - **Function:** Stores, searches, and retrieves structured entities via JSON-RPC 2.0 over stdio. Includes AES-256-GCM encryption (standard commercial algorithm). Optional embedding via public ONNX models. No cryptographic key management — keys are user-provided.
 - **Distribution:** GitHub Releases (public binary downloads)
-- **Source:** https://github.com/Perseus-Computing-LLC/mimir (public, MIT license)
+- **Source:** https://github.com/Perseus-Computing-LLC/mneme (public, MIT license)
 
 ---
 

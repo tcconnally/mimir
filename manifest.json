@@ -1,29 +1,29 @@
 {
   "manifest_version": "0.3",
-  "name": "mimir",
-  "version": "2.7.0",
-  "display_name": "Mimir — Persistent Memory for Claude",
+  "name": "mneme",
+  "version": "2.8.0",
+  "display_name": "Mneme — Persistent Memory for Claude (formerly Mimir)",
   "description": "Persistent cross-session memory for Claude. 44 MCP tools: remember, recall, search, link entities, journal audit trail, state management, AES-256-GCM encryption. Local-first, single Rust binary, zero cloud dependencies.",
-  "long_description": "Mimir gives Claude durable memory across sessions. It is a single Rust binary (~8MB) with an embedded SQLite database — no Docker, no Postgres, no cloud. Features include:\n\n- **44 MCP tools** for entity storage, hybrid search (FTS5 + dense vector), knowledge-graph traversal, journal audit trail, and state management\n- **AES-256-GCM encryption at rest** (optional, transparent)\n- **Fully local** — never phones home, no telemetry, air-gapped by default\n- **Agent-first design** — entity lifecycle with Ebbinghaus decay, auto-promotion, archiving\n- **Works with any MCP host** — Claude Desktop, Claude Code, Cursor, Hermes Agent, Perseus, and more\n\nInstall in one line: `curl -sSf https://raw.githubusercontent.com/Perseus-Computing-LLC/mimir/main/scripts/install.sh | sh`",
+  "long_description": "Mneme (formerly \"Mimir\") gives Claude durable memory across sessions. It is a single Rust binary (~8MB) with an embedded SQLite database — no Docker, no Postgres, no cloud. Features include:\n\n- **44 MCP tools** for entity storage, hybrid search (FTS5 + dense vector), knowledge-graph traversal, journal audit trail, and state management\n- **AES-256-GCM encryption at rest** (optional, transparent)\n- **Fully local** — never phones home, no telemetry, air-gapped by default\n- **Agent-first design** — entity lifecycle with Ebbinghaus decay, auto-promotion, archiving\n- **Works with any MCP host** — Claude Desktop, Claude Code, Cursor, Hermes Agent, Perseus, and more\n\nInstall in one line: `curl -sSf https://raw.githubusercontent.com/Perseus-Computing-LLC/mneme/main/scripts/install.sh | sh`",
   "author": {
     "name": "Perseus Computing LLC",
     "email": "privacy@perseus.observer",
     "url": "https://perseus.observer"
   },
-  "repository": "https://github.com/Perseus-Computing-LLC/mimir",
-  "homepage": "https://perseus.observer/mimir/",
-  "documentation": "https://github.com/Perseus-Computing-LLC/mimir#readme",
+  "repository": "https://github.com/Perseus-Computing-LLC/mneme",
+  "homepage": "https://perseus.observer/mneme/",
+  "documentation": "https://github.com/Perseus-Computing-LLC/mneme#readme",
   "license": "MIT",
   "keywords": ["memory", "persistent-memory", "mcp", "local-first", "encryption", "sqlite", "fts5", "hybrid-search", "agent-memory"],
   "privacy_policies": [
-    "https://github.com/Perseus-Computing-LLC/mimir#privacy-policy"
+    "https://github.com/Perseus-Computing-LLC/mneme#privacy-policy"
   ],
   "server": {
     "type": "binary",
-    "entry_point": "mimir",
+    "entry_point": "mneme",
     "mcp_config": {
-      "command": "mimir",
-      "args": ["serve", "--db", "~/.mimir/data/mimir.db"]
+      "command": "mneme",
+      "args": ["serve", "--db", "~/.mimir/data/mneme.db"]
     }
   },
   "compatibility": {

@@ -1,7 +1,7 @@
 # Mimir for AutoGen
 
 Persistent long-term memory for [AutoGen](https://github.com/microsoft/autogen)
-(AG2 / `autogen-core` v0.4+) agents, backed by [Mimir](https://github.com/Perseus-Computing-LLC/mimir).
+(AG2 / `autogen-core` v0.4+) agents, backed by [Mimir](https://github.com/Perseus-Computing-LLC/mneme).
 
 `MimirMemory` implements the `autogen_core.memory.Memory` protocol, so it drops
 straight into an `AssistantAgent(memory=[...])`. Stored knowledge is injected
@@ -12,7 +12,7 @@ survives across sessions, processes, and crews.
 
 ```bash
 # Install Mimir (the binary)
-curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mimir/main/scripts/bootstrap.sh | bash
+curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mneme/main/scripts/bootstrap.sh | bash
 
 # Install the adapter
 pip install -e integrations/autogen

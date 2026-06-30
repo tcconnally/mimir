@@ -1,12 +1,12 @@
 # Mneme
 
-<!-- mcp-name: io.github.Perseus-Computing-LLC/mimir -->
+<!-- mcp-name: io.github.Perseus-Computing-LLC/mneme -->
 
 > **Persistent Memory for AI Agents — MCP-Native. Local-First. Zero Dependencies.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://rust-lang.org)
-[![Version](https://img.shields.io/badge/version-2.7.0-green.svg)](https://github.com/Perseus-Computing-LLC/mimir/releases)
+[![Version](https://img.shields.io/badge/version-2.7.0-green.svg)](https://github.com/Perseus-Computing-LLC/mneme/releases)
 [![LangGraph](https://img.shields.io/badge/integrations-LangGraph-blue)](integrations/langgraph/)
 [![CrewAI](https://img.shields.io/badge/integrations-CrewAI-orange)](integrations/crewai/)
 [![AutoGen](https://img.shields.io/badge/integrations-AutoGen-purple)](integrations/autogen/)
@@ -19,7 +19,7 @@ that works with any MCP host.
 ## One-Line Install
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/Perseus-Computing-LLC/mimir/main/scripts/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/Perseus-Computing-LLC/mneme/main/scripts/install.sh | sh
 ```
 
 That's it. Mneme is installed to `~/.local/bin/mneme`. Start it:
@@ -463,7 +463,7 @@ Mneme is a **local-first MCP server** — it runs entirely on your machine.
 
 ### Contact
 - **Email:** privacy@perseus.observer
-- **GitHub:** [Perseus-Computing-LLC/mimir](https://github.com/Perseus-Computing-LLC/mimir)
+- **GitHub:** [Perseus-Computing-LLC/mneme](https://github.com/Perseus-Computing-LLC/mneme)
 
 ## License
 

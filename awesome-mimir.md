@@ -15,27 +15,27 @@
 
 ## Official Resources
 
-- [Mimir GitHub Repo](https://github.com/Perseus-Computing-LLC/mimir) — The Mimir source
-- [Roadmap](https://github.com/Perseus-Computing-LLC/mimir/blob/main/ROADMAP.md)
-- [Contributing Guide](https://github.com/Perseus-Computing-LLC/mimir/blob/main/CONTRIBUTING.md)
-- [Security Policy](https://github.com/Perseus-Computing-LLC/mimir/blob/main/SECURITY.md)
+- [Mimir GitHub Repo](https://github.com/Perseus-Computing-LLC/mneme) — The Mimir source
+- [Roadmap](https://github.com/Perseus-Computing-LLC/mneme/blob/main/ROADMAP.md)
+- [Contributing Guide](https://github.com/Perseus-Computing-LLC/mneme/blob/main/CONTRIBUTING.md)
+- [Security Policy](https://github.com/Perseus-Computing-LLC/mneme/blob/main/SECURITY.md)
 
 ## Framework Integrations
 
 Mimir adapters for popular AI agent frameworks:
 
 ### LangGraph (LangChain)
-- [mimir-langgraph](https://github.com/Perseus-Computing-LLC/mimir/tree/main/integrations/langgraph) — `MimirStore` implementing `BaseStore`
+- [mimir-langgraph](https://github.com/Perseus-Computing-LLC/mneme/tree/main/integrations/langgraph) — `MimirStore` implementing `BaseStore`
 - Drop-in persistent memory for LangGraph agents
 - `pip install -e integrations/langgraph/`
 
 ### CrewAI
-- [mimir-crewai](https://github.com/Perseus-Computing-LLC/mimir/tree/main/integrations/crewai) — `MimirMemoryTool` as a CrewAI agent tool
+- [mimir-crewai](https://github.com/Perseus-Computing-LLC/mneme/tree/main/integrations/crewai) — `MimirMemoryTool` as a CrewAI agent tool
 - Agents can remember, recall, journal, and get context
 - `pip install -e integrations/crewai/`
 
 ### AutoGen (AG2 / autogen-core)
-- [mimir-autogen](https://github.com/Perseus-Computing-LLC/mimir/tree/main/integrations/autogen) — `MimirMemory` implementing `autogen_core.memory.Memory`
+- [mimir-autogen](https://github.com/Perseus-Computing-LLC/mneme/tree/main/integrations/autogen) — `MimirMemory` implementing `autogen_core.memory.Memory`
 - Context injection before each inference turn
 - `pip install -e integrations/autogen/`
 
@@ -62,8 +62,8 @@ Mimir works with any MCP host. Configuration is one line:
 ```
 
 Tested and confirmed working with:
-- [Claude Desktop](https://claude.ai/download) — [config guide](https://github.com/Perseus-Computing-LLC/mimir/blob/main/docs/integration/claude-code.md)
-- [Cursor](https://cursor.com) — [config guide](https://github.com/Perseus-Computing-LLC/mimir/blob/main/docs/integration/cursor.md)
+- [Claude Desktop](https://claude.ai/download) — [config guide](https://github.com/Perseus-Computing-LLC/mneme/blob/main/docs/integration/claude-code.md)
+- [Cursor](https://cursor.com) — [config guide](https://github.com/Perseus-Computing-LLC/mneme/blob/main/docs/integration/cursor.md)
 - [Hermes Agent](https://github.com/nousresearch/hermes-agent)
 - [Perseus](https://perseus.observer) — native integration
 - [OpenClaw](https://openclaw.ai)
@@ -93,7 +93,7 @@ Tested and confirmed working with:
 
 ## Community Projects
 
-*Add your project here! Open a PR to [awesome-mimir.md](https://github.com/Perseus-Computing-LLC/mimir/blob/main/awesome-mimir.md).*
+*Add your project here! Open a PR to [awesome-mimir.md](https://github.com/Perseus-Computing-LLC/mneme/blob/main/awesome-mimir.md).*
 
 ## Articles & Tutorials
 
@@ -101,9 +101,9 @@ Tested and confirmed working with:
 
 ## Comparisons
 
-- [Mimir vs Mem0](https://github.com/Perseus-Computing-LLC/mimir/blob/main/docs/comparison/mimir-vs-mem0.md) — Local-first vs cloud-only
-- [Mimir vs Letta](https://github.com/Perseus-Computing-LLC/mimir/blob/main/docs/comparison/mimir-vs-letta.md) — Memory engine vs agent runtime
-- [Mimir vs Zep](https://github.com/Perseus-Computing-LLC/mimir/blob/main/docs/comparison/mimir-vs-zep.md) — Single binary vs infrastructure
+- [Mimir vs Mem0](https://github.com/Perseus-Computing-LLC/mneme/blob/main/docs/comparison/mimir-vs-mem0.md) — Local-first vs cloud-only
+- [Mimir vs Letta](https://github.com/Perseus-Computing-LLC/mneme/blob/main/docs/comparison/mimir-vs-letta.md) — Memory engine vs agent runtime
+- [Mimir vs Zep](https://github.com/Perseus-Computing-LLC/mneme/blob/main/docs/comparison/mimir-vs-zep.md) — Single binary vs infrastructure
 
 ## Key Differentiators
 
@@ -120,6 +120,6 @@ Why Mimir stands out:
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/Perseus-Computing-LLC/mimir/blob/main/CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/Perseus-Computing-LLC/mneme/blob/main/CONTRIBUTING.md).
 
 To add your project/resource to this list, open a PR against the `awesome-mimir.md` file.

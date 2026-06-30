@@ -3,7 +3,7 @@
 
 **Package:** mimir v2.0.0
 **License:** MIT
-**Repository:** https://github.com/Perseus-Computing-LLC/mimir
+**Repository:** https://github.com/Perseus-Computing-LLC/mneme
 **Language:** Rust (edition 2021)
 **Format:** SPDX Lite / NTIA Minimum Elements
 

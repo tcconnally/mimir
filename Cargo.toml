@@ -1,9 +1,9 @@
 [package]
 name = "mneme"
-version = "2.7.0"
+version = "2.8.0"
 edition = "2021"
 description = "Persistent memory engine for AI agents — MCP JSON-RPC stdio server"
-repository = "https://github.com/Perseus-Computing-LLC/mimir"
+repository = "https://github.com/Perseus-Computing-LLC/mneme"
 license = "MIT"
 
 [[bin]]

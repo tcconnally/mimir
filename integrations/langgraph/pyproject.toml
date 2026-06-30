@@ -24,8 +24,8 @@ dependencies = [
 dev = ["pytest", "pytest-asyncio"]
 
 [project.urls]
-Homepage = "https://github.com/Perseus-Computing-LLC/mimir"
-Repository = "https://github.com/Perseus-Computing-LLC/mimir"
+Homepage = "https://github.com/Perseus-Computing-LLC/mneme"
+Repository = "https://github.com/Perseus-Computing-LLC/mneme"
 
 [tool.setuptools]
 packages = ["mimir_langgraph"]

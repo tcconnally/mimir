@@ -85,14 +85,14 @@ Choose one:
 **Download binary (fastest):**
 ```bash
 # Linux x86_64
-curl -L https://github.com/Perseus-Computing-LLC/mimir/releases/latest/download/mimir-linux-x86_64 -o mimir
+curl -L https://github.com/Perseus-Computing-LLC/mneme/releases/latest/download/mimir-linux-x86_64 -o mimir
 chmod +x mimir
 sudo mv mimir /usr/local/bin/
 ```
 
 **Build from source (requires Rust):**
 ```bash
-git clone https://github.com/Perseus-Computing-LLC/mimir.git
+git clone https://github.com/Perseus-Computing-LLC/mneme.git
 cd mimir
 cargo build --release
 sudo cp target/release/mimir /usr/local/bin/
@@ -214,7 +214,7 @@ mimir --db ~/.openclaw/mimir/mimir.db --vault-export ~/mimir-vault/
 
 ## Links
 
-- GitHub: https://github.com/Perseus-Computing-LLC/mimir
+- GitHub: https://github.com/Perseus-Computing-LLC/mneme
 - Website: https://perseus.observer/mimir
 - Python client: https://pypi.org/project/mimir-client/
 - Smithery: https://smithery.ai/server/mimir

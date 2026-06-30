@@ -81,6 +81,6 @@ LangGraph's BaseStore interface maps cleanly onto Mimir's entity model:
 
 ## Requirements
 
-- Mimir v1.0.0+ installed (`curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mimir/main/scripts/bootstrap.sh | bash`)
+- Mimir v1.0.0+ installed (`curl -sSL https://raw.githubusercontent.com/Perseus-Computing-LLC/mneme/main/scripts/bootstrap.sh | bash`)
 - LangGraph >= 0.2.0
 - Python 3.10+
