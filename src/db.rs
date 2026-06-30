@@ -881,6 +881,14 @@ impl Database {
     const CORE_THRESHOLD: i64 = 20; // ≥20 retrievals → core
     const WORKING_THRESHOLD: i64 = 5; // ≥5 retrievals → working
 
+    /// Decay floor for verified entities (#298). Curated/verified facts match
+    /// few queries and so are rarely recall-boosted; without a floor they decay
+    /// below the 0.05 auto-archive threshold and are silently forgotten, while
+    /// broad unverified turns that match everything stay hot. A verified entity's
+    /// decay_score never drops below this, so it is never auto-archived by the
+    /// forgetting curve. Well above the 0.05 archive threshold.
+    const VERIFIED_DECAY_FLOOR: f64 = 0.2;
+
     /// Compute Ebbinghaus decay score based on time since last access.
     /// decay = e^(-elapsed_ms / half_life_ms)
     /// Returns value in [0.0, 1.0] where 1.0 = just accessed.
@@ -978,22 +986,28 @@ impl Database {
         // Update decay_score for non-archived entities, optionally capped
         let sql = if let Some(max) = max_entities {
             format!(
-                "SELECT id, last_accessed_unix_ms FROM entities WHERE archived = 0 LIMIT {}",
+                "SELECT id, last_accessed_unix_ms, verified FROM entities WHERE archived = 0 LIMIT {}",
                 max
             )
         } else {
-            "SELECT id, last_accessed_unix_ms FROM entities WHERE archived = 0".to_string()
+            "SELECT id, last_accessed_unix_ms, verified FROM entities WHERE archived = 0".to_string()
         };
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, bool>(2).unwrap_or(false),
+            ))
+        })?;
 
         let mut updated = 0i64;
         let mut auto_archived = 0i64;
-        let mut batch: Vec<(String, i64)> = Vec::with_capacity(1000);
+        let mut batch: Vec<(String, i64, bool)> = Vec::with_capacity(1000);
         let now_val = now;
 
         // Helper: flush the current batch in a transaction.
-        let flush_batch = |batch: &mut Vec<(String, i64)>,
+        let flush_batch = |batch: &mut Vec<(String, i64, bool)>,
                             updated: &mut i64,
                             auto_archived: &mut i64|
          -> Result<(), Box<dyn std::error::Error>> {
@@ -1001,14 +1015,20 @@ impl Database {
                 return Ok(());
             }
             let tx = conn.unchecked_transaction()?;
-            for (id, last_access) in batch.drain(..) {
-                let new_decay = Self::compute_decay(last_access, now_val);
+            for (id, last_access, verified) in batch.drain(..) {
+                let mut new_decay = Self::compute_decay(last_access, now_val);
+                // #298: verified/curated facts get a decay floor so the
+                // forgetting curve can never auto-archive them.
+                if verified {
+                    new_decay = new_decay.max(Self::VERIFIED_DECAY_FLOOR);
+                }
                 tx.execute(
                     "UPDATE entities SET decay_score = ?1 WHERE id = ?2",
                     params![new_decay, &id],
                 )?;
                 *updated += 1;
-                // Auto-archive entities that have fully decayed (decay < 0.05)
+                // Auto-archive entities that have fully decayed (decay < 0.05).
+                // Verified entities are floored above this and never reach it.
                 if new_decay < 0.05 {
                     tx.execute(
                         "UPDATE entities SET archived = 1, archive_reason = 'decay threshold' WHERE id = ?1 AND archived = 0",
@@ -1027,8 +1047,8 @@ impl Database {
         };
 
         for row in rows {
-            let (id, last_access) = row?;
-            batch.push((id, last_access));
+            let (id, last_access, verified) = row?;
+            batch.push((id, last_access, verified));
             if batch.len() >= 1000 {
                 flush_batch(&mut batch, &mut updated, &mut auto_archived)?;
             }
@@ -4623,6 +4643,62 @@ mod tests {
     fn health_check_on_new_db() {
         let (db, path) = temp_db();
         assert!(db.health_check());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn decay_tick_floors_verified_and_never_archives_them() {
+        // #298: a verified curated fact and an unverified turn, equally stale.
+        // The verified one must be floored and survive; the unverified one must
+        // fully decay and auto-archive.
+        let (db, path) = temp_db();
+
+        let mut v = make_entity("e-verified", "decision", "curated-fact", r#"{"note":"curated"}"#);
+        v.verified = true;
+        db.remember(&v).unwrap();
+        let u = make_entity("e-unverified", "conversation", "turn-x", r#"{"note":"chatter"}"#);
+        db.remember(&u).unwrap();
+
+        // Backdate both well past the auto-archive horizon (60 days).
+        let stale = now_ms() - 60 * 24 * 60 * 60 * 1000;
+        {
+            let conn = db.conn().unwrap();
+            conn.execute(
+                "UPDATE entities SET last_accessed_unix_ms = ?1, decay_score = 1.0",
+                rusqlite::params![stale],
+            )
+            .unwrap();
+        }
+
+        let report = db.decay_tick().unwrap();
+        assert!(report.entities_checked >= 2);
+
+        let read = |cat: &str, key: &str| -> (bool, f64) {
+            let conn = db.conn().unwrap();
+            conn.query_row(
+                "SELECT archived, decay_score FROM entities WHERE category = ?1 AND key = ?2",
+                rusqlite::params![cat, key],
+                |r| Ok((r.get::<_, bool>(0)?, r.get::<_, f64>(1)?)),
+            )
+            .unwrap()
+        };
+
+        let (v_archived, v_decay) = read("decision", "curated-fact");
+        assert!(!v_archived, "verified entity must not be auto-archived by decay");
+        assert!(
+            v_decay >= Database::VERIFIED_DECAY_FLOOR - 1e-9,
+            "verified decay_score {} must respect the floor",
+            v_decay
+        );
+
+        let (u_archived, u_decay) = read("conversation", "turn-x");
+        assert!(u_archived, "stale unverified entity should auto-archive");
+        assert!(
+            u_decay < 0.05,
+            "unverified decay_score {} should be below archive threshold",
+            u_decay
+        );
+
         let _ = fs::remove_file(&path);
     }
 
