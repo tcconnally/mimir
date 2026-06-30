@@ -84,6 +84,19 @@ mkdir -p "$BIN_DIR"
 chmod +x "$TMP_DIR/mimir"
 mv "$TMP_DIR/mimir" "$BIN_DIR/mimir"
 
+# macOS: ad-hoc code-sign so the binary is not killed on launch (#312). On Apple
+# Silicon an unsigned binary is SIGKILLed (Killed: 9) by the OS binary policy —
+# even with no quarantine xattr — so `mimir --version`/`doctor` would produce no
+# output. `codesign --sign -` applies an ad-hoc signature; harmless on Intel.
+if [ "$OS" = "apple-darwin" ] && command -v codesign >/dev/null 2>&1; then
+    if codesign --force --sign - "$BIN_DIR/mimir" 2>/dev/null; then
+        echo "→ Ad-hoc code-signed for macOS"
+    else
+        echo -e "${YELLOW}⚠  Could not code-sign. If 'mimir' is Killed: 9, run:${RESET}"
+        echo "     codesign --sign - $BIN_DIR/mimir"
+    fi
+fi
+
 # Check if BIN_DIR is on PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -qxF "$BIN_DIR"; then
     case "$SHELL" in

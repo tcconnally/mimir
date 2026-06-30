@@ -28,6 +28,16 @@ That's it. Mimir is installed to `~/.local/bin/mimir`. Start it:
 mimir serve --db ~/.mimir/data/mimir.db
 ```
 
+> **macOS note.** On Apple Silicon, an unsigned binary is killed on launch
+> (`Killed: 9`, no output) by the OS binary policy — even with no quarantine
+> attribute. The installer ad-hoc code-signs Mimir for you. If you build or copy
+> the binary yourself (`cargo build --release && cp target/release/mimir
+> ~/.cargo/bin/`), sign it once after each rebuild:
+>
+> ```bash
+> codesign --sign - "$(command -v mimir)"
+> ```
+
 Connect any MCP host (Claude Desktop, Cursor, Hermes Agent, Perseus, etc.):
 
 ```json
