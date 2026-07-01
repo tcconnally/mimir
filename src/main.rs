@@ -241,6 +241,19 @@ enum Commands {
         key_file: String,
     },
 
+    /// Re-encrypt every entity's AAD binding from the legacy "category:key"
+    /// scheme to the collision-free length-prefixed scheme. Safe to re-run:
+    /// already-migrated rows are detected and left untouched. No-op if the
+    /// database isn't encrypted.
+    RekeyAad {
+        /// SQLite database path
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+        /// Path to AES-256-GCM encryption key file (base64-encoded, 32 bytes)
+        #[arg(long)]
+        encryption_key: String,
+    },
+
     /// Archive (soft-delete) a single entity by category + key
     Forget {
         /// SQLite database path
@@ -375,6 +388,7 @@ impl Commands {
         match self {
             Commands::Write { db, .. }
             | Commands::Serve { db, .. }
+            | Commands::RekeyAad { db, .. }
             | Commands::Forget { db, .. }
             | Commands::Prune { db, .. }
             | Commands::Decay { db, .. }
@@ -588,6 +602,31 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("mimir: failed to write key file {}: {}", expanded, e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::RekeyAad {
+            db: ref db_path,
+            ref encryption_key,
+        }) => {
+            let mut database = open_db_or_exit(db_path);
+            if let Err(e) = database.set_encryption(encryption_key) {
+                eprintln!("mimir: encryption setup failed: {}", e);
+                std::process::exit(1);
+            }
+            match database.rekey_aad() {
+                Ok((migrated, already_current, failed)) => {
+                    println!(
+                        "rekey-aad: {} migrated, {} already current, {} failed to authenticate (see stderr)",
+                        migrated, already_current, failed
+                    );
+                    if failed > 0 {
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("mimir: rekey-aad failed: {}", e);
                     std::process::exit(1);
                 }
             }

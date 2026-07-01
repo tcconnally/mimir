@@ -117,6 +117,105 @@ fn excluded_recall_categories() -> &'static Vec<String> {
 }
 
 impl Database {
+    /// Canonical AAD (additional authenticated data) binding ciphertext to its
+    /// (category, key) identity. Length-prefixed so the encoding is
+    /// unambiguous even if `category` or `key` contain ':' -- a bare
+    /// "category:key" join (the legacy scheme below) let two different
+    /// (category, key) pairs collide, e.g. category="a:b" key="c" and
+    /// category="a" key="b:c" both joined to "a:b:c", defeating the
+    /// tamper-detection guarantee for the colliding pair.
+    fn build_aad(category: &str, key: &str) -> String {
+        format!("{}:{}:{}", category.len(), category, key)
+    }
+
+    /// The OLD, collision-prone AAD scheme. Kept ONLY as a read fallback for
+    /// rows encrypted before `rekey_aad()` migrates them to `build_aad`.
+    /// Never used for new writes.
+    fn legacy_aad(category: &str, key: &str) -> String {
+        format!("{}:{}", category, key)
+    }
+
+    /// Decrypt a stored body, trying the current AAD scheme first and
+    /// falling back to the legacy scheme -- so reads keep working on rows
+    /// that haven't been through `rekey_aad()` yet.
+    fn decrypt_body_with_aad_fallback(
+        enc: &EncryptionManager,
+        raw: &str,
+        category: &str,
+        key: &str,
+    ) -> crate::encryption::BodyDecrypt {
+        match enc.decrypt_body(raw, Self::build_aad(category, key).as_bytes()) {
+            crate::encryption::BodyDecrypt::AuthFailed(_) => {
+                enc.decrypt_body(raw, Self::legacy_aad(category, key).as_bytes())
+            }
+            other => other,
+        }
+    }
+
+    /// One-time, idempotent re-encryption of every entity's AAD binding from
+    /// the legacy `"category:key"` scheme to the collision-free
+    /// length-prefixed scheme (`build_aad`). Safe to re-run: rows already on
+    /// the new scheme (or unencrypted/legacy-plaintext) are detected and left
+    /// untouched. No-op if encryption is not enabled.
+    ///
+    /// Returns `(migrated, already_current, failed)`. A row lands in `failed`
+    /// only if it authenticates under NEITHER scheme (wrong key, tampering,
+    /// or genuine corruption) -- it is left untouched rather than guessed at.
+    pub fn rekey_aad(&self) -> Result<(usize, usize, usize), Box<dyn std::error::Error>> {
+        let enc = match &self.encryption {
+            Some(enc) => enc,
+            None => return Ok((0, 0, 0)),
+        };
+        let conn = self.conn()?;
+        let rows: Vec<(i64, String, String, String)> = {
+            let mut stmt =
+                conn.prepare("SELECT rowid, category, key, body_json FROM entities")?;
+            let mapped = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        let (mut migrated, mut already_current, mut failed) = (0usize, 0usize, 0usize);
+        for (rowid, category, key, raw_body) in rows {
+            match enc.decrypt_body(&raw_body, Self::build_aad(&category, &key).as_bytes()) {
+                crate::encryption::BodyDecrypt::Plaintext(_)
+                | crate::encryption::BodyDecrypt::LegacyPlaintext(_) => {
+                    already_current += 1;
+                    continue;
+                }
+                crate::encryption::BodyDecrypt::AuthFailed(_) => {}
+            }
+            match enc.decrypt_body(&raw_body, Self::legacy_aad(&category, &key).as_bytes()) {
+                crate::encryption::BodyDecrypt::Plaintext(plain) => {
+                    let new_cipher = enc
+                        .encrypt(&plain, Self::build_aad(&category, &key).as_bytes())
+                        .map_err(|e| {
+                            format!("rekey_aad: re-encrypt failed for {}:{}: {}", category, key, e)
+                        })?;
+                    conn.execute(
+                        "UPDATE entities SET body_json = ?1 WHERE rowid = ?2",
+                        params![new_cipher, rowid],
+                    )?;
+                    migrated += 1;
+                }
+                _ => {
+                    eprintln!(
+                        "mimir: rekey_aad could not authenticate {}:{} under either AAD scheme -- left untouched",
+                        category, key
+                    );
+                    failed += 1;
+                }
+            }
+        }
+        Ok((migrated, already_current, failed))
+    }
+
     /// Open a database at `path`, initializing the v0.2.0 schema if needed.
     pub fn open(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         // #210: a connection pool lets concurrent HTTP/SSE requests read in
@@ -807,7 +906,9 @@ impl Database {
             // `remember`, which inserts the plaintext body into FTS). A raw
             // INSERT … SELECT body_json here would index base64 ciphertext and
             // silently break all keyword search until re-ingest. Decrypt each row
-            // (AAD = "category:key", matching remember()/entity_from_row) first.
+            // (AAD from build_aad(), with a legacy-scheme fallback for rows not
+            // yet migrated by rekey_aad() -- matching remember()/entity_from_row)
+            // first.
             let rows: Vec<(i64, String, String, String)> = {
                 let mut stmt = tx.prepare(
                     "SELECT rowid, category, key, body_json FROM entities WHERE archived = 0",
@@ -826,12 +927,14 @@ impl Database {
                 tx.prepare("INSERT INTO entities_fts (rowid, body_json) VALUES (?1, ?2)")?;
             let mut count = 0usize;
             for (rowid, category, key, raw_body) in rows {
-                let aad = format!("{}:{}", category, key);
                 // Index decrypted text, or a legacy plaintext row. On an
-                // authentication failure (wrong key / tampered), index an empty
-                // body rather than the ciphertext: putting ciphertext into the
-                // plaintext FTS index would both leak it and corrupt search.
-                let plain = match enc.decrypt_body(&raw_body, aad.as_bytes()) {
+                // authentication failure (wrong key / tampered / neither AAD
+                // scheme matches), index an empty body rather than the
+                // ciphertext: putting ciphertext into the plaintext FTS index
+                // would both leak it and corrupt search.
+                let plain = match Self::decrypt_body_with_aad_fallback(
+                    enc, &raw_body, &category, &key,
+                ) {
                     crate::encryption::BodyDecrypt::Plaintext(s)
                     | crate::encryption::BodyDecrypt::LegacyPlaintext(s) => s,
                     crate::encryption::BodyDecrypt::AuthFailed(e) => {
@@ -1344,7 +1447,7 @@ impl Database {
 
         // Encrypt body_json with category+key as AAD to bind ciphertext to entity identity
         let body_encrypted = if let Some(ref enc) = self.encryption {
-            let aad = format!("{}:{}", entity.category, entity.key);
+            let aad = Self::build_aad(&entity.category, &entity.key);
             enc.encrypt(&entity.body_json, aad.as_bytes())
                 .map_err(|e| format!("Encryption error in remember: {}", e))?
         } else {
@@ -1400,8 +1503,9 @@ impl Database {
                 )
                 .unwrap_or_default();
             let old_plain_body = if let Some(ref enc) = self.encryption {
-                let aad = format!("{}:{}", entity.category, entity.key);
-                match enc.decrypt_body(&old_raw_body, aad.as_bytes()) {
+                match Self::decrypt_body_with_aad_fallback(
+                    enc, &old_raw_body, &entity.category, &entity.key,
+                ) {
                     crate::encryption::BodyDecrypt::Plaintext(s)
                     | crate::encryption::BodyDecrypt::LegacyPlaintext(s) => s,
                     // Can't authenticate the prior body: do NOT compare against
@@ -5099,8 +5203,7 @@ fn entity_from_row(
     let body_json = if let Some(enc) = encryption {
         let cat: String = row.get(1)?;
         let k: String = row.get(2)?;
-        let aad = format!("{}:{}", cat, k);
-        match enc.decrypt_body(&raw_body_json, aad.as_bytes()) {
+        match Database::decrypt_body_with_aad_fallback(enc, &raw_body_json, &cat, &k) {
             // Decrypted ciphertext, or a legacy plaintext row in a mixed DB.
             crate::encryption::BodyDecrypt::Plaintext(s)
             | crate::encryption::BodyDecrypt::LegacyPlaintext(s) => s,
@@ -6918,6 +7021,95 @@ mod tests {
         // Cleanup
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(&path2);
+        let _ = fs::remove_file(&key_path);
+    }
+
+    #[test]
+    fn build_aad_has_no_delimiter_collision() {
+        // The legacy "category:key" join let two different (category, key)
+        // pairs produce the identical AAD string when either side contains
+        // ':' -- e.g. these two pairs both joined to "a:b:c".
+        assert_eq!(Database::legacy_aad("a:b", "c"), Database::legacy_aad("a", "b:c"));
+        // The length-prefixed encoding must NOT collide on the same inputs.
+        assert_ne!(Database::build_aad("a:b", "c"), Database::build_aad("a", "b:c"));
+    }
+
+    #[test]
+    fn rekey_aad_migrates_legacy_rows_and_is_idempotent() {
+        use crate::encryption::EncryptionManager;
+        use std::io::Write;
+
+        let (mut db, path) = temp_db();
+        let key = EncryptionManager::generate_key();
+        let key_path =
+            std::env::temp_dir().join(format!("mimir-test-key-{}.key", uuid::Uuid::new_v4()));
+        let mut f = std::fs::File::create(&key_path).unwrap();
+        f.write_all(key.as_bytes()).unwrap();
+        drop(f);
+        db.set_encryption(key_path.to_str().unwrap()).unwrap();
+
+        // Simulate a row written before this fix: encrypted under the OLD
+        // "category:key" AAD, inserted directly (bypassing remember(), which
+        // always writes the new scheme now).
+        let enc = EncryptionManager::from_key_file(key_path.to_str().unwrap()).unwrap();
+        let legacy_cipher = enc
+            .encrypt(
+                r#"{"content": "pre-migration secret"}"#,
+                Database::legacy_aad("insight", "old-note").as_bytes(),
+            )
+            .unwrap();
+        db.conn().unwrap().execute(
+            "INSERT INTO entities (id, category, key, body_json, status, type, tags, decay_score, retrieval_count, layer, topic_path, archived, archive_reason, links, verified, source, created_at_unix_ms, last_accessed_unix_ms) VALUES (?1, ?2, ?3, ?4, 'active', 'insight', '[]', 1.0, 0, 'working', '', 0, '', '[]', 0, 'agent', 0, 0)",
+            rusqlite::params!["e-legacy", "insight", "old-note", legacy_cipher],
+        ).unwrap();
+
+        // A fresh write (after this fix) uses the new scheme from the start.
+        let fresh = make_entity(
+            "e-fresh",
+            "insight",
+            "new-note",
+            r#"{"content": "post-migration secret"}"#,
+        );
+        db.remember(&fresh).unwrap();
+
+        // Before rekey_aad(): the legacy row still reads correctly (fallback
+        // to the old scheme), so migration is transparent to callers.
+        let before = db.get_entity("insight", "old-note").unwrap().unwrap();
+        assert_eq!(before.body_json, r#"{"content": "pre-migration secret"}"#);
+
+        let (migrated, already_current, failed) = db.rekey_aad().unwrap();
+        assert_eq!(migrated, 1, "only the legacy row should need migrating");
+        assert_eq!(already_current, 1, "the fresh row is already on the new scheme");
+        assert_eq!(failed, 0);
+
+        // Still reads correctly after migration, and the raw column is now
+        // encrypted under the new scheme (decryptable via build_aad alone).
+        let after = db.get_entity("insight", "old-note").unwrap().unwrap();
+        assert_eq!(after.body_json, r#"{"content": "pre-migration secret"}"#);
+        let migrated_raw: String = db
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT body_json FROM entities WHERE category = 'insight' AND key = 'old-note'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let new_scheme_decrypt =
+            enc.decrypt_body(&migrated_raw, Database::build_aad("insight", "old-note").as_bytes());
+        assert!(
+            matches!(new_scheme_decrypt, crate::encryption::BodyDecrypt::Plaintext(ref s)
+                if s == r#"{"content": "pre-migration secret"}"#),
+            "expected the migrated row to authenticate under the new AAD alone"
+        );
+
+        // Idempotent: running it again finds nothing left to migrate.
+        let (migrated2, already_current2, failed2) = db.rekey_aad().unwrap();
+        assert_eq!(migrated2, 0, "re-running rekey_aad should be a no-op");
+        assert_eq!(already_current2, 2);
+        assert_eq!(failed2, 0);
+
+        let _ = fs::remove_file(&path);
         let _ = fs::remove_file(&key_path);
     }
 
