@@ -8,6 +8,9 @@ mimir serve --db ~/.mimir/data/mimir.db
 ```
 
 Run `mimir doctor` to validate your install and print this matrix locally.
+Run `mimir connect --client <name>` to auto-wire a client's config file
+(merges a `mimir` MCP stanza into it, backing up the original first — no
+manual JSON/YAML/TOML editing required).
 
 | Client | Status | Config file | Notes |
 |---|---|---|---|

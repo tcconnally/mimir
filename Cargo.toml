@@ -1,6 +1,6 @@
 [package]
 name = "perseus-vault"
-version = "2.10.0"
+version = "2.11.0"
 edition = "2021"
 description = "Persistent memory engine for AI agents — MCP JSON-RPC stdio server (formerly Mneme/Mimir)"
 repository = "https://github.com/Perseus-Computing-LLC/perseus-vault"

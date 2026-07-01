@@ -378,6 +378,23 @@ enum Commands {
         #[arg(long, default_value_t = default_db_path())]
         db: String,
     },
+
+    /// One-command MCP client setup (PMB-inspired `pmb connect`). Writes/merges
+    /// the `perseus-vault serve --db <path>` stanza into the target client's
+    /// config file. Existing config is preserved (merged, not overwritten);
+    /// a timestamped backup is written before any file is modified.
+    Connect {
+        /// Target MCP client: claude-desktop, claude-code, hermes, cursor,
+        /// windsurf, vscode, zed, codex
+        #[arg(long)]
+        client: String,
+        /// SQLite database path to configure the client with
+        #[arg(long, default_value_t = default_db_path())]
+        db: String,
+        /// Print what would be written without touching any file
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 impl Commands {
@@ -398,7 +415,8 @@ impl Commands {
             | Commands::VaultExport { db, .. }
             | Commands::VaultImport { db, .. }
             | Commands::Purge { db, .. }
-            | Commands::Doctor { db, .. } => Some(db),
+            | Commands::Doctor { db, .. }
+            | Commands::Connect { db, .. } => Some(db),
             Commands::ObsidianSync { .. } | Commands::Migrate { .. } | Commands::Keygen { .. } => {
                 None
             }
@@ -555,7 +573,231 @@ fn run_doctor(db_path: &str) {
         println!("  [OK] {:<24} {}", name, cfg);
     }
     println!("\nPer-client copy-paste snippets: docs/clients/");
+    println!("Tip: run `perseus-vault connect --client <name>` to auto-wire a client's config");
+    println!("     (supported: claude-desktop, claude-code, hermes, cursor, windsurf, vscode, zed, codex)");
     println!("All checks passed: Perseus Vault speaks MCP stdio, so any MCP client works.");
+}
+
+/// PMB-inspired `perseus-vault connect <client>` — one-command MCP wiring.
+/// Locates the client's config file, merges (never overwrites unrelated
+/// content) a `perseus-vault serve --db <path>` stanza into it, and writes a
+/// timestamped backup before touching the file. Supports the same client set
+/// documented in `docs/clients/README.md` / `perseus-vault doctor`.
+fn run_connect(client: &str, db_path: &str, dry_run: bool) {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/root".to_string());
+
+    let bin = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "perseus-vault".to_string());
+
+    // (config_path, kind) — kind picks the merge strategy below.
+    let target: Option<(String, &str)> = match client {
+        "claude-desktop" => {
+            // macOS path; Linux/Windows users can pass a custom path via
+            // MIMIR_CONNECT_CONFIG if their install differs.
+            let p = std::env::var("MIMIR_CONNECT_CONFIG").unwrap_or_else(|_| {
+                format!(
+                    "{}/Library/Application Support/Claude/claude_desktop_config.json",
+                    home
+                )
+            });
+            Some((p, "json_mcpServers"))
+        }
+        "claude-code" => Some((
+            std::env::var("MIMIR_CONNECT_CONFIG").unwrap_or_else(|_| ".mcp.json".to_string()),
+            "json_mcpServers",
+        )),
+        "hermes" => Some((
+            std::env::var("MIMIR_CONNECT_CONFIG")
+                .unwrap_or_else(|_| format!("{}/.hermes/config.yaml", home)),
+            "yaml_hermes",
+        )),
+        "cursor" => Some((
+            std::env::var("MIMIR_CONNECT_CONFIG").unwrap_or_else(|_| ".cursor/mcp.json".to_string()),
+            "json_mcpServers",
+        )),
+        "windsurf" => Some((
+            std::env::var("MIMIR_CONNECT_CONFIG")
+                .unwrap_or_else(|_| format!("{}/.codeium/windsurf/mcp_config.json", home)),
+            "json_mcpServers",
+        )),
+        "vscode" => Some((
+            std::env::var("MIMIR_CONNECT_CONFIG").unwrap_or_else(|_| ".vscode/mcp.json".to_string()),
+            "json_mcpServers",
+        )),
+        "zed" => Some((
+            std::env::var("MIMIR_CONNECT_CONFIG")
+                .unwrap_or_else(|_| format!("{}/.config/zed/settings.json", home)),
+            "json_contextServers",
+        )),
+        "codex" => Some((
+            std::env::var("MIMIR_CONNECT_CONFIG")
+                .unwrap_or_else(|_| format!("{}/.codex/config.toml", home)),
+            "toml_codex",
+        )),
+        other => {
+            eprintln!(
+                "mimir: unknown --client '{}'. Supported: claude-desktop, claude-code, hermes, cursor, windsurf, vscode, zed, codex",
+                other
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let (config_path, kind) = target.expect("checked above");
+    let path = std::path::Path::new(&config_path);
+
+    println!("perseus-vault connect — client: {}", client);
+    println!("  config: {}", config_path);
+    println!("  binary: {}", bin);
+    println!("  db:     {}", db_path);
+
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+
+    let new_content = match kind {
+        "json_mcpServers" | "json_contextServers" => {
+            let mut root: serde_json::Value = if existing.trim().is_empty() {
+                serde_json::json!({})
+            } else {
+                match serde_json::from_str(&existing) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!(
+                            "mimir: {} is not valid JSON ({}); refusing to merge. Fix or remove it and re-run.",
+                            config_path, e
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            };
+            let key = if kind == "json_contextServers" {
+                "context_servers"
+            } else {
+                "mcpServers"
+            };
+            let entry = if kind == "json_contextServers" {
+                serde_json::json!({ "command": { "path": bin, "args": ["serve", "--db", db_path] } })
+            } else {
+                serde_json::json!({ "command": bin, "args": ["serve", "--db", db_path] })
+            };
+            if !root.is_object() {
+                eprintln!("mimir: {} top level is not a JSON object; refusing to merge.", config_path);
+                std::process::exit(1);
+            }
+            let obj = root.as_object_mut().unwrap();
+            let servers = obj
+                .entry(key.to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if !servers.is_object() {
+                eprintln!("mimir: {}.{} is not an object; refusing to merge.", config_path, key);
+                std::process::exit(1);
+            }
+            servers
+                .as_object_mut()
+                .unwrap()
+                .insert("mimir".to_string(), entry);
+            serde_json::to_string_pretty(&root).unwrap() + "\n"
+        }
+        "yaml_hermes" => {
+            let mut root: serde_yaml::Value = if existing.trim().is_empty() {
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+            } else {
+                match serde_yaml::from_str(&existing) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!(
+                            "mimir: {} is not valid YAML ({}); refusing to merge. Fix or remove it and re-run.",
+                            config_path, e
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            };
+            if !root.is_mapping() {
+                root = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+            }
+            let map = root.as_mapping_mut().unwrap();
+            let servers_key = serde_yaml::Value::String("mcp_servers".to_string());
+            let servers = map
+                .entry(servers_key)
+                .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+            if !servers.is_mapping() {
+                *servers = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+            }
+            let entry = serde_yaml::to_value(serde_json::json!({
+                "command": bin,
+                "args": ["serve", "--db", db_path]
+            }))
+            .unwrap();
+            servers
+                .as_mapping_mut()
+                .unwrap()
+                .insert(serde_yaml::Value::String("mimir".to_string()), entry);
+            serde_yaml::to_string(&root).unwrap_or_default()
+        }
+        "toml_codex" => {
+            // Codex's TOML config is simple enough to hand-merge: append (or
+            // replace) a [mcp_servers.mimir] table without a full TOML parser
+            // dependency. If a stanza already exists, splice it out first.
+            let header = "[mcp_servers.mimir]";
+            let stanza = format!(
+                "{}\ncommand = \"{}\"\nargs = [\"serve\", \"--db\", \"{}\"]\n",
+                header, bin, db_path
+            );
+            if let Some(start) = existing.find(header) {
+                let after = &existing[start + header.len()..];
+                let end_offset = after
+                    .find("\n[")
+                    .map(|i| start + header.len() + i + 1)
+                    .unwrap_or(existing.len());
+                format!("{}{}{}", &existing[..start], stanza, &existing[end_offset..])
+            } else if existing.trim().is_empty() {
+                stanza
+            } else {
+                format!("{}\n{}", existing.trim_end(), stanza)
+            }
+        }
+        _ => unreachable!(),
+    };
+
+    if dry_run {
+        println!("\n--- dry run: would write {} ---", config_path);
+        println!("{}", new_content);
+        return;
+    }
+
+    if path.exists() {
+        let backup = format!(
+            "{}.bak-{}",
+            config_path,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        );
+        if let Err(e) = std::fs::copy(path, &backup) {
+            eprintln!("mimir: failed to write backup {}: {}", backup, e);
+            std::process::exit(1);
+        }
+        println!("  backup: {}", backup);
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    match std::fs::write(path, new_content) {
+        Ok(_) => {
+            println!("  wrote:  {}", config_path);
+            println!("\nDone. Restart {} to pick up the new MCP server.", client);
+        }
+        Err(e) => {
+            eprintln!("mimir: failed to write {}: {}", config_path, e);
+            std::process::exit(1);
+        }
+    }
 }
 
 fn main() {
@@ -707,6 +949,13 @@ fn main() {
         }
         Some(Commands::Doctor { db: ref db_path }) => {
             run_doctor(db_path);
+        }
+        Some(Commands::Connect {
+            ref client,
+            db: ref db_path,
+            dry_run,
+        }) => {
+            run_connect(client, db_path, dry_run);
         }
         Some(Commands::StateDigest { db: ref db_path }) => {
             let database = open_db_or_exit(db_path);
@@ -1408,6 +1657,146 @@ mod tests {
             Some(Commands::Serve { db, .. }) => assert_eq!(db, "/tmp/top.db"),
             _ => panic!("expected serve subcommand"),
         }
+    }
+
+    #[test]
+    fn parses_connect_with_client_and_db() {
+        let cli = Cli::parse_from([
+            "mimir", "connect", "--client", "claude-code", "--db", "/tmp/connect.db",
+        ]);
+        match cli.command {
+            Some(Commands::Connect {
+                client, db, dry_run, ..
+            }) => {
+                assert_eq!(client, "claude-code");
+                assert_eq!(db, "/tmp/connect.db");
+                assert!(!dry_run);
+            }
+            _ => panic!("expected connect subcommand"),
+        }
+    }
+
+    #[test]
+    fn parses_connect_dry_run_flag() {
+        let cli = Cli::parse_from(["mimir", "connect", "--client", "cursor", "--dry-run"]);
+        match cli.command {
+            Some(Commands::Connect { dry_run, .. }) => assert!(dry_run),
+            _ => panic!("expected connect subcommand"),
+        }
+    }
+
+    #[test]
+    fn connect_creates_new_json_mcp_config() {
+        // Fresh .mcp.json (claude-code style) with no pre-existing file.
+        let tmp = std::env::temp_dir().join(format!("mimir-connect-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+
+        run_connect("claude-code", "/tmp/some.db", false);
+
+        let content = std::fs::read_to_string(tmp.join(".mcp.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["mcpServers"]["mimir"]["args"][1], "--db");
+        assert_eq!(v["mcpServers"]["mimir"]["args"][2], "/tmp/some.db");
+
+        std::env::set_current_dir(&cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn connect_merges_into_existing_json_without_clobbering_other_keys() {
+        let tmp = std::env::temp_dir().join(format!("mimir-connect-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+
+        std::fs::write(
+            ".mcp.json",
+            r#"{"mcpServers": {"other-tool": {"command": "foo", "args": []}}, "unrelatedTopLevelKey": true}"#,
+        )
+        .unwrap();
+
+        run_connect("claude-code", "/tmp/merge.db", false);
+
+        let content = std::fs::read_to_string(".mcp.json").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(v["mcpServers"]["mimir"].is_object(), "mimir stanza missing: {}", content);
+        assert_eq!(v["mcpServers"]["other-tool"]["command"], "foo", "unrelated server dropped: {}", content);
+        assert_eq!(v["unrelatedTopLevelKey"], true, "unrelated top-level key dropped: {}", content);
+
+        // A timestamped backup of the pre-merge file must exist.
+        let backups: Vec<_> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".mcp.json.bak-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "expected exactly one backup file");
+
+        std::env::set_current_dir(&cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn connect_dry_run_does_not_write_file() {
+        let tmp = std::env::temp_dir().join(format!("mimir-connect-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+
+        run_connect("claude-code", "/tmp/dry.db", true);
+        assert!(!tmp.join(".mcp.json").exists(), "dry-run must not write any file");
+
+        std::env::set_current_dir(&cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn connect_writes_codex_toml_stanza_and_is_idempotent_on_rerun() {
+        let tmp = std::env::temp_dir().join(format!("mimir-connect-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let config_path = tmp.join("config.toml");
+        std::env::set_var("MIMIR_CONNECT_CONFIG", config_path.to_str().unwrap());
+
+        run_connect("codex", "/tmp/codex1.db", false);
+        let first = std::fs::read_to_string(&config_path).unwrap();
+        assert!(first.contains("[mcp_servers.mimir]"));
+        assert!(first.contains("/tmp/codex1.db"));
+
+        // Re-running with a different db must REPLACE the existing stanza,
+        // not append a duplicate [mcp_servers.mimir] table.
+        run_connect("codex", "/tmp/codex2.db", false);
+        let second = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(
+            second.matches("[mcp_servers.mimir]").count(),
+            1,
+            "stanza must be replaced, not duplicated:\n{}",
+            second
+        );
+        assert!(second.contains("/tmp/codex2.db"));
+        assert!(!second.contains("/tmp/codex1.db"), "stale db path should be gone:\n{}", second);
+
+        std::env::remove_var("MIMIR_CONNECT_CONFIG");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn connect_writes_hermes_yaml_config() {
+        let tmp = std::env::temp_dir().join(format!("mimir-connect-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let config_path = tmp.join("config.yaml");
+        std::env::set_var("MIMIR_CONNECT_CONFIG", config_path.to_str().unwrap());
+
+        run_connect("hermes", "/tmp/hermes.db", false);
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
+        assert_eq!(
+            v["mcp_servers"]["mimir"]["args"][2].as_str(),
+            Some("/tmp/hermes.db")
+        );
+
+        std::env::remove_var("MIMIR_CONNECT_CONFIG");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
