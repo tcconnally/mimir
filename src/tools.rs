@@ -10,33 +10,67 @@ use crate::models::{
 
 // ─── Deserialization structs ────────────────────────────────────
 
+/// #330: many MCP clients send explicit JSON `null` for an optional field
+/// they didn't set (rather than omitting the key), because the tool schema
+/// lists the field as optional/defaulted. serde's `#[serde(default = "...")]`
+/// only fires when the key is *absent*; a present `null` still hits the
+/// field's real type and fails with a misleading "invalid type: null,
+/// expected a string/boolean/f64/..." error that names the wrong field
+/// entirely once combined with `#[serde(deny_unknown_fields)]`-style
+/// confusion. This helper treats an explicit `null` the same as an absent
+/// key by falling through to `Default::default()` for the field type; pair
+/// it with `#[serde(default = "...", deserialize_with = "null_as_default")]`
+/// when the field also needs a non-Default::default() default value.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RememberArgs {
     pub category: String,
     pub key: String,
     pub body_json: String,
-    #[serde(default = "default_status")]
+    #[serde(
+        default = "default_status",
+        deserialize_with = "null_as_default_status"
+    )]
     pub status: String,
-    #[serde(default = "default_entity_type")]
-    #[serde(rename = "type")]
+    #[serde(
+        default = "default_entity_type",
+        rename = "type",
+        deserialize_with = "null_as_default_entity_type"
+    )]
     pub entity_type: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub tags: Vec<String>,
-    #[serde(default = "default_importance")]
+    #[serde(
+        default = "default_importance",
+        deserialize_with = "null_as_default_importance"
+    )]
     pub importance: f64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub topic_path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub recall_when: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub always_on: bool,
-    #[serde(default = "default_certainty")]
+    #[serde(
+        default = "default_certainty",
+        deserialize_with = "null_as_default_certainty"
+    )]
     pub certainty: f64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub workspace_hash: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub agent_id: String,
-    #[serde(default = "default_visibility")]
+    #[serde(
+        default = "default_visibility",
+        deserialize_with = "null_as_default_visibility"
+    )]
     pub visibility: String,
     #[serde(default)]
     pub layer: Option<String>,
@@ -62,6 +96,26 @@ fn default_importance() -> f64 {
     0.5
 }
 
+/// #330: same null-tolerance as `null_as_default`, but falls through to a
+/// named default function instead of `T::default()` for fields whose
+/// "unset" value isn't the type's zero value (e.g. status="active", not "").
+macro_rules! null_as_named_default {
+    ($fn_name:ident, $ty:ty, $default_fn:ident) => {
+        fn $fn_name<'de, D>(deserializer: D) -> Result<$ty, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            Ok(Option::<$ty>::deserialize(deserializer)?.unwrap_or_else($default_fn))
+        }
+    };
+}
+
+null_as_named_default!(null_as_default_status, String, default_status);
+null_as_named_default!(null_as_default_entity_type, String, default_entity_type);
+null_as_named_default!(null_as_default_importance, f64, default_importance);
+null_as_named_default!(null_as_default_certainty, f64, default_certainty);
+null_as_named_default!(null_as_default_visibility, String, default_visibility);
+
 #[derive(Debug, Deserialize)]
 pub struct RecallArgs {
     pub query: String,
@@ -70,29 +124,38 @@ pub struct RecallArgs {
     #[serde(rename = "type")]
     #[serde(default)]
     pub entity_type: Option<String>,
-    #[serde(default = "default_limit")]
+    #[serde(
+        default = "default_limit",
+        deserialize_with = "null_as_default_limit"
+    )]
     pub limit: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub offset: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub min_decay: f64,
     #[serde(default)]
     pub topic_path: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub include_archived: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub expansion: crate::models::QueryExpansionConfig,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub mode: String, // "fts5", "dense", or "hybrid"
     #[serde(default)]
     pub preview_cap: Option<i64>,
     #[serde(default)]
     pub always_on: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub content_weight: f64,
-    #[serde(default = "crate::models::default_trust_weight")]
+    #[serde(
+        default = "crate::models::default_trust_weight",
+        deserialize_with = "null_as_default_trust_weight"
+    )]
     pub trust_weight: f64,
-    #[serde(default = "default_halving")]
+    #[serde(
+        default = "default_halving",
+        deserialize_with = "null_as_default_halving"
+    )]
     pub diversity_halving: f64,
     /// Recency half-life in seconds for time-aware hybrid ranking (#235).
     /// Omit (default) for relevance-only ranking; set to bias toward recent memories.
@@ -107,7 +170,7 @@ pub struct RecallArgs {
     /// #287: opt-in. When true, each result gets a normalized `confidence`
     /// (0.0–1.0) rolled up from rank, trust, and decay. Default false so
     /// existing callers and snapshot tests are unaffected; ranking is unchanged.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub include_confidence: bool,
 }
 
@@ -158,6 +221,18 @@ fn default_halving() -> f64 {
 
 fn default_limit() -> i64 {
     10
+}
+
+null_as_named_default!(null_as_default_limit, i64, default_limit);
+null_as_named_default!(
+    null_as_default_trust_weight,
+    f64,
+    default_trust_weight_wrapper
+);
+null_as_named_default!(null_as_default_halving, f64, default_halving);
+
+fn default_trust_weight_wrapper() -> f64 {
+    crate::models::default_trust_weight()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1916,4 +1991,115 @@ pub fn handle_purge(db: &Database, args: Value) -> Result<String, String> {
         .map_err(|e| format!("Purge failed: {}", e))?;
     serde_json::to_string(&report).map_err(|e| format!("Serialization failed: {}", e))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // #330: mimir_remember rejected the documented optional `topic_path`
+    // field (and other optional fields with custom defaults) whenever a
+    // caller sent explicit JSON `null` instead of omitting the key. Many
+    // MCP clients do this because the tool schema lists the field as
+    // optional/defaulted, not because they're being unusual.
+
+    #[test]
+    fn remember_args_accepts_null_topic_path() {
+        let v = json!({
+            "category": "reference",
+            "key": "example-key",
+            "body_json": "{}",
+            "topic_path": null
+        });
+        let a: RememberArgs = serde_json::from_value(v).expect("null topic_path must deserialize");
+        assert_eq!(a.topic_path, "");
+    }
+
+    #[test]
+    fn remember_args_accepts_null_for_every_optional_field_with_custom_default() {
+        // Explicit null on each of these must fall back to that field's
+        // documented default, not fail deserialization.
+        for field in [
+            "status",
+            "type",
+            "tags",
+            "importance",
+            "topic_path",
+            "recall_when",
+            "always_on",
+            "certainty",
+            "workspace_hash",
+            "agent_id",
+            "visibility",
+        ] {
+            let mut v = json!({
+                "category": "reference",
+                "key": "example-key",
+                "body_json": "{}",
+            });
+            v.as_object_mut()
+                .unwrap()
+                .insert(field.to_string(), Value::Null);
+            let result: Result<RememberArgs, _> = serde_json::from_value(v);
+            assert!(
+                result.is_ok(),
+                "field `{}` with explicit null should deserialize, got {:?}",
+                field,
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn remember_args_still_reports_missing_category_correctly() {
+        // Regression guard: fixing the null-tolerance bug must not break the
+        // genuinely-missing-required-field error path (the original bug
+        // report's error message pointed at the wrong field — `category` —
+        // when the real offender was `topic_path: null`; once null is
+        // handled, a real missing `category` must still be reported as such).
+        let v = json!({ "key": "example-key", "body_json": "{}" });
+        let result: Result<RememberArgs, _> = serde_json::from_value(v);
+        let err = result.expect_err("missing category must fail").to_string();
+        assert!(
+            err.contains("category"),
+            "error should name the actually-missing field `category`, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn recall_args_accepts_null_for_every_optional_field_with_custom_default() {
+        for field in [
+            "limit",
+            "offset",
+            "min_decay",
+            "include_archived",
+            "expansion",
+            "mode",
+            "content_weight",
+            "trust_weight",
+            "diversity_halving",
+            "include_confidence",
+        ] {
+            let mut v = json!({ "query": "test" });
+            v.as_object_mut()
+                .unwrap()
+                .insert(field.to_string(), Value::Null);
+            let result: Result<RecallArgs, _> = serde_json::from_value(v);
+            assert!(
+                result.is_ok(),
+                "field `{}` with explicit null should deserialize, got {:?}",
+                field,
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn recall_args_null_limit_falls_back_to_default_ten() {
+        let v = json!({ "query": "test", "limit": null });
+        let a: RecallArgs = serde_json::from_value(v).unwrap();
+        assert_eq!(a.limit, 10);
+    }
+}
+
 
