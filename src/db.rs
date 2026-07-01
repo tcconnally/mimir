@@ -1662,15 +1662,66 @@ impl Database {
                 wide.limit = candidate_k as i64;
                 let sparse_scored = self.fts5_bm25_search(&wide)?;
                 let sparse_weight = crate::db::sparse_arm_weight(sparse_scored.len());
-                let fused = crate::db::reciprocal_rank_fusion(
-                    &dense_scored,
-                    &sparse_scored,
-                    60.0,
-                    limit,
-                    sparse_weight,
-                    params.recency_half_life_secs,
-                    now_ms(),
-                );
+
+                // Graph-expansion arm (#steal-3, competitive research): one-hop
+                // expansion from the top of the dense+sparse candidates, fed into
+                // the same RRF fusion as a third arm. This surfaces entities that
+                // are *linked* to a strong hit even if they don't independently
+                // rank well on keyword or embedding similarity — e.g. an
+                // architecture decision linked to the dependency a query is
+                // actually about. Seeded from a small top-N slice of the combined
+                // dense+sparse candidates (not the full candidate_k pool) to keep
+                // expansion focused on the strongest matches, not noise.
+                let graph_seed_n = limit.clamp(1, 20);
+                let mut graph_seeds: Vec<crate::models::Entity> = dense_scored
+                    .iter()
+                    .take(graph_seed_n)
+                    .map(|(e, _)| e.clone())
+                    .collect();
+                for (e, _) in sparse_scored.iter().take(graph_seed_n) {
+                    if !graph_seeds.iter().any(|s| s.id == e.id) {
+                        graph_seeds.push(e.clone());
+                    }
+                }
+                let graph_scored = self.graph_expand(&graph_seeds, candidate_k)?;
+                let graph_weight = crate::db::graph_arm_weight(graph_scored.len());
+
+                let fused = if graph_scored.is_empty() {
+                    crate::db::reciprocal_rank_fusion(
+                        &dense_scored,
+                        &sparse_scored,
+                        60.0,
+                        limit,
+                        sparse_weight,
+                        params.recency_half_life_secs,
+                        now_ms(),
+                    )
+                } else {
+                    // Fold the graph arm in by fusing it as an additional sparse-like
+                    // arm: first fuse dense+sparse normally, then fuse that combined
+                    // ranking against the graph arm at its own (lower, conservative)
+                    // weight. This keeps the two-arm RRF math unchanged and simply
+                    // composes a third pass, rather than rewriting reciprocal_rank_fusion
+                    // to take N arms.
+                    let dense_sparse = crate::db::reciprocal_rank_fusion(
+                        &dense_scored,
+                        &sparse_scored,
+                        60.0,
+                        candidate_k,
+                        sparse_weight,
+                        params.recency_half_life_secs,
+                        now_ms(),
+                    );
+                    crate::db::reciprocal_rank_fusion(
+                        &dense_sparse,
+                        &graph_scored,
+                        60.0,
+                        limit,
+                        graph_weight,
+                        params.recency_half_life_secs,
+                        now_ms(),
+                    )
+                };
                 let mut out: Vec<Entity> = fused.into_iter().map(|(e, _)| e).collect();
                 Self::retain_layer(&mut out, params);
                 return Ok(out);
@@ -4727,6 +4778,67 @@ pub fn reciprocal_rank_fusion(
     fused
 }
 
+/// Weight for the graph-expansion RRF arm, mirroring `sparse_arm_weight`'s
+/// pattern: an arm that found nothing contributes nothing, and a firing arm
+/// gets a fixed, conservative weight regardless of how many neighbors were
+/// found (so a hub entity with many links can't dominate the fused ranking).
+pub fn graph_arm_weight(hit_count: usize) -> f64 {
+    if hit_count == 0 {
+        0.0
+    } else {
+        0.5
+    }
+}
+
+/// One-hop graph expansion (#steal-3, competitive research: Hindsight's
+/// "graph" retrieval strategy in TEMPR). Given a seed set of already-ranked
+/// entities (e.g. the top of the dense+sparse fused list), follow their
+/// `links` one hop outward and return the *newly discovered* neighbor
+/// entities in link order, deduplicated and excluding anything already in
+/// the seed set.
+///
+/// This does not do graph *ranking* (no PageRank/centrality) — it is
+/// deliberately a cheap, deterministic "what's connected to what I already
+/// found" expansion, fed into RRF as a third arm alongside dense and sparse.
+/// A neighbor's rank in the returned Vec is its first-discovery order, which
+/// RRF then converts into a rank-based score exactly like the other arms.
+impl Database {
+    pub fn graph_expand(
+        &self,
+        seeds: &[crate::models::Entity],
+        max_neighbors: usize,
+    ) -> Result<Vec<(crate::models::Entity, f64)>, Box<dyn std::error::Error>> {
+        if seeds.is_empty() || max_neighbors == 0 {
+            return Ok(Vec::new());
+        }
+
+        let seed_ids: std::collections::HashSet<&str> =
+            seeds.iter().map(|e| e.id.as_str()).collect();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut out = Vec::new();
+
+        for seed in seeds {
+            for link in &seed.links {
+                if seed_ids.contains(link.target_id.as_str()) {
+                    continue; // already in the seed set, not a new discovery
+                }
+                if !seen.insert(link.target_id.clone()) {
+                    continue; // already discovered via another seed
+                }
+                if let Some(neighbor) = self.get_entity_by_id_public(&link.target_id)? {
+                    if !neighbor.archived {
+                        out.push((neighbor, 1.0));
+                    }
+                }
+                if out.len() >= max_neighbors {
+                    return Ok(out);
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
 /// Common English function/question words stripped from the hybrid keyword arm
 /// before FTS matching (#247).
 ///
@@ -6839,6 +6951,159 @@ mod tests {
             let again_order: Vec<String> = again.iter().map(|(e, _)| e.id.clone()).collect();
             assert_eq!(again_order, order, "fused tie order must be deterministic");
         }
+    }
+
+    #[test]
+    fn graph_arm_weight_zero_when_no_hits_else_fixed() {
+        assert_eq!(crate::db::graph_arm_weight(0), 0.0);
+        assert_eq!(crate::db::graph_arm_weight(1), crate::db::graph_arm_weight(9));
+        assert!(crate::db::graph_arm_weight(1) > 0.0);
+    }
+
+    #[test]
+    fn graph_expand_returns_empty_for_no_seeds_or_no_links() {
+        let (db, path) = temp_db();
+        // No seeds at all.
+        assert!(db.graph_expand(&[], 10).unwrap().is_empty());
+
+        // A seed entity exists but has no links.
+        let lone = make_entity("lone", "insight", "lone", r#"{"note":"solo"}"#);
+        db.remember(&lone).unwrap();
+        let seed = db.get_entity("insight", "lone").unwrap().unwrap();
+        assert!(db.graph_expand(&[seed], 10).unwrap().is_empty());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn graph_expand_follows_one_hop_and_dedupes() {
+        let (db, path) = temp_db();
+
+        db.remember(&make_entity(
+            "g-hub",
+            "architecture",
+            "api-gateway",
+            r#"{"note":"the central api gateway service"}"#,
+        ))
+        .unwrap();
+        db.remember(&make_entity(
+            "g-neighbor1",
+            "architecture",
+            "auth-service",
+            r#"{"note":"handles authentication"}"#,
+        ))
+        .unwrap();
+        db.remember(&make_entity(
+            "g-neighbor2",
+            "architecture",
+            "db-layer",
+            r#"{"note":"postgres persistence layer"}"#,
+        ))
+        .unwrap();
+        db.remember(&make_entity(
+            "g-archived",
+            "architecture",
+            "deprecated-cache",
+            r#"{"note":"old redis cache, retired"}"#,
+        ))
+        .unwrap();
+        db.forget("architecture", "deprecated-cache", "retired").unwrap();
+
+        db.link("architecture", "api-gateway", "g-neighbor1", "depends_on")
+            .unwrap();
+        db.link("architecture", "api-gateway", "g-neighbor2", "depends_on")
+            .unwrap();
+        db.link("architecture", "api-gateway", "g-archived", "depends_on")
+            .unwrap();
+
+        let seed = db.get_entity("architecture", "api-gateway").unwrap().unwrap();
+        let expanded = db.graph_expand(&[seed], 10).unwrap();
+        let ids: Vec<&str> = expanded.iter().map(|(e, _)| e.id.as_str()).collect();
+
+        assert!(
+            ids.contains(&"g-neighbor1"),
+            "must discover directly-linked neighbor 1, got {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"g-neighbor2"),
+            "must discover directly-linked neighbor 2, got {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&"g-archived"),
+            "archived neighbor must be excluded from graph expansion, got {:?}",
+            ids
+        );
+        assert!(!ids.contains(&"g-hub"), "seed itself must not be re-discovered");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[cfg(feature = "bundled-embeddings")]
+    #[test]
+    fn hybrid_recall_surfaces_linked_neighbor_via_graph_arm() {
+        // The core claim of the graph-expansion RRF arm: an entity that is
+        // WEAK on both dense and sparse relevance to the query, but is
+        // directly linked to the strongest dense/sparse hit, should still
+        // surface in hybrid results -- something plain dense+sparse fusion
+        // cannot do.
+        let (db, path) = temp_db();
+        let insert = |id: &str, key: &str, body: &str, emb: &[f32]| {
+            let mut e = make_entity(id, "architecture", key, body);
+            e.embedding = Some(emb.to_vec());
+            db.remember(&e).unwrap();
+        };
+
+        // Strong hit: matches the query on both semantic + keyword grounds.
+        insert(
+            "g-strong",
+            "checkout-service",
+            r#"{"note":"checkout payment processing service"}"#,
+            &[1.0, 0.0, 0.0],
+        );
+        // Weak/irrelevant to the query on its own, but linked to the strong hit.
+        insert(
+            "g-weak-linked",
+            "fraud-rules-engine",
+            r#"{"note":"totally unrelated rules configuration"}"#,
+            &[0.0, 0.0, 1.0],
+        );
+        // A distractor: equally irrelevant, NOT linked to anything.
+        insert(
+            "g-distractor",
+            "unrelated-widget",
+            r#"{"note":"totally unrelated widget config nothing to do with anything"}"#,
+            &[0.0, 1.0, 0.0],
+        );
+
+        db.link(
+            "architecture",
+            "checkout-service",
+            "g-weak-linked",
+            "depends_on",
+        )
+        .unwrap();
+
+        let params = crate::models::RecallParams {
+            query: "checkout payment processing service".to_string(),
+            mode: crate::models::SearchMode::Hybrid,
+            limit: 5,
+            ..crate::models::RecallParams::default()
+        };
+        let results = db.recall(&params).unwrap();
+        let ids: Vec<&str> = results.iter().map(|e| e.id.as_str()).collect();
+
+        assert!(
+            ids.contains(&"g-strong"),
+            "the directly-matching entity must be in results, got {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"g-weak-linked"),
+            "an entity linked to the top hit must surface via the graph arm even though \
+             it doesn't independently match the query, got {:?}",
+            ids
+        );
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
