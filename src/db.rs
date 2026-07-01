@@ -289,11 +289,24 @@ impl Database {
         }
         let context = context_parts.join("\n\n");
 
+        // Step 2b: Prepend persona context (Mission/Directives/Disposition), if set.
+        // See `get_persona_context()`. This shapes HOW the model reasons over the
+        // retrieved facts without touching the retrieval/ranking path itself —
+        // recall() above is unaffected by persona settings, only the prompt is.
+        let persona = self.get_persona_context().unwrap_or_default();
+
         // Step 3: Build prompt
-        let prompt = format!(
-            "Answer the question based ONLY on the following context. Cite sources by their key.\n\nContext:\n{}\n\nQuestion: {}\n\nAnswer:",
-            context, params.query
-        );
+        let prompt = if persona.is_empty() {
+            format!(
+                "Answer the question based ONLY on the following context. Cite sources by their key.\n\nContext:\n{}\n\nQuestion: {}\n\nAnswer:",
+                context, params.query
+            )
+        } else {
+            format!(
+                "{}\n\nAnswer the question based ONLY on the following context. Cite sources by their key.\n\nContext:\n{}\n\nQuestion: {}\n\nAnswer:",
+                persona, context, params.query
+            )
+        };
 
         // Step 4: Call Ollama
         let body = serde_json::json!({
@@ -325,6 +338,66 @@ impl Database {
             .to_string();
 
         Ok(AskResult { answer, sources })
+    }
+
+    /// Assemble a persona context block from special reserved entities in the
+    /// `persona` category, for injection into `ask()`/`reflect`-style prompts.
+    ///
+    /// Reserved keys (all optional, all in category "persona"):
+    ///   - "mission"    — natural-language identity/priorities for the bank
+    ///                    (e.g. "I am a research assistant specializing in ML.")
+    ///   - "directives" — hard rules the agent must never violate, stored as a
+    ///                    JSON array of strings in body_json under "rules"
+    ///   - "disposition"— soft reasoning-style traits, stored as a JSON object
+    ///                    of trait -> 1-5 scale in body_json under "traits"
+    ///
+    /// These entities are looked up directly by category+key (not via recall's
+    /// ranking/decay path) so the persona is stable and doesn't compete with or
+    /// get displaced by ordinary memory entities. They only shape the `ask()`
+    /// prompt — retrieval/ranking in `recall()` is completely unaffected.
+    pub fn get_persona_context(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let mut parts = Vec::new();
+
+        if let Some(mission) = self.get_entity("persona", "mission")? {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&mission.body_json) {
+                if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        parts.push(format!("Mission: {}", text));
+                    }
+                }
+            }
+        }
+
+        if let Some(directives) = self.get_entity("persona", "directives")? {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&directives.body_json) {
+                if let Some(rules) = v.get("rules").and_then(|r| r.as_array()) {
+                    let rule_strs: Vec<String> = rules
+                        .iter()
+                        .filter_map(|r| r.as_str())
+                        .map(|s| format!("- {}", s))
+                        .collect();
+                    if !rule_strs.is_empty() {
+                        parts.push(format!("Directives (never violate):\n{}", rule_strs.join("\n")));
+                    }
+                }
+            }
+        }
+
+        if let Some(disposition) = self.get_entity("persona", "disposition")? {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&disposition.body_json) {
+                if let Some(traits) = v.get("traits").and_then(|t| t.as_object()) {
+                    let trait_strs: Vec<String> = traits
+                        .iter()
+                        .filter_map(|(k, v)| v.as_i64().map(|n| format!("{}: {}/5", k, n)))
+                        .collect();
+                    if !trait_strs.is_empty() {
+                        parts.push(format!("Disposition: {}", trait_strs.join(", ")));
+                    }
+                }
+            }
+        }
+
+        Ok(parts.join("\n\n"))
     }
 
     /// Run connector ingestion: fetch documents from external sources and store as entities.
@@ -7636,5 +7709,89 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
-}
+    #[test]
+    fn persona_context_empty_when_unset() {
+        let (db, path) = temp_db();
+        let ctx = db.get_persona_context().unwrap();
+        assert!(
+            ctx.is_empty(),
+            "persona context must be empty with no persona entities set, got: {}",
+            ctx
+        );
+        let _ = fs::remove_file(&path);
+    }
 
+    #[test]
+    fn persona_context_assembles_mission_directives_disposition() {
+        let (db, path) = temp_db();
+
+        db.remember(&make_entity(
+            "p-mission",
+            "persona",
+            "mission",
+            r#"{"text":"I am a research assistant specializing in ML."}"#,
+        ))
+        .unwrap();
+        db.remember(&make_entity(
+            "p-directives",
+            "persona",
+            "directives",
+            r#"{"rules":["Never recommend specific stocks","Always cite sources"]}"#,
+        ))
+        .unwrap();
+        db.remember(&make_entity(
+            "p-disposition",
+            "persona",
+            "disposition",
+            r#"{"traits":{"skepticism":4,"literalism":2}}"#,
+        ))
+        .unwrap();
+
+        let ctx = db.get_persona_context().unwrap();
+        assert!(
+            ctx.contains("Mission: I am a research assistant"),
+            "missing mission text:\n{}",
+            ctx
+        );
+        assert!(
+            ctx.contains("Never recommend specific stocks"),
+            "missing directive text:\n{}",
+            ctx
+        );
+        assert!(
+            ctx.contains("skepticism: 4/5"),
+            "missing disposition trait:\n{}",
+            ctx
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn persona_context_partial_set_only_includes_present_parts() {
+        // Only a mission is set; directives/disposition entities don't exist.
+        // The context must still assemble cleanly (no panics, no stray labels
+        // for the parts that were never set).
+        let (db, path) = temp_db();
+        db.remember(&make_entity(
+            "p-mission-only",
+            "persona",
+            "mission",
+            r#"{"text":"Be concise."}"#,
+        ))
+        .unwrap();
+
+        let ctx = db.get_persona_context().unwrap();
+        assert!(ctx.contains("Mission: Be concise."));
+        assert!(
+            !ctx.contains("Directives"),
+            "must not mention directives when unset:\n{}",
+            ctx
+        );
+        assert!(
+            !ctx.contains("Disposition"),
+            "must not mention disposition when unset:\n{}",
+            ctx
+        );
+        let _ = fs::remove_file(&path);
+    }
+}
