@@ -368,6 +368,10 @@ pub fn handle_remember(db: &Database, args: Value) -> Result<String, String> {
         visibility: a.visibility.clone(),
         created_at_unix_ms: now,
         last_accessed_unix_ms: now,
+        follow_count: 0,
+        miss_count: 0,
+        follow_rate: 0.0,
+        efficacy_status: "unverified".to_string(),
         embedding: None,
     };
 
@@ -1151,6 +1155,31 @@ pub fn handle_score(db: &Database, args: Value) -> String {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct FollowArgs {
+    pub category: String,
+    pub key: String,
+    pub followed: bool,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub context: Option<String>,
+}
+
+/// Record whether an entity (convention/insight/lesson) was actually FOLLOWED
+/// or MISSED by the agent — the PMB-inspired "honest follow-rate" signal.
+/// `context` is accepted for future auto-detection/audit use but not yet
+/// persisted; the tool records a manual confirm/deny each call.
+pub fn handle_follow(db: &Database, args: Value) -> Result<String, String> {
+    let a: FollowArgs =
+        serde_json::from_value(args).map_err(|e| format!("Invalid follow arguments: {}", e))?;
+
+    let report = db
+        .follow(&a.category, &a.key, a.followed)
+        .map_err(|e| format!("Follow failed: {}", e))?;
+
+    serde_json::to_string(&report).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ConflictArgs {
     pub category: String,
     #[serde(default = "default_conflict_threshold")]
@@ -1330,6 +1359,10 @@ pub fn handle_ingest_file(db: &Database, args: Value) -> Result<String, String> 
         visibility: "workspace".to_string(),
         created_at_unix_ms: now,
         last_accessed_unix_ms: now,
+        follow_count: 0,
+        miss_count: 0,
+        follow_rate: 0.0,
+        efficacy_status: "unverified".to_string(),
         embedding: None,
     };
     let (eid, action) = db

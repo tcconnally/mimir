@@ -40,7 +40,17 @@ CREATE TABLE IF NOT EXISTS entities (
     recorded_at_unix_ms INTEGER,     -- transaction time: when Mneme first knew it (backfilled = created_at)
     invalidated_at_unix_ms INTEGER,  -- transaction time: when Mneme retired it (NULL = live)
     supersedes TEXT DEFAULT '',      -- id of the entity this one replaced
-    superseded_by TEXT DEFAULT ''    -- id of the entity that replaced this one
+    superseded_by TEXT DEFAULT '',   -- id of the entity that replaced this one
+
+    -- Efficacy tracking (v2.10.0 — PMB-inspired follow-rate scoring). Tracks
+    -- whether a lesson/convention/insight actually gets FOLLOWED by the agent,
+    -- not just recalled. follow_rate feeds into decay_tick as a composite
+    -- weight so rules that get ignored decay out of recall, and rules that
+    -- earn their place resist decay even without recency.
+    follow_count INTEGER DEFAULT 0,      -- times confirmed/detected as followed
+    miss_count INTEGER DEFAULT 0,        -- times confirmed/detected as NOT followed
+    follow_rate REAL DEFAULT 0.0,        -- follow_count / (follow_count + miss_count), 0.0 if no attempts
+    efficacy_status TEXT DEFAULT 'unverified'  -- 'unverified' | 'useful' | 'dead'
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_category_key ON entities(category, key);
@@ -127,7 +137,7 @@ CREATE INDEX IF NOT EXISTS idx_entity_history_catkey ON entity_history(category,
 /// the column-add migrations below have been applied. Bump this whenever you add
 /// a new ALTER-probe migration in `initialize_schema`, or existing databases
 /// (already at the previous level) will skip it.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Initialize the v0.2.0 schema on a fresh database.
 pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
@@ -220,6 +230,22 @@ pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Er
     }
     if conn.prepare("SELECT superseded_by FROM entities LIMIT 1").is_err() {
         conn.execute_batch("ALTER TABLE entities ADD COLUMN superseded_by TEXT DEFAULT '';")?;
+    }
+
+    // Add efficacy-tracking columns (v2.10.0 — PMB-inspired follow-rate scoring).
+    if conn.prepare("SELECT follow_count FROM entities LIMIT 1").is_err() {
+        conn.execute_batch("ALTER TABLE entities ADD COLUMN follow_count INTEGER DEFAULT 0;")?;
+    }
+    if conn.prepare("SELECT miss_count FROM entities LIMIT 1").is_err() {
+        conn.execute_batch("ALTER TABLE entities ADD COLUMN miss_count INTEGER DEFAULT 0;")?;
+    }
+    if conn.prepare("SELECT follow_rate FROM entities LIMIT 1").is_err() {
+        conn.execute_batch("ALTER TABLE entities ADD COLUMN follow_rate REAL DEFAULT 0.0;")?;
+    }
+    if conn.prepare("SELECT efficacy_status FROM entities LIMIT 1").is_err() {
+        conn.execute_batch(
+            "ALTER TABLE entities ADD COLUMN efficacy_status TEXT DEFAULT 'unverified';",
+        )?;
     }
     // Backfill transaction time for pre-existing rows: a fact's recorded_at is
     // when Mneme first stored it, i.e. its created_at. (No-op on a fresh DB.)

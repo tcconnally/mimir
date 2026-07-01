@@ -1810,6 +1810,68 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     "title": "Score Entity Quality"
   },
   {
+    "name": "mimir_follow",
+    "description": "Record whether an entity (typically a convention/insight/lesson) was actually FOLLOWED or MISSED by the agent — the honest follow-rate signal. Unlike retrieval_count (how often a memory is recalled), this tracks whether recall changed behavior. After enough attempts, efficacy_status flips to 'useful' or 'dead' and feeds into decay scoring so ignored rules decay out of recall while followed ones resist decay.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string",
+          "description": "Entity category"
+        },
+        "key": {
+          "type": "string",
+          "description": "Entity key"
+        },
+        "followed": {
+          "type": "boolean",
+          "description": "true if the agent's action followed/honored this entity's guidance, false if it was ignored/missed"
+        },
+        "context": {
+          "type": "string",
+          "description": "Optional description of the action/context this observation relates to"
+        }
+      },
+      "required": [
+        "category",
+        "key",
+        "followed"
+      ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "found": {
+          "type": "boolean",
+          "description": "Whether the entity was found"
+        },
+        "category": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "follow_count": {
+          "type": "integer"
+        },
+        "miss_count": {
+          "type": "integer"
+        },
+        "follow_rate": {
+          "type": "number"
+        },
+        "efficacy_status": {
+          "type": "string",
+          "description": "'unverified' | 'useful' | 'dead'"
+        }
+      }
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "title": "Record Follow/Miss Efficacy Signal"
+  },
+  {
     "name": "mimir_conflicts",
     "description": "Detect conflicting entities in the same category — pairs with low trigram similarity in their body_json. Flags potential contradictions, duplicate-but-divergent entries, and stale-overwritten facts. Read-only by default. Opt in with resolve=true to actively invalidate the lower-certainty side of clear conflicts (superseding it into history, reversible + time-travelable via mimir_as_of); that path defaults to dry_run=true so you preview first, and never resolves pairs whose certainties are within certainty_margin.",
     "inputSchema": {
@@ -2859,6 +2921,7 @@ fn call_tool(name: &str, db: &Database, args: Value, _id: Option<Value>) -> Stri
 
         "mimir_traverse" => Ok(tools::handle_traverse(db, args)),
         "mimir_score" => Ok(tools::handle_score(db, args)),
+        "mimir_follow" => tools::handle_follow(db, args).map_err(|e| e.to_string()),
         "mimir_conflicts" => Ok(tools::handle_conflicts(db, args)),
         "mimir_consolidate" => Ok(tools::handle_consolidate(db, args)),
         "mimir_vault_export" => Ok(tools::handle_vault_export(db, args)),

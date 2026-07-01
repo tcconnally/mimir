@@ -51,6 +51,19 @@ pub struct Entity {
     pub visibility: String,
     pub created_at_unix_ms: i64,
     pub last_accessed_unix_ms: i64,
+    /// Efficacy tracking (v2.10.0 — PMB-inspired follow-rate scoring). How many
+    /// times this entity (typically a convention/insight/lesson) was confirmed
+    /// or auto-detected as actually FOLLOWED vs missed by the agent.
+    #[serde(default)]
+    pub follow_count: i64,
+    #[serde(default)]
+    pub miss_count: i64,
+    /// follow_count / (follow_count + miss_count); 0.0 when no attempts yet.
+    #[serde(default)]
+    pub follow_rate: f64,
+    /// 'unverified' | 'useful' | 'dead' — set once enough attempts accrue.
+    #[serde(default = "default_efficacy_status")]
+    pub efficacy_status: String,
     #[serde(skip)]
     #[allow(dead_code)]
     pub embedding: Option<Vec<f32>>,
@@ -97,6 +110,10 @@ fn default_source() -> String {
 
 fn default_certainty() -> f64 {
     0.5
+}
+
+fn default_efficacy_status() -> String {
+    "unverified".to_string()
 }
 
 /// Default recall trust weight. Non-zero so verified sources are preferred
@@ -338,6 +355,19 @@ pub struct DecayReport {
     pub entities_updated: i64,
     pub auto_archived: i64,
     pub completed_at_unix_ms: i64,
+}
+
+/// Result of recording a follow/miss observation against an entity
+/// (v2.10.0 — PMB-inspired efficacy scoring).
+#[derive(Debug, Clone, Serialize)]
+pub struct FollowReport {
+    pub found: bool,
+    pub category: String,
+    pub key: String,
+    pub follow_count: i64,
+    pub miss_count: i64,
+    pub follow_rate: f64,
+    pub efficacy_status: String,
 }
 
 /// Compact report.

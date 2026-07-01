@@ -773,6 +773,10 @@ fn main() {
                 visibility: visibility.clone(),
                 created_at_unix_ms: now,
                 last_accessed_unix_ms: now,
+                follow_count: 0,
+                miss_count: 0,
+                follow_rate: 0.0,
+                efficacy_status: "unverified".to_string(),
                 embedding: None,
             };
 

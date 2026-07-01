@@ -559,6 +559,10 @@ impl Database {
                                         visibility: "workspace".to_string(),
                             created_at_unix_ms: now,
                             last_accessed_unix_ms: now,
+                            follow_count: 0,
+                            miss_count: 0,
+                            follow_rate: 0.0,
+                            efficacy_status: "unverified".to_string(),
                             embedding: None,
                         };
                         match self.remember(&entity) {
@@ -1051,7 +1055,8 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, NULL as embedding,
-                    always_on, certainty, workspace_hash, agent_id, visibility
+                    always_on, certainty, workspace_hash, agent_id, visibility,
+                    follow_count, miss_count, follow_rate, efficacy_status
              FROM entities WHERE id IN ({})",
             placeholders
         );
@@ -1199,11 +1204,11 @@ impl Database {
         // Update decay_score for non-archived entities, optionally capped
         let sql = if let Some(max) = max_entities {
             format!(
-                "SELECT id, last_accessed_unix_ms, verified FROM entities WHERE archived = 0 LIMIT {}",
+                "SELECT id, last_accessed_unix_ms, verified, efficacy_status, follow_rate FROM entities WHERE archived = 0 LIMIT {}",
                 max
             )
         } else {
-            "SELECT id, last_accessed_unix_ms, verified FROM entities WHERE archived = 0".to_string()
+            "SELECT id, last_accessed_unix_ms, verified, efficacy_status, follow_rate FROM entities WHERE archived = 0".to_string()
         };
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([], |r| {
@@ -1211,16 +1216,20 @@ impl Database {
                 r.get::<_, String>(0)?,
                 r.get::<_, i64>(1)?,
                 r.get::<_, bool>(2).unwrap_or(false),
+                r.get::<_, Option<String>>(3)
+                    .unwrap_or(None)
+                    .unwrap_or_else(|| "unverified".to_string()),
+                r.get::<_, Option<f64>>(4).unwrap_or(None).unwrap_or(0.0),
             ))
         })?;
 
         let mut updated = 0i64;
         let mut auto_archived = 0i64;
-        let mut batch: Vec<(String, i64, bool)> = Vec::with_capacity(1000);
+        let mut batch: Vec<(String, i64, bool, String, f64)> = Vec::with_capacity(1000);
         let now_val = now;
 
         // Helper: flush the current batch in a transaction.
-        let flush_batch = |batch: &mut Vec<(String, i64, bool)>,
+        let flush_batch = |batch: &mut Vec<(String, i64, bool, String, f64)>,
                             updated: &mut i64,
                             auto_archived: &mut i64|
          -> Result<(), Box<dyn std::error::Error>> {
@@ -1228,12 +1237,27 @@ impl Database {
                 return Ok(());
             }
             let tx = conn.unchecked_transaction()?;
-            for (id, last_access, verified) in batch.drain(..) {
+            for (id, last_access, verified, efficacy_status, follow_rate) in batch.drain(..) {
                 let mut new_decay = Self::compute_decay(last_access, now_val);
                 // #298: verified/curated facts get a decay floor so the
                 // forgetting curve can never auto-archive them.
                 if verified {
                     new_decay = new_decay.max(Self::VERIFIED_DECAY_FLOOR);
+                }
+                // v2.10.0 (PMB-inspired efficacy composite): a memory's decay
+                // is no longer purely time-based. Lessons that get FOLLOWED
+                // resist decay; lessons flagged 'dead' (ignored despite
+                // enough attempts) decay faster, so they fall out of recall
+                // even if recently accessed. 'unverified' entities (no signal
+                // yet, or too few attempts) are unaffected — this only kicks
+                // in once efficacy_status has actually been set.
+                let efficacy_weight = match efficacy_status.as_str() {
+                    "useful" => 1.0 + follow_rate * 0.3,
+                    "dead" => 0.05,
+                    _ => 1.0,
+                };
+                if !verified {
+                    new_decay = (new_decay * efficacy_weight).clamp(0.0, 1.0);
                 }
                 tx.execute(
                     "UPDATE entities SET decay_score = ?1 WHERE id = ?2",
@@ -1260,8 +1284,8 @@ impl Database {
         };
 
         for row in rows {
-            let (id, last_access, verified) = row?;
-            batch.push((id, last_access, verified));
+            let (id, last_access, verified, efficacy_status, follow_rate) = row?;
+            batch.push((id, last_access, verified, efficacy_status, follow_rate));
             if batch.len() >= 1000 {
                 flush_batch(&mut batch, &mut updated, &mut auto_archived)?;
             }
@@ -2012,7 +2036,8 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, NULL as embedding,
-                    always_on, certainty, workspace_hash, agent_id, visibility
+                    always_on, certainty, workspace_hash, agent_id, visibility,
+                    follow_count, miss_count, follow_rate, efficacy_status
              FROM entities",
         );
 
@@ -2375,7 +2400,8 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, NULL as embedding,
-                    always_on, certainty, workspace_hash, agent_id, visibility
+                    always_on, certainty, workspace_hash, agent_id, visibility,
+                    follow_count, miss_count, follow_rate, efficacy_status
              FROM entities WHERE category = ?1 AND key = ?2 LIMIT 1",
         )?;
 
@@ -2592,7 +2618,8 @@ impl Database {
         const COLS: &str = "id, category, key, body_json, status, type, tags, decay_score, \
              retrieval_count, layer, topic_path, archived, archive_reason, links, verified, \
              source, created_at_unix_ms, last_accessed_unix_ms, NULL as embedding, always_on, \
-             certainty, workspace_hash, agent_id, visibility";
+             certainty, workspace_hash, agent_id, visibility, \
+             0 as follow_count, 0 as miss_count, 0.0 as follow_rate, 'unverified' as efficacy_status";
 
         // A superseded version answers iff it was live across T:
         // recorded_at <= T < invalidated_at. (recorded_at may be NULL on a row
@@ -3202,7 +3229,8 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, NULL as embedding,
-                    always_on, certainty, workspace_hash, agent_id, visibility
+                    always_on, certainty, workspace_hash, agent_id, visibility,
+                    follow_count, miss_count, follow_rate, efficacy_status
              FROM entities WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
@@ -3237,7 +3265,8 @@ impl Database {
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, NULL as embedding,
-                    always_on, certainty, workspace_hash, agent_id, visibility
+                    always_on, certainty, workspace_hash, agent_id, visibility,
+                    follow_count, miss_count, follow_rate, efficacy_status
              FROM entities WHERE archived = 0",
         );
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -3364,6 +3393,102 @@ impl Database {
             params![(score >= 0.7) as i32, score, now_ms(), category, key],
         )?;
         Ok(affected > 0)
+    }
+
+    /// Efficacy threshold constants (v2.10.0 — PMB-inspired follow-rate scoring).
+    /// Minimum attempts before follow_rate is trusted enough to set a status.
+    const FOLLOW_MIN_ATTEMPTS: i64 = 5;
+    /// Below this follow_rate (after MIN_ATTEMPTS), a lesson is flagged dead.
+    const FOLLOW_DEAD_THRESHOLD: f64 = 0.20;
+    /// Above this follow_rate (after MIN_ATTEMPTS), a lesson is flagged useful.
+    const FOLLOW_USEFUL_THRESHOLD: f64 = 0.75;
+
+    /// Record whether an entity (typically a convention/insight/lesson) was
+    /// actually FOLLOWED or MISSED by the agent. This is the efficacy signal
+    /// PMB calls "honest follow-rate": unlike retrieval_count (how often a
+    /// memory was recalled), follow_count/miss_count track whether recall
+    /// actually changed behavior. Feeds into decay_tick's composite scoring
+    /// and flips efficacy_status to 'useful' or 'dead' once enough attempts
+    /// accrue, so dead rules decay out of recall and useful ones resist decay.
+    pub fn follow(
+        &self,
+        category: &str,
+        key: &str,
+        followed: bool,
+    ) -> Result<crate::models::FollowReport, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+
+        let existing: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT follow_count, miss_count FROM entities WHERE category = ?1 AND key = ?2 AND archived = 0",
+                params![category, key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+
+        let (follow_count, miss_count) = match existing {
+            Some((f, m)) => {
+                if followed {
+                    (f + 1, m)
+                } else {
+                    (f, m + 1)
+                }
+            }
+            None => {
+                return Ok(crate::models::FollowReport {
+                    found: false,
+                    category: category.to_string(),
+                    key: key.to_string(),
+                    follow_count: 0,
+                    miss_count: 0,
+                    follow_rate: 0.0,
+                    efficacy_status: "unverified".to_string(),
+                });
+            }
+        };
+
+        let total = follow_count + miss_count;
+        let follow_rate = if total > 0 {
+            follow_count as f64 / total as f64
+        } else {
+            0.0
+        };
+
+        let efficacy_status = if total >= Self::FOLLOW_MIN_ATTEMPTS {
+            if follow_rate < Self::FOLLOW_DEAD_THRESHOLD {
+                "dead"
+            } else if follow_rate >= Self::FOLLOW_USEFUL_THRESHOLD {
+                "useful"
+            } else {
+                "unverified"
+            }
+        } else {
+            "unverified"
+        }
+        .to_string();
+
+        conn.execute(
+            "UPDATE entities SET follow_count = ?1, miss_count = ?2, follow_rate = ?3, \
+             efficacy_status = ?4 WHERE category = ?5 AND key = ?6",
+            params![
+                follow_count,
+                miss_count,
+                follow_rate,
+                efficacy_status,
+                category,
+                key
+            ],
+        )?;
+
+        Ok(crate::models::FollowReport {
+            found: true,
+            category: category.to_string(),
+            key: key.to_string(),
+            follow_count,
+            miss_count,
+            follow_rate,
+            efficacy_status,
+        })
     }
 
     /// How many of the most-recently-accessed entities in a category a single
@@ -3603,6 +3728,10 @@ impl Database {
                     workspace_hash: String::new(),
                     agent_id: String::new(),
                     visibility: "workspace".to_string(),
+                    follow_count: 0,
+                    miss_count: 0,
+                    follow_rate: 0.0,
+                    efficacy_status: "unverified".to_string(),
                     embedding: None,
                     created_at_unix_ms: now,
                     last_accessed_unix_ms: now,
@@ -4252,6 +4381,10 @@ last_accessed: {}
                 visibility: "workspace".to_string(),
                 created_at_unix_ms: now_ms(),
                 last_accessed_unix_ms: now_ms(),
+                follow_count: 0,
+                miss_count: 0,
+                follow_rate: 0.0,
+                efficacy_status: "unverified".to_string(),
                 embedding: None,
             };
 
@@ -4412,7 +4545,8 @@ last_accessed: {}
                     decay_score, retrieval_count, layer, topic_path,
                     archived, archive_reason, links, verified, source,
                     created_at_unix_ms, last_accessed_unix_ms, NULL as embedding,
-                    always_on, certainty, workspace_hash, agent_id, visibility
+                    always_on, certainty, workspace_hash, agent_id, visibility,
+                    follow_count, miss_count, follow_rate, efficacy_status
              FROM entities
              WHERE archived = 0
                AND rowid IN (SELECT rowid FROM entities_fts WHERE entities_fts MATCH ?1)
@@ -4683,6 +4817,10 @@ last_accessed: {}
             workspace_hash: String::new(),
             agent_id: String::new(),
             visibility: params.visibility.clone(),
+            follow_count: 0,
+            miss_count: 0,
+            follow_rate: 0.0,
+            efficacy_status: "unverified".to_string(),
             embedding: None,
             created_at_unix_ms: now,
             last_accessed_unix_ms: now,
@@ -4825,6 +4963,10 @@ If no clear lessons found, return: {{"lessons": []}}"#,
                 workspace_hash: String::new(),
                 agent_id: String::new(),
                 visibility: if params.visibility.is_empty() { "workspace".to_string() } else { params.visibility.clone() },
+                follow_count: 0,
+                miss_count: 0,
+                follow_rate: 0.0,
+                efficacy_status: "unverified".to_string(),
                 embedding: None,
                 created_at_unix_ms: now,
                 last_accessed_unix_ms: now,
@@ -4897,6 +5039,10 @@ If no clear lessons found, return: {{"lessons": []}}"#,
             workspace_hash: String::new(),
             agent_id: String::new(),
             visibility: "workspace".to_string(),
+            follow_count: 0,
+            miss_count: 0,
+            follow_rate: 0.0,
+            efficacy_status: "unverified".to_string(),
             embedding: None, created_at_unix_ms: now,
             last_accessed_unix_ms: now,
         };
@@ -5269,6 +5415,13 @@ fn entity_from_row(
         visibility: row.get::<_, Option<String>>(23).unwrap_or(None).unwrap_or_else(|| "workspace".to_string()),
         created_at_unix_ms: row.get(16)?,
         last_accessed_unix_ms: row.get(17)?,
+        follow_count: row.get::<_, Option<i64>>(24).unwrap_or(None).unwrap_or(0),
+        miss_count: row.get::<_, Option<i64>>(25).unwrap_or(None).unwrap_or(0),
+        follow_rate: row.get::<_, Option<f64>>(26).unwrap_or(None).unwrap_or(0.0),
+        efficacy_status: row
+            .get::<_, Option<String>>(27)
+            .unwrap_or(None)
+            .unwrap_or_else(|| "unverified".to_string()),
         embedding: None,
     })
 }
@@ -5309,8 +5462,12 @@ mod tests {
             workspace_hash: String::new(),
             agent_id: String::new(),
             visibility: "workspace".to_string(),
-                            created_at_unix_ms: now_ms(),
+            created_at_unix_ms: now_ms(),
             last_accessed_unix_ms: now_ms(),
+            follow_count: 0,
+            miss_count: 0,
+            follow_rate: 0.0,
+            efficacy_status: "unverified".to_string(),
             embedding: None,
         }
     }
@@ -8722,4 +8879,121 @@ mod tests {
         );
         let _ = fs::remove_file(&path);
     }
+
+    #[test]
+    fn follow_tracks_efficacy_and_flips_status() {
+        // v2.10.0 (PMB-inspired follow-rate): follow_count/miss_count accrue,
+        // follow_rate is recomputed each call, and efficacy_status only
+        // flips away from 'unverified' once FOLLOW_MIN_ATTEMPTS is reached.
+        let (db, path) = temp_db();
+        db.remember(&make_entity(
+            "f1",
+            "convention",
+            "test-rule",
+            r#"{"rule":"do the thing"}"#,
+        ))
+        .unwrap();
+
+        // Below the 5-attempt floor: status stays 'unverified' even at 100%.
+        for _ in 0..3 {
+            let r = db.follow("convention", "test-rule", true).unwrap();
+            assert_eq!(r.efficacy_status, "unverified");
+        }
+
+        // 4th followed, 5th missed -> 4/5 = 0.8 >= USEFUL_THRESHOLD (0.75).
+        let r4 = db.follow("convention", "test-rule", true).unwrap();
+        assert_eq!(r4.follow_count, 4);
+        let r5 = db.follow("convention", "test-rule", false).unwrap();
+        assert_eq!(r5.miss_count, 1);
+        assert!((r5.follow_rate - 0.8).abs() < 1e-9, "got {}", r5.follow_rate);
+        assert_eq!(r5.efficacy_status, "useful");
+
+        // Unknown entity -> found: false, no panic.
+        let missing = db.follow("convention", "does-not-exist", true).unwrap();
+        assert!(!missing.found);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn follow_flags_dead_below_threshold() {
+        let (db, path) = temp_db();
+        db.remember(&make_entity(
+            "f2",
+            "convention",
+            "ignored-rule",
+            r#"{"rule":"never followed"}"#,
+        ))
+        .unwrap();
+
+        // 1 followed, 4 missed -> 1/5 = 0.2, right at DEAD_THRESHOLD (not below),
+        // so push one more miss to go clearly under it.
+        db.follow("convention", "ignored-rule", true).unwrap();
+        for _ in 0..5 {
+            db.follow("convention", "ignored-rule", false).unwrap();
+        }
+        let r = db.follow("convention", "ignored-rule", false).unwrap();
+        assert!(r.follow_rate < 0.20, "got {}", r.follow_rate);
+        assert_eq!(r.efficacy_status, "dead");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn decay_tick_applies_efficacy_composite_to_dead_and_useful() {
+        // 'dead' entities should decay much faster than plain time-decay;
+        // 'useful' entities should decay slower (composite > time-only).
+        let (db, path) = temp_db();
+
+        let mut dead = make_entity("e-dead", "convention", "dead-rule", r#"{"note":"x"}"#);
+        dead.last_accessed_unix_ms = now_ms(); // fresh, so time-decay alone would be ~1.0
+        db.remember(&dead).unwrap();
+
+        let mut useful = make_entity("e-useful", "convention", "useful-rule", r#"{"note":"y"}"#);
+        useful.last_accessed_unix_ms = now_ms();
+        db.remember(&useful).unwrap();
+
+        // Force efficacy_status directly (bypassing the 5-attempt gate, since
+        // we only care about decay_tick's composite math here).
+        {
+            let conn = db.conn().unwrap();
+            conn.execute(
+                "UPDATE entities SET efficacy_status = 'dead', follow_rate = 0.05 WHERE key = 'dead-rule'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE entities SET efficacy_status = 'useful', follow_rate = 0.9 WHERE key = 'useful-rule'",
+                [],
+            )
+            .unwrap();
+        }
+
+        db.decay_tick().unwrap();
+
+        let dead_after = db.get_entity("convention", "dead-rule").unwrap();
+        let useful_after = db.get_entity("convention", "useful-rule").unwrap();
+
+        // 'dead' should be archived immediately (0.05 weight collapses fresh
+        // decay ~1.0 down to ~0.05, right at the auto-archive floor) or at
+        // minimum have a much lower decay_score than 'useful'.
+        let useful_decay = useful_after.expect("useful entity still present").decay_score;
+        assert!(
+            useful_decay > 0.9,
+            "useful entity should resist decay (boosted), got {}",
+            useful_decay
+        );
+        if let Some(d) = dead_after {
+            assert!(
+                d.decay_score < useful_decay,
+                "dead entity decay ({}) must be far below useful entity decay ({})",
+                d.decay_score,
+                useful_decay
+            );
+        }
+        // else: dead entity was auto-archived, which is an even stronger pass.
+
+        let _ = fs::remove_file(&path);
+    }
 }
+
