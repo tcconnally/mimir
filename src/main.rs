@@ -16,20 +16,20 @@ mod web;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "mneme")]
+#[command(name = "perseus-vault")]
 #[command(
-    about = "Mneme — persistent memory for AI agents — MCP JSON-RPC stdio server",
+    about = "Perseus Vault — persistent memory for AI agents — MCP JSON-RPC stdio server (formerly Mneme/Mimir)",
     version
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// SQLite database path (default: $MIMIR_DB_PATH or ~/.mimir/data/mneme.db,
-    /// falling back to an existing ~/.mimir/data/mimir.db from before the
-    /// Mneme rename). Used when running the server directly without the
-    /// `serve` subcommand — matches the documented MCP host config:
-    /// `mneme --db /path/to/mneme.db`.
+    /// SQLite database path (default: $MIMIR_DB_PATH or ~/.mimir/data/perseus-vault.db,
+    /// falling back to an existing ~/.mimir/data/mneme.db or ~/.mimir/data/mimir.db
+    /// from before the Perseus Vault rename). Used when running the server directly
+    /// without the `serve` subcommand — matches the documented MCP host config:
+    /// `perseus-vault --db /path/to/perseus-vault.db`.
     #[arg(long)]
     db: Option<String>,
 
@@ -341,7 +341,7 @@ enum Commands {
     ObsidianSync {
         /// Target Obsidian vault directory (created if needed)
         vault_path: String,
-        /// SQLite database path (defaults to $MIMIR_DB_PATH or ~/.mimir/data/mneme.db)
+        /// SQLite database path (defaults to $MIMIR_DB_PATH or ~/.mimir/data/perseus-vault.db)
         #[arg(long)]
         db: Option<String>,
         /// Continuously re-export whenever memory changes
@@ -417,27 +417,33 @@ fn apply_top_level_db(cli: &mut Cli) {
 
 /// Resolve the default database path.
 ///
-/// Mneme rename: fresh installs default to `mneme.db`. If a pre-rename
-/// `mimir.db` already exists at the same directory (and no `mneme.db` does),
-/// we keep using it so upgraders don't silently start over with an empty
-/// database — same fallback shape as the legacy `~/mimir.db` -> `~/.mimir/data/`
+/// Perseus Vault rename: fresh installs default to `perseus-vault.db`. If a
+/// pre-rename `mneme.db` or `mimir.db` already exists at the same directory
+/// (and no `perseus-vault.db` does), we keep using it so upgraders don't
+/// silently start over with an empty database — same fallback shape as the
+/// legacy `~/mimir.db` -> `~/.mimir/data/`
 /// move handled by `check_legacy_db` below.
 fn default_db_path() -> String {
     std::env::var("MIMIR_DB_PATH").unwrap_or_else(|_| {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| {
-                eprintln!("mimir: could not determine home directory. Set MIMIR_DB_PATH or HOME/USERPROFILE.");
+                eprintln!("perseus-vault: could not determine home directory. Set MIMIR_DB_PATH or HOME/USERPROFILE.");
                 std::process::exit(1);
             });
         let dir = format!("{}/.mimir/data", home);
         let _ = std::fs::create_dir_all(&dir);
+        let vault_path = format!("{}/perseus-vault.db", dir);
         let mneme_path = format!("{}/mneme.db", dir);
         let mimir_path = format!("{}/mimir.db", dir);
-        if !std::path::Path::new(&mneme_path).exists() && std::path::Path::new(&mimir_path).exists() {
+        if std::path::Path::new(&vault_path).exists() {
+            vault_path
+        } else if std::path::Path::new(&mneme_path).exists() {
+            mneme_path
+        } else if std::path::Path::new(&mimir_path).exists() {
             mimir_path
         } else {
-            mneme_path
+            vault_path
         }
     })
 }
@@ -492,16 +498,17 @@ fn print_json<T: serde::Serialize>(value: &T) {
     match serde_json::to_string_pretty(value) {
         Ok(s) => println!("{}", s),
         Err(e) => {
-            eprintln!("mimir: failed to serialize output: {}", e);
+            eprintln!("perseus-vault: failed to serialize output: {}", e);
             std::process::exit(1);
         }
     }
 }
 
-/// #272: `mneme doctor` — validate the local install + config and report which
-/// MCP clients Mneme works with. ASCII-only output (cross-platform console safe).
+/// #272: `perseus-vault doctor` — validate the local install + config and report
+/// which MCP clients Perseus Vault works with. ASCII-only output (cross-platform
+/// console safe).
 fn run_doctor(db_path: &str) {
-    println!("mneme doctor — v{}", env!("CARGO_PKG_VERSION"));
+    println!("perseus-vault doctor — v{}", env!("CARGO_PKG_VERSION"));
     match std::env::current_exe() {
         Ok(p) => println!("  binary:   {}", p.display()),
         Err(_) => println!("  binary:   (unknown)"),
@@ -517,10 +524,10 @@ fn run_doctor(db_path: &str) {
     println!("  database: {} ({})", db_path, db_status);
 
     println!("\nMCP stdio config (identical for every client below):");
-    println!("  command: mneme");
+    println!("  command: perseus-vault");
     println!("  args:    [\"serve\", \"--db\", \"{}\"]", db_path);
 
-    println!("\nClient compatibility (Mneme is a standard MCP stdio server):");
+    println!("\nClient compatibility (Perseus Vault is a standard MCP stdio server):");
     let clients = [
         ("Claude Desktop", "claude_desktop_config.json"),
         ("Claude Code / Hermes", ".mcp.json or config.yaml"),
@@ -534,7 +541,7 @@ fn run_doctor(db_path: &str) {
         println!("  [OK] {:<24} {}", name, cfg);
     }
     println!("\nPer-client copy-paste snippets: docs/clients/");
-    println!("All checks passed: Mneme speaks MCP stdio, so any MCP client works.");
+    println!("All checks passed: Perseus Vault speaks MCP stdio, so any MCP client works.");
 }
 
 fn main() {

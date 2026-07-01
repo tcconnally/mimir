@@ -1,4 +1,10 @@
-// gRPC server — maps all Mneme MCP tools to protobuf RPCs.
+// gRPC server — maps all Perseus Vault (formerly Mneme/Mimir) MCP tools to
+// protobuf RPCs. NOTE: the underlying "mneme.v1" proto package/service names
+// and generated Rust types (MnemeGrpcServer, etc.) are left unchanged — this
+// is a wire contract external gRPC clients depend on by that literal name,
+// same category as the "mimir_*" MCP tool names and the MCP Registry LABEL.
+// Renaming those is a breaking API change to schedule separately, not a
+// branding fix.
 // Enabled via "grpc" feature flag. Compiles the proto in build.rs.
 
 #[cfg(feature = "grpc")]

@@ -1,41 +1,41 @@
-# Mneme
+# Perseus Vault
 
-<!-- mcp-name: io.github.Perseus-Computing-LLC/mneme -->
+<!-- mcp-name: io.github.Perseus-Computing-LLC/perseus-vault -->
 
 > **Persistent Memory for AI Agents — MCP-Native. Local-First. Zero Dependencies.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://rust-lang.org)
-[![Version](https://img.shields.io/badge/version-2.7.0-green.svg)](https://github.com/Perseus-Computing-LLC/mneme/releases)
+[![Version](https://img.shields.io/badge/version-2.9.0-green.svg)](https://github.com/Perseus-Computing-LLC/perseus-vault/releases)
 [![LangGraph](https://img.shields.io/badge/integrations-LangGraph-blue)](integrations/langgraph/)
 [![CrewAI](https://img.shields.io/badge/integrations-CrewAI-orange)](integrations/crewai/)
 [![AutoGen](https://img.shields.io/badge/integrations-AutoGen-purple)](integrations/autogen/)
 [![MCP Tools](https://img.shields.io/badge/MCP%20tools-46-brightgreen)]()
 
-Mneme is a single Rust binary that gives AI agents durable memory across sessions.
+Perseus Vault is a single Rust binary that gives AI agents durable memory across sessions.
 **One binary. One file. No Docker. No Postgres. No cloud.** Just persistent memory
 that works with any MCP host.
 
 ## One-Line Install
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/Perseus-Computing-LLC/mneme/main/scripts/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/Perseus-Computing-LLC/perseus-vault/main/scripts/install.sh | sh
 ```
 
-That's it. Mneme is installed to `~/.local/bin/mneme`. Start it:
+That's it. Perseus Vault is installed to `~/.local/bin/perseus-vault`. Start it:
 
 ```bash
-mneme serve --db ~/.mimir/data/mneme.db
+perseus-vault serve --db ~/.mimir/data/perseus-vault.db
 ```
 
 > **macOS note.** On Apple Silicon, an unsigned binary is killed on launch
 > (`Killed: 9`, no output) by the OS binary policy — even with no quarantine
-> attribute. The installer ad-hoc code-signs Mneme for you. If you build or copy
-> the binary yourself (`cargo build --release && cp target/release/mneme
+> attribute. The installer ad-hoc code-signs Perseus Vault for you. If you build or copy
+> the binary yourself (`cargo build --release && cp target/release/perseus-vault
 > ~/.cargo/bin/`), sign it once after each rebuild:
 >
 > ```bash
-> codesign --sign - "$(command -v mneme)"
+> codesign --sign - "$(command -v perseus-vault)"
 > ```
 
 Connect any MCP host (Claude Desktop, Cursor, Hermes Agent, Perseus, etc.):
@@ -43,9 +43,9 @@ Connect any MCP host (Claude Desktop, Cursor, Hermes Agent, Perseus, etc.):
 ```json
 {
   "mcpServers": {
-    "mneme": {
-      "command": "mneme",
-      "args": ["serve", "--db", "~/.mimir/data/mneme.db"]
+    "perseus-vault": {
+      "command": "perseus-vault",
+      "args": ["serve", "--db", "~/.mimir/data/perseus-vault.db"]
     }
   }
 }
@@ -54,21 +54,21 @@ Connect any MCP host (Claude Desktop, Cursor, Hermes Agent, Perseus, etc.):
 ## 30-Second Quickstart
 
 ```bash
-# Start Mneme
-mneme serve --db memory.db &
+# Start Perseus Vault
+perseus-vault serve --db memory.db &
 sleep 1
 
 # Remember a fact (via MCP JSON-RPC on stdio)
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mimir_remember","arguments":{"category":"demo","key":"hello","body_json":"{\"text\":\"Hello from Mneme!\"}"}}}' | mneme serve --db memory.db
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mimir_remember","arguments":{"category":"demo","key":"hello","body_json":"{\"text\":\"Hello from Perseus Vault!\"}"}}}' | perseus-vault serve --db memory.db
 
 # Search for it
-echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mimir_recall","arguments":{"query":"Hello"}}}' | mneme serve --db memory.db
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mimir_recall","arguments":{"query":"Hello"}}}' | perseus-vault serve --db memory.db
 ```
 
 ## Works With Every MCP Client
 
-Mneme is a standard MCP **stdio** server — the same `mneme serve` command works
-everywhere. Run `mneme doctor` to validate your install and print this matrix locally.
+Perseus Vault is a standard MCP **stdio** server — the same `perseus-vault serve` command works
+everywhere. Run `perseus-vault doctor` to validate your install and print this matrix locally.
 
 | Client | Status | Config | 
 |---|---|---|
@@ -82,14 +82,14 @@ everywhere. Run `mneme doctor` to validate your install and print this matrix lo
 
 Copy-paste config snippets for each: **[docs/clients/](docs/clients/)**.
 
-## Why Mneme
+## Why Perseus Vault
 
-Mneme is the **only** memory engine that is simultaneously MCP-native,
+Perseus Vault is the **only** memory engine that is simultaneously MCP-native,
 local-first, zero-dependency, AND agent-first.
 
 ### Comparison Matrix
 
-| | Mneme | Mem0 | Letta | Zep |
+| | Perseus Vault | Mem0 | Letta | Zep |
 |---|---|---|---|---|
 | **Deployment** | Single binary (~8MB) | Cloud + self-host | Docker/Postgres | Docker/Postgres |
 | **Dependencies** | None (SQLite embedded) | Python + vector DB | Postgres + Python | Postgres + Go |
@@ -105,13 +105,13 @@ local-first, zero-dependency, AND agent-first.
 | **GitHub Stars** | ~20 | ~55K | ~15K | ~3K |
 | **License** | MIT | Apache 2.0 | Apache 2.0 | Apache 2.0 |
 
-[Full comparison: Mneme vs Mem0 →](docs/comparison/mimir-vs-mem0.md)
+[Full comparison: Perseus Vault vs Mem0 →](docs/comparison/mimir-vs-mem0.md)
 [vs Letta →](docs/comparison/mimir-vs-letta.md)
 [vs Zep →](docs/comparison/mimir-vs-zep.md)
 
 ### Stress Test: 100K Entities
 
-Mneme handles production workloads on modest hardware:
+Perseus Vault handles production workloads on modest hardware:
 
 | Metric | Result |
 |---|---|
@@ -125,7 +125,7 @@ Run it yourself: `cargo test stress_100k --release -- --ignored --nocapture`
 
 ## Framework Integrations
 
-Ready-to-use adapters that make Mneme the default memory backend for
+Ready-to-use adapters that make Perseus Vault the default memory backend for
 popular AI agent frameworks:
 
 | Framework | Integration | Type |
@@ -136,11 +136,11 @@ popular AI agent frameworks:
 
 Each adapter:
 - Connects via MCP stdio subprocess (persistent session)
-- Maps the framework's memory interface to Mneme tools
+- Maps the framework's memory interface to Perseus Vault tools
 - Comes with a README quickstart (5 minutes to working)
 - Has passing tests with mocked MCP transport
 
-Any MCP-compatible framework works with Mneme directly. See
+Any MCP-compatible framework works with Perseus Vault directly. See
 [Awesome Mimir](awesome-mimir.md) for the full list.
 
 ## 46 MCP Tools
@@ -231,32 +231,32 @@ Any MCP-compatible framework works with Mneme directly. See
 
 ```bash
 # Server
-mneme serve --db /data/mneme.db
-mneme serve --web --port 8767 --encryption-key ~/.mimir/secret.key
-mneme serve --llm-endpoint http://localhost:11434/api/generate --llm-model llama3
-mneme serve --transport sse --port 8787 --mcp-token my-secret-token
+perseus-vault serve --db /data/perseus-vault.db
+perseus-vault serve --web --port 8767 --encryption-key ~/.mimir/secret.key
+perseus-vault serve --llm-endpoint http://localhost:11434/api/generate --llm-model llama3
+perseus-vault serve --transport sse --port 8787 --mcp-token my-secret-token
 
 # Maintenance (operate directly on DB, no server needed)
-mneme stats          --db /data/mneme.db
-mneme forget         --db /data/mneme.db --category decision --key stale-choice --reason "superseded"
-mneme prune          --db /data/mneme.db --category junk --min-decay 0.1 --dry-run
-mneme purge          --db /data/mneme.db --dry-run
-mneme decay          --db /data/mneme.db
-mneme reindex        --db /data/mneme.db
-mneme vault-export   --db /data/mneme.db --vault-dir ./export/
-mneme vault-import   --db /data/mneme.db --vault-dir ./export/
-mneme obsidian-sync  ~/obsidian-vault/Mneme/          # one-shot export to an Obsidian vault
-mneme obsidian-sync  ~/obsidian-vault/Mneme/ --watch  # continuous sync on every memory change
+perseus-vault stats          --db /data/perseus-vault.db
+perseus-vault forget         --db /data/perseus-vault.db --category decision --key stale-choice --reason "superseded"
+perseus-vault prune          --db /data/perseus-vault.db --category junk --min-decay 0.1 --dry-run
+perseus-vault purge          --db /data/perseus-vault.db --dry-run
+perseus-vault decay          --db /data/perseus-vault.db
+perseus-vault reindex        --db /data/perseus-vault.db
+perseus-vault vault-export   --db /data/perseus-vault.db --vault-dir ./export/
+perseus-vault vault-import   --db /data/perseus-vault.db --vault-dir ./export/
+perseus-vault obsidian-sync  ~/obsidian-vault/Perseus Vault/          # one-shot export to an Obsidian vault
+perseus-vault obsidian-sync  ~/obsidian-vault/Perseus Vault/ --watch  # continuous sync on every memory change
 
 # Key management
-mneme keygen --key-file ~/.mimir/secret.key
+perseus-vault keygen --key-file ~/.mimir/secret.key
 ```
 
 ### Flags
 
 | Flag | Description |
 |---|---|
-| `--db` | SQLite database path (default: `~/.mimir/data/mneme.db`) |
+| `--db` | SQLite database path (default: `~/.mimir/data/perseus-vault.db`) |
 | `--web` | Start web dashboard |
 | `--port` | Dashboard port (default: 8767) |
 | `--web-bind` | Dashboard bind address (default: 127.0.0.1) |
@@ -271,17 +271,17 @@ mneme keygen --key-file ~/.mimir/secret.key
 
 ## Your AI Memory in Obsidian
 
-Mneme is your AI agent's long-term memory — and it doubles as **your** second
+Perseus Vault is your AI agent's long-term memory — and it doubles as **your** second
 brain. Every entity your agent remembers exports to a plain Markdown note with
 YAML frontmatter, so your AI's memory becomes a navigable personal knowledge
 base inside the tools you already use: **Obsidian, Logseq, or Notion.**
 
 ```bash
 # Export your entire memory to an Obsidian vault as linked Markdown notes
-mneme obsidian-sync ~/obsidian-vault/Mneme/
+perseus-vault obsidian-sync ~/obsidian-vault/Perseus Vault/
 
 # Keep it live — re-export automatically on every memory change
-mneme obsidian-sync ~/obsidian-vault/Mneme/ --watch
+perseus-vault obsidian-sync ~/obsidian-vault/Perseus Vault/ --watch
 ```
 
 Open the vault in Obsidian and you get a graph of your agent's knowledge.
@@ -312,7 +312,7 @@ break, and Obsidian shows the human-readable `key` as the link label. Open the
 graph view and your agent's architecture, decisions, and insights become a
 clickable knowledge map.
 
-**`--watch`** polls Mneme's cheap, deterministic state digest on an interval and
+**`--watch`** polls Perseus Vault's cheap, deterministic state digest on an interval and
 re-exports only when memory actually changes. It naturally catches every
 `mimir_remember` write with no filesystem-watcher dependency and no coupling to
 the server. Tune the interval with `MIMIR_SYNC_INTERVAL_SECS` (default: 2s).
@@ -321,11 +321,11 @@ the server. Tune the interval with `MIMIR_SYNC_INTERVAL_SECS` (default: 2s).
 
 | Tool | How |
 |---|---|
-| **Obsidian** | `mneme obsidian-sync <vault>` — WikiLinks resolve in the graph view out of the box. |
+| **Obsidian** | `perseus-vault obsidian-sync <vault>` — WikiLinks resolve in the graph view out of the box. |
 | **Logseq** | Point `obsidian-sync` at your Logseq graph directory. Logseq reads the same `[[WikiLink]]` syntax and Markdown frontmatter. |
-| **Notion** | Run `mneme vault-export`, then use Notion's *Import → Markdown & CSV* to pull the notes in. |
+| **Notion** | Run `perseus-vault vault-export`, then use Notion's *Import → Markdown & CSV* to pull the notes in. |
 
-Unlike cloud-only "second brain" tools, Mneme runs **100% local**, is written in
+Unlike cloud-only "second brain" tools, Perseus Vault runs **100% local**, is written in
 **Rust**, encrypts at rest with **AES-256-GCM**, and applies **decay scoring** so
 stale memories fade — your knowledge base stays yours and stays fresh.
 
@@ -363,7 +363,7 @@ stale memories fade — your knowledge base stays yours and stays fresh.
 - **Query expansion** — automatic stemming variants for broader recall
 ### Memory Lifecycle
 
-Mneme models memory using three biomimetic layers, inspired by human memory pathways:
+Perseus Vault models memory using three biomimetic layers, inspired by human memory pathways:
 
 - **World (Core):** Slow-decaying, global facts about the environment.
 - **Episodic (Buffer):** Fast-decaying, session-specific interaction history.
@@ -384,11 +384,11 @@ You can interact with these layers directly using the `mimir_recall_layer` tool 
 ### Encryption
 - **AES-256-GCM** transparent encryption for entity `body_json`
 - Opt-in via `--encryption-key` flag
-- `mneme keygen` subcommand for key generation
+- `perseus-vault keygen` subcommand for key generation
 - FTS5 index stays plaintext for search
 
 ### Web Dashboard
-- Built-in Axum HTTP server (`mneme serve --web --port 8767`)
+- Built-in Axum HTTP server (`perseus-vault serve --web --port 8767`)
 - Dark-themed dashboard with search, entity table, vis.js graph, timeline
 - Default bind: `127.0.0.1` (use `--web-bind 0.0.0.0` to expose)
 - Separate SQLite connection in WAL mode for concurrent reads
@@ -406,13 +406,13 @@ You can interact with these layers directly using the `mimir_recall_layer` tool 
 
 ## Perseus Integration
 
-Mneme is the default memory backend for [Perseus](https://perseus.observer):
+Perseus Vault is the default memory backend for [Perseus](https://perseus.observer):
 
 ```yaml
 mimir:
   enabled: true
   transport: "stdio"
-  command: ["mneme", "serve", "--db", "~/.mimir/data/mneme.db"]
+  command: ["perseus-vault", "serve", "--db", "~/.mimir/data/perseus-vault.db"]
   timeout_s: 30.0
   merge_strategy: "local_first"
   fallback_to_local: true
@@ -422,7 +422,7 @@ mimir:
 
 ## Government & Federal Procurement
 
-Mneme is built for government deployment from the ground up.
+Perseus Vault is built for government deployment from the ground up.
 
 | Capability | Status |
 |---|---|
@@ -442,10 +442,10 @@ NAICS: 541715, 541511, 541512.
 
 ## Privacy Policy
 
-Mneme is a **local-first MCP server** — it runs entirely on your machine.
+Perseus Vault is a **local-first MCP server** — it runs entirely on your machine.
 
 ### Data Collection
-- **No data collection.** Mneme does not collect, transmit, or phone home any user data, usage statistics, or telemetry.
+- **No data collection.** Perseus Vault does not collect, transmit, or phone home any user data, usage statistics, or telemetry.
 - All data remains in your local SQLite database file.
 
 ### Data Usage & Storage
@@ -454,7 +454,7 @@ Mneme is a **local-first MCP server** — it runs entirely on your machine.
 - No data is shared with Perseus Computing LLC or any third party.
 
 ### Third-Party Sharing
-- **None.** Mneme is fully air-gapped by default. No API calls, no cloud services, no external network requests.
+- **None.** Perseus Vault is fully air-gapped by default. No API calls, no cloud services, no external network requests.
 - The optional dense vector embeddings feature uses a locally-compiled model — no external embedding API is called.
 
 ### Data Retention
@@ -463,7 +463,7 @@ Mneme is a **local-first MCP server** — it runs entirely on your machine.
 
 ### Contact
 - **Email:** privacy@perseus.observer
-- **GitHub:** [Perseus-Computing-LLC/mneme](https://github.com/Perseus-Computing-LLC/mneme)
+- **GitHub:** [Perseus-Computing-LLC/perseus-vault](https://github.com/Perseus-Computing-LLC/perseus-vault)
 
 ## License
 

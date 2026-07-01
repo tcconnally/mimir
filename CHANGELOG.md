@@ -5,6 +5,39 @@ All notable changes to Mimir are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-07-01
+
+### Changed
+- **Product rename: Mneme → Perseus Vault.** "Mneme" collided with an active
+  commercial competitor (mneme.tools) plus several other unrelated AI-memory
+  products and open-source projects already using that exact name — a repeat
+  of the earlier Mimir naming collision. The crate and `[[bin]]` are now
+  `perseus-vault`; the default database for fresh installs is
+  `~/.mimir/data/perseus-vault.db` (an existing `mneme.db` or `mimir.db` at
+  that path is still used automatically, in that fallback order, so upgraders
+  keep their data — see `default_db_path()` in `src/main.rs`). Every
+  `mimir_*` MCP tool is now additionally registered under a `perseus_vault_*`
+  name (on top of the existing `mneme_*` alias from the prior rename) — all
+  three names dispatch to the same handler, so existing MCP host configs
+  calling `mimir_remember`/`mimir_recall`/`mneme_remember`/etc. keep working
+  unchanged. `perseus-vault doctor`/`--help` output now refers to the
+  `perseus-vault` binary. The installer (`scripts/install.sh`) and Dockerfile
+  install `perseus-vault` as the primary binary and add `mneme`/`mimir`
+  symlinks for backward compatibility with existing scripts and MCP configs.
+  Internal-only Rust identifiers (`MnemeGrpcServer`, the `mneme.v1` proto
+  package, the MCP Registry `server.json`/Docker LABEL identity string) are
+  intentionally left unchanged — those are wire-protocol/registry contracts
+  external clients depend on by their literal names, not brand-facing text,
+  and renaming them is a separate breaking-change decision to schedule on its
+  own timeline.
+
+### Breaking (soft — back-compat aliases provided)
+- Fresh installs now default to `perseus-vault.db` instead of `mneme.db`/
+  `mimir.db`. Existing databases at the old paths are auto-detected and used
+  as-is (no migration needed), but new installs on a machine with no prior
+  database will create the new filename. Set `--db`/`MIMIR_DB_PATH`
+  explicitly if you need a specific path.
+
 ## [2.8.0] - 2026-06-30
 
 ### Changed

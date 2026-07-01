@@ -215,6 +215,18 @@ fn mneme_alias_tool(tool: &serde_json::Value) -> Option<serde_json::Value> {
     Some(alias)
 }
 
+/// Given a `mimir_*` tool definition from the static registry, return a clone
+/// advertised under the equivalent `perseus_vault_*` name (Perseus Vault
+/// rename, transition release — all three names dispatch to the same handler
+/// via `call_tool`). Returns `None` for entries that aren't named `mimir_*`.
+fn perseus_vault_alias_tool(tool: &serde_json::Value) -> Option<serde_json::Value> {
+    let name = tool.get("name")?.as_str()?;
+    let suffix = name.strip_prefix("mimir_")?;
+    let mut alias = tool.clone();
+    alias["name"] = serde_json::Value::String(format!("perseus_vault_{}", suffix));
+    Some(alias)
+}
+
 /// Build the tools/list response with all 44 tools including outputSchema and annotations.
 fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     // The tool registry is a compile-time constant. Parse it exactly once per
@@ -2677,11 +2689,14 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
         ).expect("tools JSON must be valid");
 
         let base_array = base.as_array().expect("tools registry must be a JSON array");
-        let mut aliased: Vec<serde_json::Value> = Vec::with_capacity(base_array.len() * 2);
+        let mut aliased: Vec<serde_json::Value> = Vec::with_capacity(base_array.len() * 3);
         for tool in base_array {
             aliased.push(tool.clone());
             if let Some(mneme_alias) = mneme_alias_tool(tool) {
                 aliased.push(mneme_alias);
+            }
+            if let Some(vault_alias) = perseus_vault_alias_tool(tool) {
+                aliased.push(vault_alias);
             }
         }
         serde_json::Value::Array(aliased)
@@ -2697,11 +2712,13 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     }
 }
 fn call_tool(name: &str, db: &Database, args: Value, _id: Option<Value>) -> String {
-    // Mneme rename (transition release): "mneme_*" is a back-compat alias for
-    // "mimir_*" — normalize it once here so every match arm below keeps
+    // Mneme/Perseus Vault rename (transition release): "mneme_*" and
+    // "perseus_vault_*" are back-compat aliases for "mimir_*" — normalize
+    // whichever prefix is present once here so every match arm below keeps
     // dispatching on the original name without needing its own alias arm.
     let owned_name = name
-        .strip_prefix("mneme_")
+        .strip_prefix("perseus_vault_")
+        .or_else(|| name.strip_prefix("mneme_"))
         .map(|suffix| format!("mimir_{}", suffix));
     let name: &str = owned_name.as_deref().unwrap_or(name);
 

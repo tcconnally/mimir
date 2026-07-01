@@ -1537,42 +1537,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mneme"
-version = "2.8.0"
-dependencies = [
- "aes-gcm",
- "async-stream",
- "axum 0.7.9",
- "base64 0.22.1",
- "clap",
- "futures",
- "ndarray",
- "notify",
- "ort",
- "pdf-extract",
- "prost 0.14.4",
- "prost-types 0.14.4",
- "r2d2",
- "r2d2_sqlite",
- "rand 0.8.6",
- "rusqlite",
- "rust-stemmers",
- "serde",
- "serde_json",
- "serde_yaml",
- "tokenizers",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-build",
- "tower",
- "tower-http",
- "ureq 2.12.1",
- "uuid",
- "zip",
-]
-
-[[package]]
 name = "monostate"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1859,6 +1823,42 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "perseus-vault"
+version = "2.9.0"
+dependencies = [
+ "aes-gcm",
+ "async-stream",
+ "axum 0.7.9",
+ "base64 0.22.1",
+ "clap",
+ "futures",
+ "ndarray",
+ "notify",
+ "ort",
+ "pdf-extract",
+ "prost 0.14.4",
+ "prost-types 0.14.4",
+ "r2d2",
+ "r2d2_sqlite",
+ "rand 0.8.6",
+ "rusqlite",
+ "rust-stemmers",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokenizers",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
+ "tower",
+ "tower-http",
+ "ureq 2.12.1",
+ "uuid",
+ "zip",
+]
 
 [[package]]
 name = "petgraph"
