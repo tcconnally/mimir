@@ -1519,6 +1519,26 @@ impl Database {
                 old_raw_body.clone()
             };
             let content_changed = old_plain_body != entity.body_json;
+            // Guarantee this version's recorded_at is strictly after the
+            // superseded version's own recorded_at, so as_of() sees a real,
+            // non-zero-width interval. now_ms() has 1ms resolution; two
+            // remember() calls landing in the same millisecond for the same
+            // (category, key) would otherwise produce a history row with
+            // recorded_at == invalidated_at == now, which as_of()'s strict
+            // `invalidated_at_unix_ms > ?` can never match for any timestamp
+            // -- permanently unreachable despite mimir_history still listing it.
+            let now = if content_changed {
+                let old_recorded_or_created: i64 = conn
+                    .query_row(
+                        "SELECT COALESCE(recorded_at_unix_ms, created_at_unix_ms) FROM entities WHERE id = ?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+                now.max(old_recorded_or_created + 1)
+            } else {
+                now
+            };
             let history_id = format!(
                 "hist-{}",
                 uuid::Uuid::new_v4().to_string().replace('-', "")[..16].to_string()
@@ -5575,6 +5595,65 @@ mod tests {
             .unwrap()
             .expect("v2 is live from the supersede onward");
         assert!(now.body_json.contains("Berlin"), "as_of now must return the current version");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn as_of_history_window_is_never_zero_width_even_at_the_same_millisecond() {
+        // Regression for the same-millisecond edge case: now_ms() has 1ms
+        // resolution, so two remember() calls landing in the same millisecond
+        // for the same (category, key) used to produce a history row with
+        // recorded_at == invalidated_at, permanently unreachable via as_of()
+        // for ANY timestamp (its strict `invalidated_at_unix_ms > ?` never
+        // matches the boundary). Force the exact collision deterministically
+        // (no reliance on real clock timing/sleep) by manually advancing the
+        // live row's recorded_at ahead of "now" before the next remember()
+        // call -- simulating what a same-millisecond collision does to the
+        // inputs remember() sees.
+        let (db, path) = temp_db();
+
+        let v1 = make_entity("e-zw", "facts", "capital", r#"{"note":"Bonn"}"#);
+        db.remember(&v1).unwrap();
+
+        let artificial_recorded_at = now_ms() + 10_000;
+        db.conn()
+            .unwrap()
+            .execute(
+                "UPDATE entities SET recorded_at_unix_ms = ?1 WHERE id = 'e-zw'",
+                params![artificial_recorded_at],
+            )
+            .unwrap();
+
+        // Under the old code this would compute invalidated_at from the raw
+        // (real, lagging) clock -- less than artificial_recorded_at, giving a
+        // negative/zero-width window. The fix must bump it strictly past
+        // artificial_recorded_at regardless of what now_ms() itself returns.
+        let v2 = make_entity("ignored", "facts", "capital", r#"{"note":"Berlin"}"#);
+        db.remember(&v2).unwrap();
+
+        let (recorded, invalidated): (i64, i64) = db
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT recorded_at_unix_ms, invalidated_at_unix_ms FROM entity_history
+                 WHERE category = 'facts' AND key = 'capital'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(recorded, artificial_recorded_at);
+        assert!(
+            invalidated > recorded,
+            "history window must be non-zero-width: recorded={recorded} invalidated={invalidated}"
+        );
+
+        // The old version must be reachable exactly at its recorded_at instant.
+        let mid = db
+            .as_of("facts", "capital", artificial_recorded_at)
+            .unwrap()
+            .expect("v1 must be reachable at its own recorded_at instant");
+        assert!(mid.body_json.contains("Bonn"));
 
         let _ = fs::remove_file(&path);
     }

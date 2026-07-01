@@ -125,7 +125,12 @@ pub fn handle_request(
                 result: Some(json!({
                     "protocolVersion": "2025-06-18",
                     "serverInfo": {
-                        "name": "mimir",
+                        // Tracks Cargo.toml's package name automatically, so a
+                        // future rename doesn't leave this handshake reporting
+                        // stale branding like it did across Mimir -> Mneme ->
+                        // Perseus Vault (this was hardcoded to "mimir" the
+                        // whole time).
+                        "name": env!("CARGO_PKG_NAME"),
                         "version": env!("CARGO_PKG_VERSION")
                     },
                     "capabilities": {
@@ -2948,6 +2953,32 @@ mod tests {
         let resp = handle_request(&req, &state, &db).expect("error response");
         assert_eq!(resp.error.expect("json-rpc error").code, -32600);
         assert!(!state.initialized.load(std::sync::atomic::Ordering::Relaxed));
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn initialize_reports_the_current_crate_name_not_a_hardcoded_one() {
+        // Regression: serverInfo.name was a hardcoded "mimir" literal,
+        // reporting stale branding through the Mimir -> Mneme -> Perseus
+        // Vault renames. It must track Cargo.toml's package name instead.
+        let db_path = std::env::temp_dir()
+            .join(format!("mimir-initialize-name-{}.db", uuid::Uuid::new_v4()));
+        let db = Database::open(db_path.to_str().expect("temp db path")).expect("open temp db");
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: "initialize".to_string(),
+            params: None,
+        };
+        let state = MCPState::new();
+
+        let resp = handle_request(&req, &state, &db).expect("initialize response");
+        let result = resp.result.expect("initialize result");
+        assert_eq!(
+            result["serverInfo"]["name"],
+            json!(env!("CARGO_PKG_NAME")),
+        );
 
         let _ = fs::remove_file(db_path);
     }
