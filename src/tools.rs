@@ -2140,8 +2140,11 @@ pub fn handle_memories(db: &Database, args: Value) -> Result<String, String> {
     match a.command.as_str() {
         "view" => {
             if is_memories_root(&a.path) {
+                // No workspace filter: the adapter writes files with the
+                // global ('') workspace, and #346's list_entities gained a
+                // workspace_hash arg after this call was written.
                 let entries = db
-                    .list_entities(0, 1000, Some(MEMORIES_CATEGORY), None)
+                    .list_entities(0, 1000, Some(MEMORIES_CATEGORY), None, None)
                     .map_err(|e| format!("list failed: {}", e))?;
                 let mut names: Vec<String> =
                     entries.iter().map(|e| e.key.clone()).collect();
