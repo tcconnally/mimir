@@ -1917,7 +1917,7 @@ mod tests {
             "deploy-rule",
             r#"{"recall_when": ["deploying"], "summary": "run tests first"}"#,
         )];
-        let with_hits = render_prepare_block(&hits, "## Mneme Context\n\nsome context\n");
+        let with_hits = render_prepare_block(&hits, "## Perseus Vault Context\n\nsome context\n");
         assert!(
             with_hits.contains("Proactive Recall"),
             "matching task must include the recall_when section:\n{}",
@@ -1926,7 +1926,7 @@ mod tests {
         assert!(with_hits.contains("deploy-rule"));
         assert!(with_hits.contains("some context"));
 
-        let no_hits = render_prepare_block(&[], "## Mneme Context\n\nsome context\n");
+        let no_hits = render_prepare_block(&[], "## Perseus Vault Context\n\nsome context\n");
         assert!(
             !no_hits.contains("Proactive Recall"),
             "no trigger matches must NOT include the recall_when section:\n{}",
@@ -1949,7 +1949,7 @@ mod tests {
 
     #[test]
     fn prepare_block_wraps_output_in_memory_prep_tags() {
-        let out = render_prepare_block(&[], "## Mneme Context\n\nsome context\n");
+        let out = render_prepare_block(&[], "## Perseus Vault Context\n\nsome context\n");
         assert!(out.starts_with("<memory-prep>"));
         assert!(out.ends_with("</memory-prep>"));
     }

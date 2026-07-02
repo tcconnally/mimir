@@ -3663,9 +3663,21 @@ impl Database {
             }
         }
 
+        // Precompute each entity's trigram set once (the #209 pattern from
+        // find_near_duplicate): trigram_similarity rebuilds BOTH sets on every
+        // call, so the pairwise scan was doing O(n²) set constructions on top
+        // of the O(n²) comparisons. The equal-body check preserves
+        // trigram_similarity's exact-match semantics for bodies shorter than
+        // one trigram (their sets are empty, which would otherwise score 0.0).
+        let trigram_sets: Vec<std::collections::HashSet<[char; 3]>> =
+            entities.iter().map(|e| Self::trigrams(&e.2)).collect();
         for i in 0..n {
             for j in (i + 1)..n {
-                let sim = Self::trigram_similarity(&entities[i].2, &entities[j].2);
+                let sim = if entities[i].2 == entities[j].2 && !entities[i].2.is_empty() {
+                    1.0
+                } else {
+                    Self::trigram_overlap(&trigram_sets[i], &trigram_sets[j])
+                };
                 if sim >= params.similarity_threshold {
                     union(&mut parent, i, j);
                 }
@@ -4491,7 +4503,7 @@ last_accessed: {}
         }
 
         // Format as markdown
-        let mut ctx = String::from("## Mneme Context\n\n");
+        let mut ctx = String::from("## Perseus Vault Context\n\n");
 
         // Always-on entities first, visually distinct
         if !always_on_entities.is_empty() {
@@ -5376,8 +5388,10 @@ impl Database {
         let seed_ids: std::collections::HashSet<&str> =
             seeds.iter().map(|e| e.id.as_str()).collect();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut out = Vec::new();
 
+        // Phase 1: discover candidate neighbor ids in deterministic seed/link
+        // order (which is what makes the max_neighbors cut reproducible).
+        let mut ordered_ids: Vec<String> = Vec::new();
         for seed in seeds {
             for link in &seed.links {
                 if seed_ids.contains(link.target_id.as_str()) {
@@ -5386,13 +5400,55 @@ impl Database {
                 if !seen.insert(link.target_id.clone()) {
                     continue; // already discovered via another seed
                 }
-                if let Some(neighbor) = self.get_entity_by_id_public(&link.target_id)? {
-                    if !neighbor.archived {
-                        out.push((neighbor, 1.0));
+                ordered_ids.push(link.target_id.clone());
+            }
+        }
+        if ordered_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Phase 2: hydrate neighbors with one IN(...) query per chunk instead
+        // of a point-query per link (this was an N+1 on the hybrid-recall hot
+        // path). Chunked to keep the SQL variable count bounded; iteration
+        // order over chunks preserves phase-1 order, and archived/missing
+        // neighbors don't count toward the cap — both as before.
+        let conn = self.conn()?;
+        let enc = self.encryption.as_ref();
+        let mut out = Vec::new();
+        'chunks: for chunk in ordered_ids.chunks(500) {
+            let placeholders = (1..=chunk.len())
+                .map(|i| format!("?{}", i))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT id, category, key, body_json, status, type, tags,
+                        decay_score, retrieval_count, layer, topic_path,
+                        archived, archive_reason, links, verified, source,
+                        created_at_unix_ms, last_accessed_unix_ms, NULL as embedding,
+                        always_on, certainty, workspace_hash, agent_id, visibility,
+                        follow_count, miss_count, follow_rate, efficacy_status
+                 FROM entities WHERE archived = 0 AND id IN ({})",
+                placeholders
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> = chunk
+                .iter()
+                .map(|s| s as &dyn rusqlite::types::ToSql)
+                .collect();
+            let rows =
+                stmt.query_map(param_refs.as_slice(), |row| entity_from_row(row, enc))?;
+            let mut by_id: std::collections::HashMap<String, crate::models::Entity> =
+                std::collections::HashMap::new();
+            for row in rows {
+                let e = row?;
+                by_id.insert(e.id.clone(), e);
+            }
+            for id in chunk {
+                if let Some(e) = by_id.remove(id) {
+                    out.push((e, 1.0));
+                    if out.len() >= max_neighbors {
+                        break 'chunks;
                     }
-                }
-                if out.len() >= max_neighbors {
-                    return Ok(out);
                 }
             }
         }
@@ -8216,6 +8272,57 @@ mod tests {
             ids
         );
         assert!(!ids.contains(&"g-hub"), "seed itself must not be re-discovered");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn graph_expand_caps_at_max_neighbors_in_link_order() {
+        // The batched-hydration rewrite must keep the old point-query
+        // semantics: the max_neighbors cut follows deterministic seed/link
+        // order, and archived/missing neighbors don't count toward the cap.
+        let (db, path) = temp_db();
+
+        // Bodies must be dissimilar enough (>30% trigram distance) that
+        // remember()'s near-duplicate check doesn't merge them.
+        let bodies = [
+            r#"{"note":"postgres primary with streaming replication"}"#,
+            r#"{"note":"redis cache fronting the session store"}"#,
+            r#"{"note":"kafka event bus for order workflows"}"#,
+            r#"{"note":"nginx ingress terminating tls"}"#,
+        ];
+        for (i, body) in bodies.iter().enumerate() {
+            db.remember(&make_entity(
+                &format!("cap-n{}", i + 1),
+                "architecture",
+                &format!("cap-svc-{}", i + 1),
+                body,
+            ))
+            .unwrap();
+        }
+        db.remember(&make_entity(
+            "cap-hub",
+            "architecture",
+            "cap-hub-key",
+            r#"{"note":"hub for cap test"}"#,
+        ))
+        .unwrap();
+        // n2 gets archived: it sits FIRST in link order but must not consume
+        // a cap slot.
+        db.link("architecture", "cap-hub-key", "cap-n2", "depends_on").unwrap();
+        db.link("architecture", "cap-hub-key", "cap-n1", "depends_on").unwrap();
+        db.link("architecture", "cap-hub-key", "cap-n3", "depends_on").unwrap();
+        db.link("architecture", "cap-hub-key", "cap-n4", "depends_on").unwrap();
+        db.forget("architecture", "cap-svc-2", "retired").unwrap();
+
+        let seed = db.get_entity("architecture", "cap-hub-key").unwrap().unwrap();
+        let expanded = db.graph_expand(&[seed], 2).unwrap();
+        let ids: Vec<&str> = expanded.iter().map(|(e, _)| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["cap-n1", "cap-n3"],
+            "cap follows link order, skipping the archived first link"
+        );
+
         let _ = fs::remove_file(&path);
     }
 
