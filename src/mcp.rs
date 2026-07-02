@@ -1567,6 +1567,56 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     "title": "Purge Archived Entities"
   },
   {
+    "name": "mimir_memories",
+    "description": "Anthropic memory-tool compatible file interface over the vault: view / create / str_replace / insert / delete / rename on paths under /memories. Files are stored as vault entities (category 'memories', FTS-indexed, encrypted at rest, edits versioned via history), so clients built against Claude's native memory directory convention can use the vault unchanged. Use command='view' with path='/memories' to list files.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "enum": ["view", "create", "str_replace", "insert", "delete", "rename"],
+          "description": "The operation to perform"
+        },
+        "path": {
+          "type": "string",
+          "description": "Path under /memories (e.g. '/memories/notes.md'). For view, '/memories' lists the directory."
+        },
+        "file_text": {
+          "type": "string",
+          "description": "create: full file content to write (overwrites an existing file)"
+        },
+        "old_str": {
+          "type": "string",
+          "description": "str_replace: exact text to replace — must occur exactly once in the file"
+        },
+        "new_str": {
+          "type": "string",
+          "description": "str_replace: replacement text"
+        },
+        "insert_line": {
+          "type": "integer",
+          "description": "insert: line number to insert AT (0 = beginning of file)"
+        },
+        "insert_text": {
+          "type": "string",
+          "description": "insert: the line to insert"
+        },
+        "old_path": {
+          "type": "string",
+          "description": "rename: current path"
+        },
+        "new_path": {
+          "type": "string",
+          "description": "rename: destination path (must not exist)"
+        }
+      },
+      "required": [
+        "command"
+      ]
+    },
+    "title": "Memories Directory (Anthropic convention)"
+  },
+  {
     "name": "mimir_migrate",
     "description": "Migrate a v0.1.x Mneme database to the current v0.5.0 schema. Reads the old database, converts memories to the entity model, and merges into the current database. Use this once per legacy database during upgrade.",
     "inputSchema": {
@@ -2925,6 +2975,7 @@ fn call_tool(name: &str, db: &Database, args: Value, _id: Option<Value>) -> Stri
         "mimir_compact" => Ok(tools::handle_compact(db, args)),
 
         "mimir_purge" => tools::handle_purge(db, args).map_err(|e| e.to_string()),
+        "mimir_memories" => tools::handle_memories(db, args).map_err(|e| e.to_string()),
 
         "mimir_migrate" => Ok(tools::handle_migrate(db, args)),
 
@@ -2990,6 +3041,92 @@ fn error_response(id: Option<Value>, code: i64, message: &str) -> JsonRpcRespons
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn memories_adapter_full_lifecycle_roundtrip() {
+        // The Anthropic /memories directory convention over vault entities:
+        // create, list, view (numbered), str_replace (unique-match), insert,
+        // rename, delete, and recreate-after-delete (revival must also
+        // restore the FTS row so the file is searchable again).
+        let db_path = std::env::temp_dir()
+            .join(format!("mimir-memories-{}.db", uuid::Uuid::new_v4()));
+        let db = Database::open(db_path.to_str().expect("temp db path")).expect("open temp db");
+        let call = |args: Value| -> String {
+            call_tool("mimir_memories", &db, args, None)
+        };
+
+        // create
+        let r = call(json!({"command": "create", "path": "/memories/notes.md",
+                            "file_text": "alpha\nbeta\ngamma"}));
+        assert!(r.contains("created"), "create failed: {r}");
+
+        // view directory
+        let r = call(json!({"command": "view", "path": "/memories"}));
+        let v: Value = serde_json::from_str(&r).unwrap();
+        assert_eq!(v["files"], json!(["notes.md"]), "dir listing: {r}");
+
+        // view file — numbered content
+        let r = call(json!({"command": "view", "path": "/memories/notes.md"}));
+        assert!(r.contains("beta"), "view content missing: {r}");
+        let v: Value = serde_json::from_str(&r).unwrap();
+        assert!(
+            v["content"].as_str().unwrap().contains("     2\tbeta"),
+            "expected cat -n numbering: {r}"
+        );
+
+        // str_replace — must reject ambiguous and missing matches
+        let r = call(json!({"command": "str_replace", "path": "/memories/notes.md",
+                            "old_str": "beta", "new_str": "BETA"}));
+        assert!(r.contains("replaced"), "str_replace failed: {r}");
+        let r = call(json!({"command": "str_replace", "path": "/memories/notes.md",
+                            "old_str": "missing", "new_str": "x"}));
+        assert!(r.contains("not found"), "missing old_str must error: {r}");
+
+        // insert at line 0
+        let r = call(json!({"command": "insert", "path": "/memories/notes.md",
+                            "insert_line": 0, "insert_text": "header"}));
+        assert!(r.contains("inserted"), "insert failed: {r}");
+        let r = call(json!({"command": "view", "path": "/memories/notes.md"}));
+        let v: Value = serde_json::from_str(&r).unwrap();
+        assert!(
+            v["content"].as_str().unwrap().starts_with("     1\theader"),
+            "insert at 0 must lead the file: {r}"
+        );
+
+        // rename
+        let r = call(json!({"command": "rename", "old_path": "/memories/notes.md",
+                            "new_path": "/memories/archive/notes.md"}));
+        assert!(r.contains("renamed"), "rename failed: {r}");
+        let r = call(json!({"command": "view", "path": "/memories"}));
+        let v: Value = serde_json::from_str(&r).unwrap();
+        assert_eq!(v["files"], json!(["archive/notes.md"]), "post-rename listing: {r}");
+
+        // path traversal is rejected
+        let r = call(json!({"command": "view", "path": "/memories/../etc/passwd"}));
+        assert!(r.contains("invalid path") || r.contains("error"), "traversal must be rejected: {r}");
+
+        // delete, then recreate: revival must restore searchability (the FTS
+        // row is deleted by forget; the remember update path must re-insert it).
+        let r = call(json!({"command": "delete", "path": "/memories/archive/notes.md"}));
+        assert!(r.contains("deleted"), "delete failed: {r}");
+        let r = call(json!({"command": "create", "path": "/memories/archive/notes.md",
+                            "file_text": "reborn searchable zanzibar"}));
+        assert!(r.contains("created"), "recreate failed: {r}");
+        let hits = db
+            .recall(&crate::models::RecallParams {
+                query: "zanzibar".to_string(),
+                skip_side_effects: true,
+                ..crate::models::RecallParams::default()
+            })
+            .unwrap();
+        assert!(
+            hits.iter().any(|e| e.key == "archive/notes.md"),
+            "revived file must be FTS-searchable again"
+        );
+
+        drop(db);
+        let _ = fs::remove_file(&db_path);
+    }
 
     #[test]
     fn unknown_tool_error_reports_original_unnormalized_name() {

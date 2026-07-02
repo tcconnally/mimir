@@ -1482,11 +1482,30 @@ impl Database {
         Ok(None)
     }
 
-    /// Store or update an entity. Idempotent by (category, key).
+    /// Store or update an entity. Idempotent by (category, key, workspace).
     /// Returns the entity id and whether this was a create or update.
     pub fn remember(
         &self,
         entity: &Entity,
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
+        self.remember_impl(entity, false)
+    }
+
+    /// Like `remember`, but never merges the write into a near-duplicate.
+    /// For file-semantics writers (the /memories adapter, renames) where
+    /// "similar content already exists under another key" must still create
+    /// THIS key — silently deduping a deliberate file write loses the file.
+    pub fn remember_skip_dedup(
+        &self,
+        entity: &Entity,
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
+        self.remember_impl(entity, true)
+    }
+
+    fn remember_impl(
+        &self,
+        entity: &Entity,
+        skip_dedup: bool,
     ) -> Result<(String, String), Box<dyn std::error::Error>> {
         let conn = self.conn()?;
         let tags_json = serde_json::to_string(&entity.tags)?;
@@ -1668,17 +1687,28 @@ impl Database {
                 )?;
             }
 
-            // Update FTS5 index
-            tx.execute(
+            // Update FTS5 index. A row revived from archive has NO fts row
+            // (forget deletes it), so a plain UPDATE was a silent no-op and
+            // the revived entity stayed unsearchable forever — re-insert in
+            // that case.
+            let fts_rows = tx.execute(
                 "UPDATE entities_fts SET body_json = ?1 WHERE rowid = (SELECT rowid FROM entities WHERE id = ?2)",
                 params![entity.body_json, id],
             )?;
+            if fts_rows == 0 {
+                tx.execute(
+                    "INSERT INTO entities_fts (rowid, body_json)
+                     VALUES ((SELECT rowid FROM entities WHERE id = ?2), ?1)",
+                    params![entity.body_json, id],
+                )?;
+            }
             tx.commit()?;
 
             action = "updated".to_string();
             should_embed = content_changed;
         } else {
-            // Check for near-duplicates before inserting
+            // Check for near-duplicates before inserting (unless the caller is
+            // a file-semantics writer — see remember_skip_dedup).
             let dup_threshold = 0.7; // 70% trigram similarity
             // MIMIR_DEDUP_FTS_PREFILTER (default off) trades exact dedup for an
             // FTS candidate prefilter that collapses the O(M*N) bulk-import cost.
@@ -1686,21 +1716,23 @@ impl Database {
             let fts_prefilter = std::env::var("MIMIR_DEDUP_FTS_PREFILTER")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
-            if let Ok(Some(dup_id)) = self.find_near_duplicate(
-                &entity.category,
-                &entity.workspace_hash,
-                &entity.body_json,
-                dup_threshold,
-                fts_prefilter,
-            ) {
-                // Near-duplicate found — bump its importance instead of creating new
-                let _ = conn.execute(
-                    "UPDATE entities SET decay_score = MIN(1.0, decay_score + 0.15),
-                     retrieval_count = retrieval_count + 1,
-                     last_accessed_unix_ms = ?1 WHERE id = ?2",
-                    params![now_ms(), dup_id],
-                );
-                return Ok((dup_id, "deduped (new key not created)".to_string()));
+            if !skip_dedup {
+                if let Ok(Some(dup_id)) = self.find_near_duplicate(
+                    &entity.category,
+                    &entity.workspace_hash,
+                    &entity.body_json,
+                    dup_threshold,
+                    fts_prefilter,
+                ) {
+                    // Near-duplicate found — bump its importance instead of creating new
+                    let _ = conn.execute(
+                        "UPDATE entities SET decay_score = MIN(1.0, decay_score + 0.15),
+                         retrieval_count = retrieval_count + 1,
+                         last_accessed_unix_ms = ?1 WHERE id = ?2",
+                        params![now_ms(), dup_id],
+                    );
+                    return Ok((dup_id, "deduped (new key not created)".to_string()));
+                }
             }
 
             // Insert new entity

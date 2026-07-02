@@ -2011,6 +2011,243 @@ pub fn handle_purge(db: &Database, args: Value) -> Result<String, String> {
     serde_json::to_string(&report).map_err(|e| format!("Serialization failed: {}", e))
 }
 
+// ─── /memories directory-convention adapter ──────────────────────
+//
+// Implements Anthropic's memory-tool convention (the `memory_20250818`
+// command set: view / create / str_replace / insert / delete / rename over
+// paths under /memories) on top of the entity store, so clients built
+// against Claude's native memory tool can point at the vault unchanged.
+// Files are entities in the reserved `memories` category with key = the
+// path relative to /memories; bodies are the raw file text (FTS-indexed,
+// encrypted at rest like any entity, and versioned through the normal
+// bi-temporal history on edit).
+
+const MEMORIES_CATEGORY: &str = "memories";
+
+#[derive(Debug, Deserialize)]
+pub struct MemoriesArgs {
+    pub command: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub file_text: String,
+    #[serde(default)]
+    pub old_str: String,
+    #[serde(default)]
+    pub new_str: String,
+    #[serde(default)]
+    pub insert_line: i64,
+    #[serde(default)]
+    pub insert_text: String,
+    #[serde(default)]
+    pub old_path: String,
+    #[serde(default)]
+    pub new_path: String,
+}
+
+/// Normalize a /memories path to an entity key. Rejects traversal and
+/// absolute-elsewhere paths rather than silently reinterpreting them.
+fn memories_key(path: &str) -> Result<String, String> {
+    let p = path.trim().replace('\\', "/");
+    let rel = p
+        .strip_prefix("/memories/")
+        .or_else(|| p.strip_prefix("memories/"))
+        .unwrap_or(p.trim_start_matches('/'));
+    let rel = rel.trim_matches('/');
+    if rel.is_empty() {
+        return Err("path must name a file under /memories".to_string());
+    }
+    if rel.split('/').any(|seg| seg == "." || seg == ".." || seg.is_empty()) {
+        return Err(format!("invalid path: {}", path));
+    }
+    Ok(rel.to_string())
+}
+
+/// True when the path means the /memories directory itself.
+fn is_memories_root(path: &str) -> bool {
+    let p = path.trim().trim_end_matches('/');
+    p.is_empty() || p == "/memories" || p == "memories" || p == "/"
+}
+
+fn memories_file(db: &Database, key: &str) -> Result<Option<crate::models::Entity>, String> {
+    db.get_entity(MEMORIES_CATEGORY, key)
+        .map_err(|e| format!("read failed: {}", e))
+        .map(|opt| opt.filter(|e| !e.archived))
+}
+
+fn memories_write(
+    db: &Database,
+    key: &str,
+    text: &str,
+    existing: Option<&crate::models::Entity>,
+) -> Result<(), String> {
+    let now = crate::db::now_ms();
+    let entity = match existing {
+        // Preserve identity/stats on edit; remember()'s update path snapshots
+        // the prior version into entity_history (versioned files for free).
+        Some(prev) => crate::models::Entity {
+            body_json: text.to_string(),
+            archived: false,
+            archive_reason: String::new(),
+            last_accessed_unix_ms: now,
+            ..prev.clone()
+        },
+        None => {
+            let raw_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+            crate::models::Entity {
+                id: format!("memf-{}", &raw_id[..12.min(raw_id.len())]),
+                category: MEMORIES_CATEGORY.to_string(),
+                key: key.to_string(),
+                body_json: text.to_string(),
+                status: "active".to_string(),
+                entity_type: "file".to_string(),
+                tags: vec!["memories".to_string()],
+                decay_score: 1.0,
+                retrieval_count: 0,
+                layer: "working".to_string(),
+                topic_path: String::new(),
+                archived: false,
+                archive_reason: String::new(),
+                links: vec![],
+                verified: false,
+                source: "memories-adapter".to_string(),
+                always_on: false,
+                certainty: 0.5,
+                workspace_hash: String::new(),
+                agent_id: String::new(),
+                visibility: "workspace".to_string(),
+                created_at_unix_ms: now,
+                last_accessed_unix_ms: now,
+                follow_count: 0,
+                miss_count: 0,
+                follow_rate: 0.0,
+                efficacy_status: "unverified".to_string(),
+                embedding: None,
+            }
+        }
+    };
+    // skip_dedup: a deliberate file write must create THIS path even when a
+    // similar file already exists under another path.
+    db.remember_skip_dedup(&entity)
+        .map(|_| ())
+        .map_err(|e| format!("write failed: {}", e))
+}
+
+pub fn handle_memories(db: &Database, args: Value) -> Result<String, String> {
+    let a: MemoriesArgs = serde_json::from_value(args)
+        .map_err(|e| format!("Invalid memories arguments: {}", e))?;
+
+    match a.command.as_str() {
+        "view" => {
+            if is_memories_root(&a.path) {
+                let entries = db
+                    .list_entities(0, 1000, Some(MEMORIES_CATEGORY), None)
+                    .map_err(|e| format!("list failed: {}", e))?;
+                let mut names: Vec<String> =
+                    entries.iter().map(|e| e.key.clone()).collect();
+                names.sort();
+                return Ok(json!({
+                    "directory": "/memories",
+                    "files": names,
+                    "total": names.len(),
+                })
+                .to_string());
+            }
+            let key = memories_key(&a.path)?;
+            let file = memories_file(db, &key)?
+                .ok_or_else(|| format!("file not found: /memories/{}", key))?;
+            // cat -n style numbering, matching the native memory tool's view.
+            let numbered: String = file
+                .body_json
+                .lines()
+                .enumerate()
+                .map(|(i, l)| format!("{:>6}\t{}\n", i + 1, l))
+                .collect();
+            Ok(json!({
+                "path": format!("/memories/{}", key),
+                "content": numbered,
+            })
+            .to_string())
+        }
+        "create" => {
+            let key = memories_key(&a.path)?;
+            // Anthropic semantics: create overwrites an existing file.
+            let existing = memories_file(db, &key)?;
+            memories_write(db, &key, &a.file_text, existing.as_ref())?;
+            Ok(json!({"path": format!("/memories/{}", key), "action": "created"}).to_string())
+        }
+        "str_replace" => {
+            let key = memories_key(&a.path)?;
+            let file = memories_file(db, &key)?
+                .ok_or_else(|| format!("file not found: /memories/{}", key))?;
+            let occurrences = file.body_json.matches(&a.old_str).count();
+            if a.old_str.is_empty() {
+                return Err("old_str must not be empty".to_string());
+            }
+            if occurrences == 0 {
+                return Err(format!("old_str not found in /memories/{}", key));
+            }
+            if occurrences > 1 {
+                return Err(format!(
+                    "old_str occurs {} times in /memories/{} — must be unique",
+                    occurrences, key
+                ));
+            }
+            let updated = file.body_json.replacen(&a.old_str, &a.new_str, 1);
+            memories_write(db, &key, &updated, Some(&file))?;
+            Ok(json!({"path": format!("/memories/{}", key), "action": "replaced"}).to_string())
+        }
+        "insert" => {
+            let key = memories_key(&a.path)?;
+            let file = memories_file(db, &key)?
+                .ok_or_else(|| format!("file not found: /memories/{}", key))?;
+            let mut lines: Vec<&str> = file.body_json.lines().collect();
+            let at = a.insert_line.clamp(0, lines.len() as i64) as usize;
+            lines.insert(at, &a.insert_text);
+            let updated = lines.join("\n");
+            memories_write(db, &key, &updated, Some(&file))?;
+            Ok(json!({
+                "path": format!("/memories/{}", key),
+                "action": "inserted",
+                "at_line": at,
+            })
+            .to_string())
+        }
+        "delete" => {
+            let key = memories_key(&a.path)?;
+            let removed = db
+                .forget(MEMORIES_CATEGORY, &key, "memories: delete command")
+                .map_err(|e| format!("delete failed: {}", e))?;
+            if !removed {
+                return Err(format!("file not found: /memories/{}", key));
+            }
+            Ok(json!({"path": format!("/memories/{}", key), "action": "deleted"}).to_string())
+        }
+        "rename" => {
+            let old_key = memories_key(&a.old_path)?;
+            let new_key = memories_key(&a.new_path)?;
+            let file = memories_file(db, &old_key)?
+                .ok_or_else(|| format!("file not found: /memories/{}", old_key))?;
+            if memories_file(db, &new_key)?.is_some() {
+                return Err(format!("destination exists: /memories/{}", new_key));
+            }
+            memories_write(db, &new_key, &file.body_json, None)?;
+            db.forget(MEMORIES_CATEGORY, &old_key, "memories: renamed")
+                .map_err(|e| format!("rename cleanup failed: {}", e))?;
+            Ok(json!({
+                "from": format!("/memories/{}", old_key),
+                "to": format!("/memories/{}", new_key),
+                "action": "renamed",
+            })
+            .to_string())
+        }
+        other => Err(format!(
+            "unknown command '{}' (expected view/create/str_replace/insert/delete/rename)",
+            other
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
