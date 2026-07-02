@@ -3087,13 +3087,20 @@ mod tests {
         )
         .expect("filtered recall");
         let fv: Value = serde_json::from_str(&filtered).unwrap();
+        // Compare as SETS (sorted), not ordered lists: the first (unfiltered)
+        // recall reinforces both hits, which legitimately changes the ranking
+        // inputs (retrieval_count, last_accessed) before the second call, and
+        // the final `id ASC` tie-break is over random UUIDs — so cross-call
+        // ORDER is not a stable property. Membership is.
         let keys = |v: &Value| -> Vec<String> {
-            v["items"]
+            let mut k: Vec<String> = v["items"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .map(|i| i["key"].as_str().unwrap().to_string())
-                .collect()
+                .collect();
+            k.sort();
+            k
         };
         assert_eq!(keys(&uv), keys(&fv), "always-true filter must not change the result set");
 
