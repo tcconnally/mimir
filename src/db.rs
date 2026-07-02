@@ -586,7 +586,8 @@ impl Database {
         Ok(result)
     }
 
-    /// Store a dense vector embedding for an entity.
+    /// Store a dense vector embedding for an entity (and its sign-bit
+    /// signature — see `embedding_signature` / the dense_search prefilter).
     #[allow(dead_code)]
     pub fn store_embedding(
         &self,
@@ -595,9 +596,10 @@ impl Database {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let conn = self.conn()?;
         let blob: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let sig = embedding_signature(embedding);
         conn.execute(
-            "UPDATE entities SET embedding = ?1 WHERE id = ?2",
-            params![blob, id],
+            "UPDATE entities SET embedding = ?1, emb_sig = ?2 WHERE id = ?3",
+            params![blob, sig, id],
         )?;
         Ok(())
     }
@@ -976,28 +978,114 @@ impl Database {
         let max_scan = 50_000; // safety ceiling — databases beyond this should use HNSW
         let dim = query_vec.len();
 
+        // Signature prefilter cutover point. Below this many embedded rows the
+        // exact full scan is already cheap AND stays byte-identical to the
+        // historical behavior; above it, reading every f32 blob dominates
+        // query time, so we Hamming-prefilter on the dim/8-byte sign
+        // signatures and only read full embeddings for an oversampled pool.
+        const DENSE_SIG_PREFILTER_MIN_ROWS: i64 = 2048;
+        // Exact-rerank pool size: generous oversampling keeps the top-k from
+        // the prefiltered path effectively identical to the exact scan for
+        // normalized text embeddings.
+        let pool_target = |limit: usize| (limit.saturating_mul(16)).clamp(512, 4096);
+
+        let embedded_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entities WHERE archived = 0 AND embedding IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )?;
+
         // Phase 1 (#209): lightweight scan — read only id + embedding for scoring.
         // The old query hydrated EVERY candidate (decrypt body, parse tags/links)
         // up to max_scan just to score and then keep top-k. Defer full hydration
         // to the surviving top-k in phase 3.
-        let mut stmt = conn.prepare(&format!(
-            "SELECT id, embedding FROM entities \
-             WHERE archived = 0 AND embedding IS NOT NULL LIMIT {}",
-            max_scan
-        ))?;
-        let rows = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let emb_blob: Vec<u8> = row.get(1)?;
-            let emb: Vec<f32> = emb_blob
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                .collect();
-            Ok((id, emb))
-        })?;
-        let candidates: Vec<(String, Vec<f32>)> = rows
-            .filter_map(|r| r.ok())
-            .filter(|(_, emb)| emb.len() == dim)
-            .collect();
+        let candidates: Vec<(String, Vec<f32>)> = if embedded_rows
+            < DENSE_SIG_PREFILTER_MIN_ROWS
+        {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT id, embedding FROM entities \
+                 WHERE archived = 0 AND embedding IS NOT NULL LIMIT {}",
+                max_scan
+            ))?;
+            let rows = stmt.query_map([], |row| {
+                let id: String = row.get(0)?;
+                let emb_blob: Vec<u8> = row.get(1)?;
+                let emb: Vec<f32> = emb_blob
+                    .chunks_exact(4)
+                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    .collect();
+                Ok((id, emb))
+            })?;
+            rows.filter_map(|r| r.ok())
+                .filter(|(_, emb)| emb.len() == dim)
+                .collect()
+        } else {
+            // Phase 0: signature prefilter. Scan only id + emb_sig (~48 bytes
+            // vs ~1.5KB per row for 384-dim), rank by Hamming distance to the
+            // query signature with an id tie-break (deterministic), keep an
+            // oversampled pool, then read full embeddings for the pool only.
+            // Rows with a NULL signature (written by a pre-v6 binary after
+            // migration) are always included so they can't be silently lost.
+            let query_sig = embedding_signature(query_vec);
+            let mut stmt = conn.prepare(&format!(
+                "SELECT id, emb_sig FROM entities \
+                 WHERE archived = 0 AND embedding IS NOT NULL LIMIT {}",
+                max_scan
+            ))?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<Vec<u8>>>(1)?,
+                ))
+            })?;
+            let mut ranked: Vec<(u32, String)> = Vec::new();
+            let mut unsigned_ids: Vec<String> = Vec::new();
+            for row in rows {
+                let (id, sig) = row?;
+                match sig {
+                    Some(s) => ranked.push((signature_hamming(&query_sig, &s), id)),
+                    None => unsigned_ids.push(id),
+                }
+            }
+            let pool = pool_target(limit);
+            ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+            ranked.truncate(pool);
+            let mut pool_ids: Vec<String> =
+                ranked.into_iter().map(|(_, id)| id).collect();
+            pool_ids.append(&mut unsigned_ids);
+
+            // Fetch full embeddings for the pool only (chunked IN to bound
+            // SQL variable count).
+            let mut fetched: Vec<(String, Vec<f32>)> = Vec::with_capacity(pool_ids.len());
+            for chunk in pool_ids.chunks(500) {
+                let placeholders = vec!["?"; chunk.len()].join(",");
+                let sql = format!(
+                    "SELECT id, embedding FROM entities WHERE id IN ({})",
+                    placeholders
+                );
+                let mut estmt = conn.prepare(&sql)?;
+                let refs: Vec<&dyn rusqlite::types::ToSql> = chunk
+                    .iter()
+                    .map(|s| s as &dyn rusqlite::types::ToSql)
+                    .collect();
+                let erows = estmt.query_map(refs.as_slice(), |row| {
+                    let id: String = row.get(0)?;
+                    let emb_blob: Vec<u8> = row.get(1)?;
+                    let emb: Vec<f32> = emb_blob
+                        .chunks_exact(4)
+                        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                        .collect();
+                    Ok((id, emb))
+                })?;
+                for r in erows {
+                    let (id, emb) = r?;
+                    if emb.len() == dim {
+                        fetched.push((id, emb));
+                    }
+                }
+            }
+            fetched
+        };
 
         // Phase 2: score by cosine similarity, keep the top `limit` ids.
         let mut scored_ids: Vec<(String, f64)>;
@@ -5632,6 +5720,29 @@ fn is_stopword(word: &str) -> bool {
     STOPWORDS.contains(&lower.as_str())
 }
 
+/// Sign-bit signature of an embedding: bit i set iff v[i] > 0, packed into
+/// dim/8 bytes (dim 384 → 48 bytes vs 1536 for the f32 blob). For normalized
+/// text embeddings, Hamming distance between signatures tracks cosine
+/// distance closely enough to prefilter candidates before an exact re-rank.
+pub(crate) fn embedding_signature(v: &[f32]) -> Vec<u8> {
+    let mut sig = vec![0u8; v.len().div_ceil(8)];
+    for (i, &x) in v.iter().enumerate() {
+        if x > 0.0 {
+            sig[i / 8] |= 1 << (i % 8);
+        }
+    }
+    sig
+}
+
+/// Hamming distance between two signatures. Length mismatch (different
+/// embedding dims) scores maximally distant so it can never win a slot.
+fn signature_hamming(a: &[u8], b: &[u8]) -> u32 {
+    if a.len() != b.len() {
+        return u32::MAX;
+    }
+    a.iter().zip(b).map(|(x, y)| (x ^ y).count_ones()).sum()
+}
+
 fn truncate_str(s: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {
         s.to_string()
@@ -7687,6 +7798,99 @@ mod tests {
         assert!(
             !results.iter().any(|(e, _)| e.key == "arch"),
             "archived entity must not be returned"
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn embedding_signature_packs_sign_bits_and_hamming_tracks_distance() {
+        // bit i set iff v[i] > 0; zero and negative both clear.
+        let sig = embedding_signature(&[1.0, -1.0, 0.0, 0.5, -0.2, 2.0, 0.0, -3.0, 0.1]);
+        assert_eq!(sig.len(), 2, "9 dims pack into 2 bytes");
+        assert_eq!(sig[0], 0b0010_1001);
+        assert_eq!(sig[1], 0b0000_0001);
+
+        let a = embedding_signature(&[1.0, 1.0, -1.0, -1.0]);
+        let b = embedding_signature(&[1.0, -1.0, -1.0, 1.0]);
+        assert_eq!(signature_hamming(&a, &a), 0);
+        assert_eq!(signature_hamming(&a, &b), 2);
+        // Dim mismatch can never win a candidate slot.
+        assert_eq!(signature_hamming(&a, &sig), u32::MAX);
+    }
+
+    #[test]
+    fn dense_search_signature_prefilter_finds_the_same_top_hits_at_scale() {
+        // Above DENSE_SIG_PREFILTER_MIN_ROWS dense_search switches to the
+        // Hamming-prefilter + exact-rerank path. Seed 2200 embedded rows with
+        // a deterministic spread plus two engineered near-neighbors of the
+        // query; the prefiltered path must surface both, exactly ranked by
+        // true cosine, and never return an archived row.
+        let (db, path) = temp_db();
+        let conn = db.conn().unwrap();
+        let blob = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|f| f.to_le_bytes()).collect() };
+        let dim = 16usize;
+        let tx = conn.unchecked_transaction().unwrap();
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO entities (id, category, key, body_json, type, status,
+                        retrieval_count, last_accessed_unix_ms, created_at_unix_ms,
+                        decay_score, layer, embedding, emb_sig, archived)
+                     VALUES (?1, 'insight', ?2, '{}', 'insight', 'active', 0, 0, 0,
+                             1.0, 'working', ?3, ?4, ?5)",
+                )
+                .unwrap();
+            // Deterministic filler vectors: sign pattern derived from the row
+            // index bits, pointing all over the hypercube and away from the
+            // all-positive query region. Starts at 1: i=0 hashes to the
+            // all-positive pattern, which would tie the engineered exact hit
+            // (2654435761 is odd, so no other i < 65536 hashes to it).
+            for i in 1..=2200u32 {
+                let v: Vec<f32> = (0..dim)
+                    .map(|d| {
+                        let bit = (i.wrapping_mul(2654435761) >> (d as u32 % 31)) & 1;
+                        if bit == 1 { -1.0 } else { 0.3 } // mixed signs, never all-positive
+                    })
+                    .collect();
+                stmt.execute(params![
+                    format!("filler-{:05}", i),
+                    format!("filler-key-{:05}", i),
+                    blob(&v),
+                    embedding_signature(&v),
+                    0i64
+                ])
+                .unwrap();
+            }
+            // Engineered hits: the query itself and a slightly-rotated cousin.
+            let query: Vec<f32> = vec![1.0; dim];
+            let mut near = query.clone();
+            near[0] = 0.6;
+            stmt.execute(params![
+                "hit-exact", "hit-exact-key", blob(&query), embedding_signature(&query), 0i64
+            ])
+            .unwrap();
+            stmt.execute(params![
+                "hit-near", "hit-near-key", blob(&near), embedding_signature(&near), 0i64
+            ])
+            .unwrap();
+            // An archived twin of the query must never surface.
+            stmt.execute(params![
+                "hit-archived", "hit-archived-key", blob(&query), embedding_signature(&query), 1i64
+            ])
+            .unwrap();
+        }
+        tx.commit().unwrap();
+
+        let query: Vec<f32> = vec![1.0; dim];
+        let results = db.dense_search(&query, 5).unwrap();
+        let ids: Vec<&str> = results.iter().map(|(e, _)| e.id.as_str()).collect();
+        assert_eq!(ids[0], "hit-exact", "true nearest must rank first: {ids:?}");
+        assert_eq!(ids[1], "hit-near", "second-nearest must rank second: {ids:?}");
+        assert!(!ids.contains(&"hit-archived"), "archived row leaked: {ids:?}");
+        assert!(
+            results[0].1 > results[1].1,
+            "scores must be exact-cosine ordered"
         );
 
         let _ = fs::remove_file(&path);

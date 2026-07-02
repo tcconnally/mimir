@@ -26,6 +26,11 @@ CREATE TABLE IF NOT EXISTS entities (
     created_at_unix_ms INTEGER NOT NULL,
     last_accessed_unix_ms INTEGER NOT NULL,
     embedding BLOB,
+    -- Sign-bit signature of `embedding` (v2.13.0, dim/8 bytes): bit i set iff
+    -- embedding[i] > 0. dense_search Hamming-prefilters on this instead of
+    -- reading every full embedding blob once the vault is large enough.
+    -- Written by store_embedding; backfilled by the v6 migration.
+    emb_sig BLOB,
     always_on INTEGER DEFAULT 0,
     certainty REAL DEFAULT 0.5,
     -- Persistent importance floor (v2.13.0). Set by mimir_score; decay_tick and
@@ -145,7 +150,7 @@ CREATE INDEX IF NOT EXISTS idx_entity_history_catkey ON entity_history(category,
 /// the column-add migrations below have been applied. Bump this whenever you add
 /// a new ALTER-probe migration in `initialize_schema`, or existing databases
 /// (already at the previous level) will skip it.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Initialize the v0.2.0 schema on a fresh database.
 pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
@@ -273,6 +278,35 @@ pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Er
     // v5: persistent importance floor (see the column comment in the DDL).
     if conn.prepare("SELECT importance FROM entities LIMIT 1").is_err() {
         conn.execute_batch("ALTER TABLE entities ADD COLUMN importance REAL DEFAULT 0.0;")?;
+    }
+
+    // v6: sign-bit embedding signatures for the dense-search prefilter, plus a
+    // backfill for embeddings stored before the column existed. Bounded work:
+    // one pass over embedded rows, ~50 bytes written per row.
+    if conn.prepare("SELECT emb_sig FROM entities LIMIT 1").is_err() {
+        conn.execute_batch("ALTER TABLE entities ADD COLUMN emb_sig BLOB;")?;
+    }
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, embedding FROM entities \
+             WHERE embedding IS NOT NULL AND emb_sig IS NULL",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        let pending: Vec<(String, Vec<u8>)> = rows.filter_map(|r| r.ok()).collect();
+        drop(stmt);
+        for (id, blob) in pending {
+            let emb: Vec<f32> = blob
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            let sig = crate::db::embedding_signature(&emb);
+            conn.execute(
+                "UPDATE entities SET emb_sig = ?1 WHERE id = ?2",
+                params![sig, id],
+            )?;
+        }
     }
 
     // v4 (#339): identity becomes (category, key, workspace_hash). A plain
@@ -688,6 +722,32 @@ mod tests {
             .is_err(),
             "same-workspace duplicate must still violate uniqueness"
         );
+    }
+
+    #[test]
+    fn migration_backfills_embedding_signatures() {
+        // v6: embeddings stored before emb_sig existed must get a signature
+        // during the gated migration, matching what store_embedding writes.
+        let (conn, _path) = temp_db();
+        initialize_schema(&conn).expect("fresh init");
+        // Rewind: drop the column's data by simulating a pre-v6 row.
+        let emb: Vec<f32> = vec![1.0, -2.0, 0.5, -0.1];
+        let blob: Vec<u8> = emb.iter().flat_map(|f| f.to_le_bytes()).collect();
+        conn.execute(
+            "INSERT INTO entities (id, category, key, body_json, embedding, emb_sig,
+                                   created_at_unix_ms, last_accessed_unix_ms)
+             VALUES ('sig-1', 'note', 'k', '{}', ?1, NULL, 0, 0)",
+            params![blob],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 5).unwrap();
+
+        initialize_schema(&conn).expect("v5 -> v6 migration");
+
+        let sig: Vec<u8> = conn
+            .query_row("SELECT emb_sig FROM entities WHERE id = 'sig-1'", [], |r| r.get(0))
+            .expect("emb_sig must be backfilled");
+        assert_eq!(sig, crate::db::embedding_signature(&emb));
     }
 
     #[test]
