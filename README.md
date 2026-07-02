@@ -6,11 +6,11 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://rust-lang.org)
-[![Version](https://img.shields.io/badge/version-2.9.0-green.svg)](https://github.com/Perseus-Computing-LLC/perseus-vault/releases)
+[![Version](https://img.shields.io/badge/version-2.13.0-green.svg)](https://github.com/Perseus-Computing-LLC/perseus-vault/releases)
 [![LangGraph](https://img.shields.io/badge/integrations-LangGraph-blue)](integrations/langgraph/)
 [![CrewAI](https://img.shields.io/badge/integrations-CrewAI-orange)](integrations/crewai/)
 [![AutoGen](https://img.shields.io/badge/integrations-AutoGen-purple)](integrations/autogen/)
-[![MCP Tools](https://img.shields.io/badge/MCP%20tools-46-brightgreen)]()
+[![MCP Tools](https://img.shields.io/badge/MCP%20tools-49-brightgreen)]()
 
 Perseus Vault is a single Rust binary that gives AI agents durable memory across sessions.
 **One binary. One file. No Docker. No Postgres. No cloud.** Just persistent memory
@@ -93,7 +93,7 @@ local-first, zero-dependency, AND agent-first.
 |---|---|---|---|---|
 | **Deployment** | Single binary (~8MB) | Cloud + self-host | Docker/Postgres | Docker/Postgres |
 | **Dependencies** | None (SQLite embedded) | Python + vector DB | Postgres + Python | Postgres + Go |
-| **MCP-Native** | ✅ 46 tools | ❌ Not MCP-native | ❌ Not MCP-native | ❌ Not MCP-native |
+| **MCP-Native** | ✅ 49 tools | ❌ Not MCP-native | ❌ Not MCP-native | ❌ Not MCP-native |
 | **Offline/Local** | ✅ Fully local | Cloud-dependent | Docker needed | Docker needed |
 | **Encryption** | AES-256-GCM ✅ | ❌ | ❌ | ❌ |
 | **Hybrid Search** | BM25 + Dense + RRF | Vector only | Vector only | Vector + Graph |
@@ -101,7 +101,7 @@ local-first, zero-dependency, AND agent-first.
 | **Entity Graph** | Link + Traverse | ❌ | ❌ | ✅ |
 | **Journal Audit Trail** | ✅ Immutable | ❌ | ❌ | ❌ |
 | **State Management** | ✅ Key-value + TTL | ❌ | ❌ | ❌ |
-| **MCP Tools** | 46 | 5 | 8 | 0 |
+| **MCP Tools** | 49 | 5 | 8 | 0 |
 | **GitHub Stars** | ~20 | ~55K | ~15K | ~3K |
 | **License** | MIT | Apache 2.0 | Apache 2.0 | Apache 2.0 |
 
@@ -143,7 +143,7 @@ Each adapter:
 Any MCP-compatible framework works with Perseus Vault directly. See
 [Awesome Mimir](awesome-mimir.md) for the full list.
 
-## 46 MCP Tools
+## 49 MCP Tools
 
 ### Entity CRUD
 | Tool | Description |
@@ -167,6 +167,7 @@ Any MCP-compatible framework works with Perseus Vault directly. See
 | `mimir_ingest` | Trigger connector syncs (GitHub, file watcher). |
 | `mimir_ingest_file` | Locally extract a document's text (plaintext/markdown always; DOCX/PDF with the `multimodal` feature) and store it as a recallable entity. |
 | `mimir_extract` | Local, deterministic, rule-based knowledge extraction (facts / preferences / temporal events / episodes) from text or a stored entity. Read-only. |
+| `mimir_memories` | Anthropic memory-tool compatible file interface (`view`/`create`/`str_replace`/`insert`/`delete`/`rename` under `/memories`), backed by vault entities. |
 
 ### Graph
 | Tool | Description |
@@ -199,6 +200,7 @@ Any MCP-compatible framework works with Perseus Vault directly. See
 | `mimir_autocohere` | Full atomic grooming: cohere → decay → compact in one pass (supports dry-run). |
 | `mimir_compact` | Archive entities below decay threshold. |
 | `mimir_reindex` | Rebuild FTS5 search index from entities table. |
+| `mimir_consolidate` | Merge overlapping/duplicative entities in a category into durable, evidence-tracked observations (mirror image of `mimir_conflicts`). |
 
 ### Quality
 | Tool | Description |
@@ -207,6 +209,7 @@ Any MCP-compatible framework works with Perseus Vault directly. See
 | `mimir_conflicts` | Detect conflicting entities via trigram similarity; opt-in `resolve=true` invalidates the lower-certainty side into history (reversible, dry-run by default). |
 | `mimir_correct` | Structured correction capture for learning from errors. |
 | `mimir_supersede` | Mark a new fact as superseding an old one (sets the old entity to `deprecated`). |
+| `mimir_follow` | Record whether an entity was actually FOLLOWED or MISSED — follow-rate efficacy signal that feeds decay scoring. |
 
 ### Vault & Federation
 | Tool | Description |

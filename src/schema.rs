@@ -156,110 +156,112 @@ const SCHEMA_VERSION: i64 = 6;
 pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     // DDL is all IF NOT EXISTS, so it stays ungated: it both creates a fresh DB
     // and back-fills newer objects (e.g. idx_entities_recall) on older ones.
+    // It also stays OUTSIDE the migration transaction below — IF NOT EXISTS is
+    // already concurrency-safe, and it keeps the FTS5 virtual-table creation
+    // out of the transaction entirely.
     conn.execute_batch(DDL_V0_2_0)?;
 
-    // The column-add migrations below each prepare a throwaway `SELECT col LIMIT 1`
-    // probe. `open` runs several times per process, so on a fully-migrated DB this
-    // is pure wasted work. Gate it on PRAGMA user_version: run once when behind,
-    // then stamp current and skip on every subsequent open. (#208)
+    // The column-add migrations each probe for the column first. `open` runs
+    // several times per process, so on a fully-migrated DB this is pure wasted
+    // work. Gate it on PRAGMA user_version: run once when behind, then stamp
+    // current and skip on every subsequent open. (#208)
+    let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if user_version >= SCHEMA_VERSION {
+        return Ok(());
+    }
+
+    // #353: PRAGMA busy_timeout serializes individual statements, not this
+    // whole check-then-migrate sequence — two *processes* opening the same
+    // pre-upgrade DB could both read a stale user_version, both enter the
+    // migration path, and the loser would die on "duplicate column name".
+    // BEGIN IMMEDIATE takes SQLite's write lock up front, acting as a
+    // cross-process mutex: the loser blocks here (subject to busy_timeout)
+    // until the winner commits, then sees the stamped version inside
+    // apply_migrations and no-ops. Bonus: the migration steps used to
+    // auto-commit individually; one transaction makes the whole migration
+    // atomic (SQLite DDL is transactional), so a crash mid-migration rolls
+    // back cleanly instead of leaving a half-migrated DB.
+    conn.execute_batch("BEGIN IMMEDIATE;")?;
+    match apply_migrations(conn) {
+        Ok(()) => {
+            conn.execute_batch("COMMIT;")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(e)
+        }
+    }
+}
+
+/// Add `column` to `table` unless it already exists. Defense-in-depth for the
+/// #353 race: even if the existence probe raced another writer (e.g. a process
+/// that migrated between our probe and our ALTER), "duplicate column name"
+/// means the column is present — exactly the state we wanted — so it is
+/// treated as success, not an error.
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if conn
+        .prepare(&format!("SELECT {column} FROM {table} LIMIT 1"))
+        .is_ok()
+    {
+        return Ok(());
+    }
+    match conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};")) {
+        Ok(()) => Ok(()),
+        Err(e) if e.to_string().contains("duplicate column name") => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The gated column-add migrations. Runs inside the BEGIN IMMEDIATE
+/// transaction taken by `initialize_schema` (#353) — must not BEGIN/COMMIT
+/// itself.
+fn apply_migrations(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    // Re-check the version now that we hold the write lock: if another
+    // process completed the migration while we waited on BEGIN IMMEDIATE,
+    // there is nothing left to do. (#353)
     let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if user_version >= SCHEMA_VERSION {
         return Ok(());
     }
 
     // Add embedding column if it doesn't exist (migration from v0.2.0)
-    let has_embedding: bool = conn
-        .prepare("SELECT embedding FROM entities LIMIT 1")
-        .is_ok();
-    if !has_embedding {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN embedding BLOB;")?;
-    }
+    ensure_column(conn, "entities", "embedding", "BLOB")?;
 
-    // Add always_on column (v1.x migration)
-    let has_always_on: bool = conn
-        .prepare("SELECT always_on FROM entities LIMIT 1")
-        .is_ok();
-    if !has_always_on {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN always_on INTEGER DEFAULT 0;")?;
-    }
+    // v1.x: always_on, certainty
+    ensure_column(conn, "entities", "always_on", "INTEGER DEFAULT 0")?;
+    ensure_column(conn, "entities", "certainty", "REAL DEFAULT 0.5")?;
 
-    // Add certainty column (v1.x migration)
-    let has_certainty: bool = conn
-        .prepare("SELECT certainty FROM entities LIMIT 1")
-        .is_ok();
-    if !has_certainty {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN certainty REAL DEFAULT 0.5;")?;
-    }
+    // v1.2.0: multi-workspace scoping, agent attribution, access controls
+    ensure_column(conn, "entities", "workspace_hash", "TEXT DEFAULT ''")?;
+    ensure_column(conn, "entities", "agent_id", "TEXT DEFAULT ''")?;
+    ensure_column(conn, "journal", "agent_id", "TEXT DEFAULT ''")?;
+    ensure_column(conn, "entities", "visibility", "TEXT DEFAULT 'workspace'")?;
 
-    // Add workspace_hash column (v1.2.0 migration — multi-workspace scoping)
-    let has_workspace_hash: bool = conn
-        .prepare("SELECT workspace_hash FROM entities LIMIT 1")
-        .is_ok();
-    if !has_workspace_hash {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN workspace_hash TEXT DEFAULT '';")?;
-    }
-
-    // Add agent_id column to entities (v1.2.0 — agent attribution)
-    let has_agent_id: bool = conn.prepare("SELECT agent_id FROM entities LIMIT 1").is_ok();
-    if !has_agent_id {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN agent_id TEXT DEFAULT '';")?;
-    }
-
-    // Add agent_id column to journal (v1.2.0 — journal attribution)
-    let has_journal_agent: bool = conn.prepare("SELECT agent_id FROM journal LIMIT 1").is_ok();
-    if !has_journal_agent {
-        conn.execute_batch("ALTER TABLE journal ADD COLUMN agent_id TEXT DEFAULT '';")?;
-    }
-
-    // Add audit_hash column to journal (v2.0 — cryptographic audit log)
-    let has_audit_hash: bool = conn.prepare("SELECT audit_hash FROM journal LIMIT 1").is_ok();
-    if !has_audit_hash {
-        conn.execute_batch("ALTER TABLE journal ADD COLUMN audit_hash TEXT DEFAULT '';")?;
-    }
-
-    // Add visibility column (v1.2.0 — access controls)
-    let has_visibility: bool = conn.prepare("SELECT visibility FROM entities LIMIT 1").is_ok();
-    if !has_visibility {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN visibility TEXT DEFAULT 'workspace';")?;
-    }
+    // v2.0: cryptographic audit log
+    ensure_column(conn, "journal", "audit_hash", "TEXT DEFAULT ''")?;
 
     // Add bi-temporal columns (v2.4.0 — bi-temporal facts). Valid time
     // (valid_from/valid_to), transaction time (recorded_at/invalidated_at), and
     // supersession links. All additive; existing rows keep their meaning.
-    if conn.prepare("SELECT valid_from_unix_ms FROM entities LIMIT 1").is_err() {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN valid_from_unix_ms INTEGER;")?;
-    }
-    if conn.prepare("SELECT valid_to_unix_ms FROM entities LIMIT 1").is_err() {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN valid_to_unix_ms INTEGER;")?;
-    }
-    if conn.prepare("SELECT recorded_at_unix_ms FROM entities LIMIT 1").is_err() {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN recorded_at_unix_ms INTEGER;")?;
-    }
-    if conn.prepare("SELECT invalidated_at_unix_ms FROM entities LIMIT 1").is_err() {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN invalidated_at_unix_ms INTEGER;")?;
-    }
-    if conn.prepare("SELECT supersedes FROM entities LIMIT 1").is_err() {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN supersedes TEXT DEFAULT '';")?;
-    }
-    if conn.prepare("SELECT superseded_by FROM entities LIMIT 1").is_err() {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN superseded_by TEXT DEFAULT '';")?;
-    }
+    ensure_column(conn, "entities", "valid_from_unix_ms", "INTEGER")?;
+    ensure_column(conn, "entities", "valid_to_unix_ms", "INTEGER")?;
+    ensure_column(conn, "entities", "recorded_at_unix_ms", "INTEGER")?;
+    ensure_column(conn, "entities", "invalidated_at_unix_ms", "INTEGER")?;
+    ensure_column(conn, "entities", "supersedes", "TEXT DEFAULT ''")?;
+    ensure_column(conn, "entities", "superseded_by", "TEXT DEFAULT ''")?;
 
     // Add efficacy-tracking columns (v2.10.0 — PMB-inspired follow-rate scoring).
-    if conn.prepare("SELECT follow_count FROM entities LIMIT 1").is_err() {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN follow_count INTEGER DEFAULT 0;")?;
-    }
-    if conn.prepare("SELECT miss_count FROM entities LIMIT 1").is_err() {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN miss_count INTEGER DEFAULT 0;")?;
-    }
-    if conn.prepare("SELECT follow_rate FROM entities LIMIT 1").is_err() {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN follow_rate REAL DEFAULT 0.0;")?;
-    }
-    if conn.prepare("SELECT efficacy_status FROM entities LIMIT 1").is_err() {
-        conn.execute_batch(
-            "ALTER TABLE entities ADD COLUMN efficacy_status TEXT DEFAULT 'unverified';",
-        )?;
-    }
+    ensure_column(conn, "entities", "follow_count", "INTEGER DEFAULT 0")?;
+    ensure_column(conn, "entities", "miss_count", "INTEGER DEFAULT 0")?;
+    ensure_column(conn, "entities", "follow_rate", "REAL DEFAULT 0.0")?;
+    ensure_column(conn, "entities", "efficacy_status", "TEXT DEFAULT 'unverified'")?;
+
     // Backfill transaction time for pre-existing rows: a fact's recorded_at is
     // when Mneme first stored it, i.e. its created_at. (No-op on a fresh DB.)
     conn.execute_batch(
@@ -276,16 +278,12 @@ pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Er
     )?;
 
     // v5: persistent importance floor (see the column comment in the DDL).
-    if conn.prepare("SELECT importance FROM entities LIMIT 1").is_err() {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN importance REAL DEFAULT 0.0;")?;
-    }
+    ensure_column(conn, "entities", "importance", "REAL DEFAULT 0.0")?;
 
     // v6: sign-bit embedding signatures for the dense-search prefilter, plus a
     // backfill for embeddings stored before the column existed. Bounded work:
     // one pass over embedded rows, ~50 bytes written per row.
-    if conn.prepare("SELECT emb_sig FROM entities LIMIT 1").is_err() {
-        conn.execute_batch("ALTER TABLE entities ADD COLUMN emb_sig BLOB;")?;
-    }
+    ensure_column(conn, "entities", "emb_sig", "BLOB")?;
     {
         let mut stmt = conn.prepare(
             "SELECT id, embedding FROM entities \
@@ -681,6 +679,118 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn apply_migrations_post_lock_version_recheck_is_noop() {
+        // #353: the loser of the migration race blocks on BEGIN IMMEDIATE,
+        // then must see the winner's stamped user_version and skip cleanly.
+        // Exercise that re-check path directly: on an already-current DB,
+        // apply_migrations must return Ok without touching anything.
+        let (conn, _path) = temp_db();
+        initialize_schema(&conn).expect("init schema");
+        conn.execute(
+            "INSERT INTO entities (id, category, key, body_json, created_at_unix_ms, last_accessed_unix_ms)
+             VALUES ('recheck-test', 'insight', 'k', '{}', 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        apply_migrations(&conn).expect("post-lock re-check must be a clean no-op");
+
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn ensure_column_treats_duplicate_column_as_benign() {
+        // #353 defense-in-depth: simulate losing the probe/ALTER race — the
+        // column appears after our probe would have run. ensure_column's
+        // ALTER error path must swallow "duplicate column name".
+        let (conn, _path) = temp_db();
+        conn.execute_batch("CREATE TABLE t (id TEXT PRIMARY KEY, extra TEXT);")
+            .unwrap();
+        // Probe path: column exists, no ALTER attempted.
+        ensure_column(&conn, "t", "extra", "TEXT").expect("existing column is a no-op");
+        // Error path: bypass the probe by asserting the raw duplicate error is
+        // matched by the same predicate ensure_column uses.
+        let err = conn
+            .execute_batch("ALTER TABLE t ADD COLUMN extra TEXT;")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate column name"),
+            "SQLite duplicate-column error text changed: {err}"
+        );
+    }
+
+    #[test]
+    fn concurrent_opens_of_pre_upgrade_db_both_succeed() {
+        // #353 end-to-end: two "processes" (independent connections — same
+        // lock semantics as separate OS processes) open the same pre-upgrade
+        // DB and run initialize_schema concurrently. Before the fix the loser
+        // could fail with "duplicate column name"; now BEGIN IMMEDIATE
+        // serializes them and the loser's post-lock re-check no-ops.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("mimir-test-race-{}.db", uuid::Uuid::new_v4()));
+        let path_str = path.to_str().unwrap().to_string();
+
+        // Pre-upgrade fixture: legacy tables without the ALTER-added columns,
+        // user_version=0 (same shape as migrates_pre_versioned_db_missing_a_column).
+        {
+            let conn = Connection::open(&path_str).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE entities (
+                    id TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT 'general', key TEXT NOT NULL,
+                    body_json TEXT NOT NULL DEFAULT '{}', archived INTEGER DEFAULT 0,
+                    retrieval_count INTEGER DEFAULT 0,
+                    created_at_unix_ms INTEGER NOT NULL, last_accessed_unix_ms INTEGER NOT NULL
+                 );
+                 CREATE TABLE journal (
+                    id TEXT PRIMARY KEY, entity_id TEXT DEFAULT '',
+                    created_at_unix_ms INTEGER NOT NULL
+                 );",
+            )
+            .unwrap();
+        }
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let path = path_str.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+                    // Same busy_timeout Database::open applies: the loser must
+                    // WAIT on BEGIN IMMEDIATE, not fail fast with SQLITE_BUSY.
+                    conn.execute_batch("PRAGMA busy_timeout=5000;")
+                        .map_err(|e| e.to_string())?;
+                    barrier.wait();
+                    initialize_schema(&conn).map_err(|e| e.to_string())?;
+                    Ok::<(), String>(())
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join()
+                .expect("thread panicked")
+                .expect("concurrent initialize_schema must succeed in both openers");
+        }
+
+        // The DB came out fully migrated exactly once.
+        let conn = Connection::open(&path_str).unwrap();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        assert!(conn.prepare("SELECT emb_sig FROM entities LIMIT 1").is_ok());
+        drop(conn);
+        let _ = std::fs::remove_file(&path_str);
     }
 
     #[test]
