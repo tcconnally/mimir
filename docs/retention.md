@@ -66,6 +66,7 @@ This is deliberate: before v2.12.x, `autocohere` compacted at a hardcoded 0.1
 |---|---|
 | `verified: true` | `decay_score` floored at `VERIFIED_DECAY_FLOOR = 0.2` — a verified fact can fade but is **never auto-archived**. |
 | `always_on: true` | Injected unconditionally into `context`/`prepare` blocks regardless of decay; being injected does not itself bump retrieval stats. |
+| `mimir_score` (importance) | The explicit score is stored as a persistent `importance` floor: `decay_tick` and `cohere` never recompute `decay_score` below it, so a scored memory survives idle time indefinitely (fidelity beats recency). Re-score with `0.0` to clear. |
 | regular use | Every recall boosts the score by 0.25 and resets the idle clock. |
 
 The verified floor exists because curated facts match few queries and are

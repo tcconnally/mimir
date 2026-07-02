@@ -1213,11 +1213,11 @@ impl Database {
         // Update decay_score for non-archived entities, optionally capped
         let sql = if let Some(max) = max_entities {
             format!(
-                "SELECT id, last_accessed_unix_ms, verified, efficacy_status, follow_rate FROM entities WHERE archived = 0 LIMIT {}",
+                "SELECT id, last_accessed_unix_ms, verified, efficacy_status, follow_rate, importance FROM entities WHERE archived = 0 LIMIT {}",
                 max
             )
         } else {
-            "SELECT id, last_accessed_unix_ms, verified, efficacy_status, follow_rate FROM entities WHERE archived = 0".to_string()
+            "SELECT id, last_accessed_unix_ms, verified, efficacy_status, follow_rate, importance FROM entities WHERE archived = 0".to_string()
         };
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([], |r| {
@@ -1229,16 +1229,17 @@ impl Database {
                     .unwrap_or(None)
                     .unwrap_or_else(|| "unverified".to_string()),
                 r.get::<_, Option<f64>>(4).unwrap_or(None).unwrap_or(0.0),
+                r.get::<_, Option<f64>>(5).unwrap_or(None).unwrap_or(0.0),
             ))
         })?;
 
         let mut updated = 0i64;
         let mut auto_archived = 0i64;
-        let mut batch: Vec<(String, i64, bool, String, f64)> = Vec::with_capacity(1000);
+        let mut batch: Vec<(String, i64, bool, String, f64, f64)> = Vec::with_capacity(1000);
         let now_val = now;
 
         // Helper: flush the current batch in a transaction.
-        let flush_batch = |batch: &mut Vec<(String, i64, bool, String, f64)>,
+        let flush_batch = |batch: &mut Vec<(String, i64, bool, String, f64, f64)>,
                             updated: &mut i64,
                             auto_archived: &mut i64|
          -> Result<(), Box<dyn std::error::Error>> {
@@ -1246,7 +1247,9 @@ impl Database {
                 return Ok(());
             }
             let tx = conn.unchecked_transaction()?;
-            for (id, last_access, verified, efficacy_status, follow_rate) in batch.drain(..) {
+            for (id, last_access, verified, efficacy_status, follow_rate, importance) in
+                batch.drain(..)
+            {
                 let mut new_decay = Self::compute_decay(last_access, now_val);
                 // #298: verified/curated facts get a decay floor so the
                 // forgetting curve can never auto-archive them.
@@ -1268,6 +1271,11 @@ impl Database {
                 if !verified {
                     new_decay = (new_decay * efficacy_weight).clamp(0.0, 1.0);
                 }
+                // v2.13.0: explicit importance (mimir_score) is a persistent
+                // floor applied LAST — fidelity beats recency and beats the
+                // efficacy composite. Previously a manual score was erased by
+                // this very recompute on the next tick.
+                new_decay = new_decay.max(importance.clamp(0.0, 1.0));
                 tx.execute(
                     "UPDATE entities SET decay_score = ?1 WHERE id = ?2",
                     params![new_decay, &id],
@@ -1293,8 +1301,8 @@ impl Database {
         };
 
         for row in rows {
-            let (id, last_access, verified, efficacy_status, follow_rate) = row?;
-            batch.push((id, last_access, verified, efficacy_status, follow_rate));
+            let (id, last_access, verified, efficacy_status, follow_rate, importance) = row?;
+            batch.push((id, last_access, verified, efficacy_status, follow_rate, importance));
             if batch.len() >= 1000 {
                 flush_batch(&mut batch, &mut updated, &mut auto_archived)?;
             }
@@ -3442,8 +3450,13 @@ impl Database {
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
         let score = score.clamp(0.0, 1.0);
+        // importance persists the explicit score as a decay floor: decay_tick
+        // and cohere recompute decay_score from recency, which used to erase
+        // a manual score on the very next tick. Fidelity beats recency — an
+        // explicitly scored memory stays at least this important until
+        // re-scored. score=0.0 clears the floor.
         let affected = conn.execute(
-            "UPDATE entities SET verified = ?1, decay_score = ?2,
+            "UPDATE entities SET verified = ?1, decay_score = ?2, importance = ?2,
              last_accessed_unix_ms = ?3 WHERE category = ?4 AND key = ?5",
             params![(score >= 0.7) as i32, score, now_ms(), category, key],
         )?;
@@ -4755,7 +4768,9 @@ last_accessed: {}
         conn.execute(
             &format!(
                 "UPDATE entities SET decay_score = \
-                 MAX(decay_score * 0.95, CASE WHEN verified = 1 THEN {floor} ELSE 0.0 END) \
+                 MAX(decay_score * 0.95, \
+                     CASE WHEN verified = 1 THEN {floor} ELSE 0.0 END, \
+                     importance) \
                  WHERE archived = 0 AND decay_score > 0.01",
                 floor = Self::VERIFIED_DECAY_FLOOR
             ),
@@ -5711,6 +5726,72 @@ mod tests {
             "verified decay must be floored, got {}",
             after.decay_score
         );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn importance_floor_survives_decay_tick_and_cohere() {
+        // v2.13.0 (fidelity > recency): an explicit mimir_score used to be
+        // erased by the next decay_tick, which recomputes decay_score purely
+        // from last_accessed. The score now persists as an importance floor
+        // in BOTH recompute paths, and clears when re-scored to 0.0.
+        let (db, path) = temp_db();
+        db.remember(&make_entity("imp-1", "decision", "keep", r#"{"n":1}"#)).unwrap();
+        db.remember(&make_entity("imp-2", "decision", "fade", r#"{"note":"unscored control entity"}"#)).unwrap();
+
+        assert!(db.score_entity("decision", "keep", 0.9).unwrap());
+        // Make both entities look ~60 idle days old (raw decay ≈ e^-8.6 ≈ 0.0002,
+        // far below the archive threshold).
+        let old = now_ms() - 60 * 24 * 60 * 60 * 1000;
+        db.conn()
+            .unwrap()
+            .execute("UPDATE entities SET last_accessed_unix_ms = ?1", params![old])
+            .unwrap();
+
+        db.decay_tick().unwrap();
+
+        let kept = db.get_entity("decision", "keep").unwrap().unwrap();
+        assert!(!kept.archived, "scored entity must survive decay_tick");
+        assert!(
+            kept.decay_score >= 0.9 - 1e-9,
+            "importance must floor decay_score at the explicit score, got {}",
+            kept.decay_score
+        );
+        let faded = db.get_entity("decision", "fade").unwrap().unwrap();
+        assert!(faded.archived, "unscored control must decay out as before");
+
+        // cohere's multiplicative decay respects the same floor.
+        let params = crate::models::CohereParams {
+            dry_run: false,
+            max_links: 0,
+            promote_threshold: 0,
+            archive_threshold: 0.0,
+        };
+        for _ in 0..80 {
+            db.cohere(&params).unwrap();
+        }
+        let kept2 = db.get_entity("decision", "keep").unwrap().unwrap();
+        assert!(!kept2.archived, "scored entity must survive repeated cohere");
+        assert!(
+            kept2.decay_score >= 0.9 - 1e-9,
+            "cohere must floor at importance, got {}",
+            kept2.decay_score
+        );
+
+        // Re-scoring to 0.0 clears the floor: the next tick decays normally.
+        assert!(db.score_entity("decision", "keep", 0.0).unwrap());
+        db.conn()
+            .unwrap()
+            .execute("UPDATE entities SET last_accessed_unix_ms = ?1 WHERE id = 'imp-1'", params![old])
+            .unwrap();
+        db.decay_tick().unwrap();
+        let cleared = db.get_entity("decision", "keep").unwrap().unwrap();
+        assert!(
+            cleared.archived,
+            "clearing importance must let the entity decay out (decay {})",
+            cleared.decay_score
+        );
+
         let _ = fs::remove_file(&path);
     }
 

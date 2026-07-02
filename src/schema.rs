@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS entities (
     embedding BLOB,
     always_on INTEGER DEFAULT 0,
     certainty REAL DEFAULT 0.5,
+    -- Persistent importance floor (v2.13.0). Set by mimir_score; decay_tick and
+    -- cohere floor decay_score at this value, so an explicit score survives the
+    -- recency-based recompute instead of being erased by the next tick
+    -- (fidelity > recency). 0.0 = unset, no effect.
+    importance REAL DEFAULT 0.0,
     workspace_hash TEXT DEFAULT '',
     agent_id TEXT DEFAULT '',
     visibility TEXT DEFAULT 'workspace',
@@ -140,7 +145,7 @@ CREATE INDEX IF NOT EXISTS idx_entity_history_catkey ON entity_history(category,
 /// the column-add migrations below have been applied. Bump this whenever you add
 /// a new ALTER-probe migration in `initialize_schema`, or existing databases
 /// (already at the previous level) will skip it.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// Initialize the v0.2.0 schema on a fresh database.
 pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
@@ -264,6 +269,11 @@ pub fn initialize_schema(conn: &Connection) -> Result<(), Box<dyn std::error::Er
         "CREATE INDEX IF NOT EXISTS idx_entities_invalidated \
          ON entities(invalidated_at_unix_ms);",
     )?;
+
+    // v5: persistent importance floor (see the column comment in the DDL).
+    if conn.prepare("SELECT importance FROM entities LIMIT 1").is_err() {
+        conn.execute_batch("ALTER TABLE entities ADD COLUMN importance REAL DEFAULT 0.0;")?;
+    }
 
     // v4 (#339): identity becomes (category, key, workspace_hash). A plain
     // (category, key) uniqueness made cross-workspace key collisions

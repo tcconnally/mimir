@@ -1769,7 +1769,7 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
   },
   {
     "name": "mimir_score",
-    "description": "Assign a quality score (0.0–1.0) to an entity. Verified entities with high scores resist decay and rank higher in recall results. Use this to mark entities as accurate, verified, or deprecated.",
+    "description": "Assign a quality score (0.0–1.0) to an entity. The score persists as an importance floor: decay_tick/cohere never recompute decay_score below it, so an explicitly scored memory survives idle time indefinitely (fidelity beats recency). Scores >= 0.7 also mark the entity verified. Re-score with 0.0 to clear the floor. Use this to mark entities as accurate, verified, or deprecated.",
     "inputSchema": {
       "type": "object",
       "properties": {
