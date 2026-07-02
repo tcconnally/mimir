@@ -673,6 +673,18 @@ pub struct ConsolidateParams {
     pub offset: i64,
     #[serde(default)]
     pub dry_run: bool,
+    /// When true, scan the COLDEST entities first (last_accessed ASC) instead
+    /// of the most recent — "local dreaming": compress memories that are
+    /// fading anyway, before decay archives them individually. Default false
+    /// preserves the original recent-window behavior.
+    #[serde(default)]
+    pub cold_first: bool,
+    /// When true, archive the merged source entities after the observation is
+    /// created (archive_reason names the observation, so the merge is
+    /// traceable and reversible). Verified or importance-floored sources are
+    /// never archived — same exemption policy as decay. Default false.
+    #[serde(default)]
+    pub archive_sources: bool,
 }
 
 fn default_consolidate_threshold() -> f64 {
@@ -706,6 +718,9 @@ pub struct ConsolidateReport {
     pub entities_examined: i64,
     pub observations_created: i64,
     pub source_entities_merged: i64,
+    /// Sources archived because archive_sources was set. Always <=
+    /// source_entities_merged: verified/importance-floored sources stay live.
+    pub sources_archived: i64,
     pub dry_run: bool,
     pub observations: Vec<Observation>,
 }

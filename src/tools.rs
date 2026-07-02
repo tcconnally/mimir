@@ -1692,6 +1692,38 @@ pub fn handle_autocohere(db: &Database, args: Value) -> Result<String, String> {
         .compact(Database::ARCHIVE_DECAY_THRESHOLD, a.dry_run)
         .map_err(|e| format!("Autocohere step (compact) failed: {}", e))?;
 
+    // 4. Consolidation ("local dreaming"): compress the coldest overlapping
+    // memories in each category into evidence-tracked observations and retire
+    // the merged sources — running in the BACKGROUND as part of "run
+    // everything", instead of only when an agent thinks to call
+    // mimir_consolidate. Bounded: a few observations per category per run,
+    // over the same scan window the manual tool uses. Skips 'observation'
+    // (no meta-observations / runaway recursion) and 'memories' (files from
+    // the /memories adapter must never be similarity-merged).
+    let mut observations_created = 0i64;
+    let mut consolidate_sources_archived = 0i64;
+    let categories = db
+        .workspace_list_categories()
+        .map_err(|e| format!("Autocohere step (consolidate: categories) failed: {}", e))?;
+    for cat in categories {
+        if cat == "observation" || cat == "memories" {
+            continue;
+        }
+        let report = db
+            .consolidate(&crate::models::ConsolidateParams {
+                category: cat.clone(),
+                similarity_threshold: 0.6,
+                limit: 5,
+                offset: 0,
+                dry_run: a.dry_run,
+                cold_first: true,
+                archive_sources: true,
+            })
+            .map_err(|e| format!("Autocohere step (consolidate {}) failed: {}", cat, e))?;
+        observations_created += report.observations_created;
+        consolidate_sources_archived += report.sources_archived;
+    }
+
     let final_db_size = if a.dry_run {
         initial_db_size
     } else {
@@ -1705,6 +1737,8 @@ pub fn handle_autocohere(db: &Database, args: Value) -> Result<String, String> {
         "archived_entities": total_archived_cohere + compact_report.entities_archived,
         "decay_updates": decay_report.entities_updated,
         "compact_archived_count": compact_report.entities_archived,
+        "observations_created": observations_created,
+        "consolidate_sources_archived": consolidate_sources_archived,
         "db_size_delta_bytes": final_db_size as i64 - initial_db_size as i64,
         "dry_run": a.dry_run,
     });

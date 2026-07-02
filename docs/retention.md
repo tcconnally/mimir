@@ -104,6 +104,26 @@ Deletion is explicit and two-step:
 - **`purge`** — permanently delete entities that are **already archived**.
   Supports `dry_run`. This is the only way memory leaves the database.
 
+## Consolidation ("local dreaming")
+
+Decay forgets one memory at a time; consolidation compresses instead of
+losing. `mimir_consolidate` merges overlapping same-category entities into a
+single evidence-tracked *observation* (category `observation`, linked to each
+source via `evidence_for`, carrying a `proof_count`). Two opt-in flags shape
+it into background forgetting:
+
+- `cold_first: true` scans the longest-idle entities first — the ones decay
+  is about to claim — so fading knowledge is compressed before it is lost.
+- `archive_sources: true` retires the merged sources once the observation
+  exists (`archive_reason` names the observation, so the merge is traceable
+  and reversible). **Verified or importance-floored sources are never
+  archived** — the same exemption promise decay makes.
+
+`mimir_autocohere` runs a bounded pass automatically (a few observations per
+category per run, cold-first, archiving sources), skipping the `observation`
+category (no meta-observations) and `memories` (files from the /memories
+adapter are never similarity-merged).
+
 ## Semantic recall and reinforcement
 
 By default, retrieval reinforcement fires only on the keyword (`fts5`) recall

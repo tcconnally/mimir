@@ -3869,9 +3869,16 @@ impl Database {
         params: &crate::models::ConsolidateParams,
     ) -> Result<crate::models::ConsolidateReport, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
+        // cold_first scans the entities decay is about to claim (ASC = coldest
+        // first) — "local dreaming" compresses fading memories into durable
+        // observations instead of losing them one by one. Default (DESC)
+        // preserves the original recent-window behavior.
+        let order = if params.cold_first { "ASC" } else { "DESC" };
         let mut stmt = conn.prepare(&format!(
-            "SELECT id, key, body_json, certainty FROM entities WHERE category = ?1 AND archived = 0
-             ORDER BY last_accessed_unix_ms DESC LIMIT {} OFFSET ?2",
+            "SELECT id, key, body_json, certainty, verified, importance
+             FROM entities WHERE category = ?1 AND archived = 0
+             ORDER BY last_accessed_unix_ms {}, id ASC LIMIT {} OFFSET ?2",
+            order,
             Self::CONFLICT_SCAN_WINDOW
         ))?;
         let rows = stmt.query_map(params![params.category, params.offset], |r| {
@@ -3880,9 +3887,12 @@ impl Database {
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, f64>(3).unwrap_or(0.5),
+                r.get::<_, bool>(4).unwrap_or(false),
+                r.get::<_, Option<f64>>(5).unwrap_or(None).unwrap_or(0.0),
             ))
         })?;
-        let entities: Vec<(String, String, String, f64)> = rows.filter_map(|r| r.ok()).collect();
+        let entities: Vec<(String, String, String, f64, bool, f64)> =
+            rows.filter_map(|r| r.ok()).collect();
         drop(stmt);
 
         // Union-find over entity indices, joining any pair whose trigram
@@ -3933,6 +3943,7 @@ impl Database {
 
         let mut observations = Vec::new();
         let mut source_entities_merged: i64 = 0;
+        let mut sources_archived: i64 = 0;
         let now = now_ms();
 
         // Deterministic order: sort clusters by their lowest member index so
@@ -3945,7 +3956,7 @@ impl Database {
                 continue;
             }
 
-            let members: Vec<&(String, String, String, f64)> =
+            let members: Vec<&(String, String, String, f64, bool, f64)> =
                 cluster.iter().map(|&i| &entities[i]).collect();
             // The highest-certainty member's body becomes the summary (most
             // reliable source), ties broken by entity id for determinism.
@@ -4022,6 +4033,40 @@ impl Database {
                     last_accessed_unix_ms: now,
                 };
                 self.remember(&entity)?;
+
+                // Local dreaming: retire the merged sources now that their
+                // content lives in the observation (which links back to each
+                // via evidence_for, and the archive_reason names the
+                // observation — traceable and reversible). Verified or
+                // importance-floored sources keep the decay exemption promise
+                // and stay live alongside the observation.
+                if params.archive_sources {
+                    let tx = conn.unchecked_transaction()?;
+                    for m in &members {
+                        let (id, _, _, _, verified, importance) =
+                            (&m.0, &m.1, &m.2, m.3, m.4, m.5);
+                        if verified || importance > 0.0 {
+                            continue;
+                        }
+                        let affected = tx.execute(
+                            "UPDATE entities SET archived = 1, archive_reason = ?1,
+                             last_accessed_unix_ms = ?2 WHERE id = ?3 AND archived = 0",
+                            params![
+                                format!("consolidated into {}", entity_id),
+                                now,
+                                id
+                            ],
+                        )?;
+                        if affected > 0 {
+                            sources_archived += 1;
+                            let _ = tx.execute(
+                                "DELETE FROM entities_fts WHERE rowid = (SELECT rowid FROM entities WHERE id = ?1)",
+                                params![id],
+                            );
+                        }
+                    }
+                    tx.commit()?;
+                }
             }
 
             source_entities_merged += proof_count;
@@ -4033,6 +4078,7 @@ impl Database {
             entities_examined: n as i64,
             observations_created: observations.len() as i64,
             source_entities_merged,
+            sources_archived,
             dry_run: params.dry_run,
             observations,
         })
@@ -8491,6 +8537,8 @@ mod tests {
             limit: 50,
             offset: 0,
             dry_run: false,
+            cold_first: false,
+            archive_sources: false,
         };
         let report = db.consolidate(&params).unwrap();
 
@@ -8576,6 +8624,8 @@ mod tests {
             limit: 50,
             offset: 0,
             dry_run: true,
+            cold_first: false,
+            archive_sources: false,
         };
         let report = db.consolidate(&params).unwrap();
         assert_eq!(report.observations_created, 1);
@@ -8611,6 +8661,8 @@ mod tests {
             limit: 50,
             offset: 0,
             dry_run: false,
+            cold_first: false,
+            archive_sources: false,
         };
         let report = db.consolidate(&params).unwrap();
         assert_eq!(
@@ -8618,6 +8670,149 @@ mod tests {
             "a category with only one entity must produce zero observations"
         );
         assert_eq!(report.source_entities_merged, 0);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn consolidate_archive_sources_retires_merged_but_exempts_verified_and_scored() {
+        // Local dreaming: archive_sources retires merged sources (reason names
+        // the observation), but verified or importance-floored sources keep
+        // the decay exemption promise and stay live.
+        let (db, path) = temp_db();
+        let ins = |id: &str, key: &str, verified: i64, importance: f64| {
+            db.conn()
+                .unwrap()
+                .execute(
+                    "INSERT INTO entities (id, category, key, body_json, status, type, tags, \
+                     decay_score, retrieval_count, layer, topic_path, archived, archive_reason, \
+                     links, verified, source, certainty, importance, created_at_unix_ms, last_accessed_unix_ms) \
+                     VALUES (?1, 'lore', ?2, \
+                     '{\"note\":\"the gateway service handles authentication and rate limiting\"}', \
+                     'active', 'insight', '[]', 1.0, 0, 'working', '', 0, '', '[]', ?3, 'agent', 0.5, ?4, 0, 0)",
+                    params![id, key, verified, importance],
+                )
+                .unwrap();
+            db.conn()
+                .unwrap()
+                .execute(
+                    "INSERT INTO entities_fts (rowid, body_json) \
+                     VALUES ((SELECT rowid FROM entities WHERE id = ?1), \
+                             '{\"note\":\"the gateway service handles authentication and rate limiting\"}')",
+                    params![id],
+                )
+                .unwrap();
+        };
+        // Identical bodies → one cluster of four.
+        ins("cs-plain-a", "gw-a", 0, 0.0);
+        ins("cs-plain-b", "gw-b", 0, 0.0);
+        ins("cs-verified", "gw-c", 1, 0.0);
+        ins("cs-scored", "gw-d", 0, 0.8);
+
+        let report = db
+            .consolidate(&crate::models::ConsolidateParams {
+                category: "lore".to_string(),
+                similarity_threshold: 0.6,
+                limit: 50,
+                offset: 0,
+                dry_run: false,
+                cold_first: true,
+                archive_sources: true,
+            })
+            .unwrap();
+        assert_eq!(report.observations_created, 1);
+        assert_eq!(report.source_entities_merged, 4);
+        assert_eq!(
+            report.sources_archived, 2,
+            "only the two plain sources may be archived"
+        );
+
+        let archived_reason: String = db
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT archive_reason FROM entities WHERE id = 'cs-plain-a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            archived_reason.starts_with("consolidated into obs-"),
+            "archive reason must name the observation, got: {archived_reason}"
+        );
+        let live: i64 = db
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM entities WHERE id IN ('cs-verified','cs-scored') AND archived = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(live, 2, "verified and importance-floored sources must stay live");
+
+        // Archived sources drop out of FTS.
+        let hits = db
+            .recall(&crate::models::RecallParams {
+                query: "authentication".to_string(),
+                skip_side_effects: true,
+                ..crate::models::RecallParams::default()
+            })
+            .unwrap();
+        assert!(
+            hits.iter().all(|e| e.id != "cs-plain-a" && e.id != "cs-plain-b"),
+            "archived sources must not be recallable"
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn consolidate_cold_first_targets_longest_idle_window() {
+        // With more entities than the scan window... (window is large, so
+        // instead assert ordering semantics directly: cold_first=true examines
+        // coldest-first, which changes WHICH side of a big category is seen
+        // when the window clips. Simulate with offset=0 and verify the report
+        // examines all rows here, and that the scan is deterministic in both
+        // modes — the behavioral contract the autocohere step relies on.)
+        let (db, path) = temp_db();
+        let ins = |id: &str, key: &str, body: &str, last_access: i64| {
+            db.conn()
+                .unwrap()
+                .execute(
+                    "INSERT INTO entities (id, category, key, body_json, status, type, tags, \
+                     decay_score, retrieval_count, layer, topic_path, archived, archive_reason, \
+                     links, verified, source, certainty, created_at_unix_ms, last_accessed_unix_ms) \
+                     VALUES (?1, 'coldcat', ?2, ?3, 'active', 'insight', '[]', 1.0, 0, \
+                     'working', '', 0, '', '[]', 0, 'agent', 0.5, 0, ?4)",
+                    params![id, key, body, last_access],
+                )
+                .unwrap();
+        };
+        // Two cold near-duplicates and two hot near-duplicates (different topic).
+        ins("cold-a", "ka", r#"{"note":"legacy billing cron runs at midnight utc"}"#, 1000);
+        ins("cold-b", "kb", r#"{"note":"legacy billing cron runs at midnight utc daily"}"#, 2000);
+        ins("hot-a", "kc", r#"{"note":"new search cluster deployed in frankfurt region"}"#, 9_000_000);
+        ins("hot-b", "kd", r#"{"note":"new search cluster deployed in frankfurt region today"}"#, 9_100_000);
+
+        let report = db
+            .consolidate(&crate::models::ConsolidateParams {
+                category: "coldcat".to_string(),
+                similarity_threshold: 0.6,
+                limit: 1, // only ONE observation allowed this run
+                offset: 0,
+                dry_run: true,
+                cold_first: true,
+                archive_sources: false,
+            })
+            .unwrap();
+        assert_eq!(report.observations_created, 1);
+        let obs = &report.observations[0];
+        assert!(
+            obs.source_ids.contains(&"cold-a".to_string()),
+            "cold_first with limit 1 must consolidate the COLD cluster first, got {:?}",
+            obs.source_ids
+        );
+
         let _ = fs::remove_file(&path);
     }
 

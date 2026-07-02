@@ -2002,7 +2002,7 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
   },
   {
     "name": "mimir_consolidate",
-    "description": "Merge overlapping/duplicative entities in the same category into durable, evidence-tracked 'observations' — the mirror image of mimir_conflicts, which flags dissimilar (contradictory) pairs. Groups entities whose pairwise trigram similarity meets similarity_threshold, then creates one new entity per group (category='observation') whose body carries a summary (the highest-certainty source's content), the full list of source entity ids as evidence, and a proof_count. Source entities are NOT deleted or archived — they remain independently accessible, and the new observation links back to each of them (relationship='evidence_for') for full audit. Read-only preview with dry_run=true.",
+    "description": "Merge overlapping/duplicative entities in the same category into durable, evidence-tracked 'observations' — the mirror image of mimir_conflicts, which flags dissimilar (contradictory) pairs. Groups entities whose pairwise trigram similarity meets similarity_threshold, then creates one new entity per group (category='observation') whose body carries a summary (the highest-certainty source's content), the full list of source entity ids as evidence, and a proof_count. The observation links back to each source (relationship='evidence_for') for full audit. By default sources stay live; set archive_sources=true to retire merged sources ('local dreaming' — verified or importance-floored sources are never archived), and cold_first=true to target the memories decay is about to claim. mimir_autocohere runs a bounded cold_first+archive_sources pass automatically. Read-only preview with dry_run=true.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2029,6 +2029,16 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
           "type": "boolean",
           "default": false,
           "description": "Preview which observations would be created without writing anything"
+        },
+        "cold_first": {
+          "type": "boolean",
+          "default": false,
+          "description": "Scan the COLDEST entities first (longest since last access) instead of the most recent — compress memories that are fading anyway, before decay archives them individually"
+        },
+        "archive_sources": {
+          "type": "boolean",
+          "default": false,
+          "description": "Archive merged source entities after the observation is created (archive_reason names the observation; reversible). Verified or importance-floored sources are never archived."
         }
       },
       "required": [
@@ -2052,6 +2062,10 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
         "source_entities_merged": {
           "type": "integer",
           "description": "Total count of source entities folded into the created observations"
+        },
+        "sources_archived": {
+          "type": "integer",
+          "description": "Sources archived because archive_sources was set (verified/importance-floored sources are exempt)"
         },
         "dry_run": {
           "type": "boolean"
