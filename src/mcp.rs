@@ -232,7 +232,8 @@ fn perseus_vault_alias_tool(tool: &serde_json::Value) -> Option<serde_json::Valu
     Some(alias)
 }
 
-/// Build the tools/list response with all 44 tools including outputSchema and annotations.
+/// Build the tools/list response with the full tool registry (each tool plus
+/// its mneme_*/perseus_vault_* aliases) including outputSchema and annotations.
 fn list_tools(id: Option<Value>) -> JsonRpcResponse {
     // The tool registry is a compile-time constant. Parse it exactly once per
     // process and reuse the cached Value instead of re-parsing ~1.8k lines of

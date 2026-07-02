@@ -1,9 +1,69 @@
 # Changelog
 
-All notable changes to Mimir are documented here. This project adheres to
+All notable changes to Perseus Vault (formerly Mimir/Mneme) are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+### Fixed
+- MCP Registry publish: `server.json` version/OCI identifier now synced from
+  `Cargo.toml` at publish time, and the publish waits for the GHCR image tag
+  to exist, so a stale hand-maintained version can never be published again
+  (#351).
+
+## [2.13.0] - 2026-07-01
+
+### Added
+- `## Perseus Vault Context` header for injected context blocks +
+  `docs/retention.md` (#341)
+- Opt-in `reinforce` flag for dense/hybrid recall (#343)
+- Persistent `importance` column — explicit scores survive decay recompute (#344)
+- `mimir_memories`: Anthropic `/memories` directory-convention adapter — file
+  interface (`view`/`create`/`str_replace`/…) backed by vault entities (#345)
+- Coldness-driven consolidation ("local dreaming") wired into autocohere (#350)
+
+### Fixed
+- Prompt-injection sanitization in `prepare` + unified decay/promote
+  constants (#337)
+- `workspace_hash` scoping for context/recall_when/prepare + write-path
+  dedup (#338)
+- Workspace-scoped entity identity — identity is now
+  (category, key, workspace_hash), so `mimir_share`/`mimir_federate` copy
+  instead of clobbering the source row (#342, closes #339)
+- Dashboard (web) endpoints workspace-scoped + hardened, with test
+  coverage (#346)
+- Build break on main — `list_entities` arity after #346 (#349)
+
+### Performance
+- Batched `graph_expand` hydration + cached consolidate trigram sets (#340)
+- Sign-signature Hamming prefilter for dense search at scale — new `emb_sig`
+  column, backfilled by the v6 schema migration (#347)
+
+## [2.12.0] - 2026-07-01
+
+### Added
+- `perseus-vault prepare` — pre-turn auto-injection of relevant memories
+  (PMB-inspired) (#336)
+
+## [2.11.1] - 2026-07-01
+
+### Fixed
+- `mimir_remember`/`mimir_recall` reject explicit JSON `null` on optional
+  fields instead of misbehaving (#334, closes #330)
+
+## [2.11.0] - 2026-07-01
+
+### Added
+- `perseus-vault connect` — one-command MCP client setup (PMB-inspired) (#333)
+
+## [2.10.0] - 2026-07-01
+
+### Added
+- Follow-rate efficacy scoring: `mimir_follow` records whether an entity was
+  actually followed or missed; `follow_rate`/`efficacy_status` feed decay so
+  ignored rules decay out of recall (#332)
+- `mimir_consolidate`: merge overlapping/duplicative entities into durable,
+  evidence-tracked observations (#327)
 
 ## [2.9.0] - 2026-07-01
 
