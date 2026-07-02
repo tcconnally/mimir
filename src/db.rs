@@ -1820,6 +1820,7 @@ impl Database {
                     let dense_results = self.dense_search(query_vec, params.limit as usize)?;
                     let mut out: Vec<Entity> = dense_results.into_iter().map(|(e, _)| e).collect();
                     Self::retain_layer(&mut out, params);
+                    self.reinforce_if_requested(params, &out)?;
                     return Ok(out);
                 }
 
@@ -1907,6 +1908,7 @@ impl Database {
                 };
                 let mut out: Vec<Entity> = fused.into_iter().map(|(e, _)| e).collect();
                 Self::retain_layer(&mut out, params);
+                self.reinforce_if_requested(params, &out)?;
                 return Ok(out);
             }
             // Empty query: nothing to embed, fall through to FTS5
@@ -1915,6 +1917,26 @@ impl Database {
         let mut results = self.fts5_search(params)?;
         Self::retain_layer(&mut results, params);
         Ok(results)
+    }
+
+    /// Opt-in reinforcement for the semantic (Dense/Hybrid) recall paths.
+    /// Applies the standard recall side-effects (retrieval-count bump,
+    /// recency, decay boost, layer promotion) to the returned hits when the
+    /// caller set `reinforce` — and only then. The default stays
+    /// side-effect-free so repeated semantic recalls over a frozen DB remain
+    /// byte-deterministic (#247). `skip_side_effects` always wins: a caller
+    /// that asked for a pure read never mutates, whatever else is set.
+    fn reinforce_if_requested(
+        &self,
+        params: &RecallParams,
+        hits: &[Entity],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !params.reinforce || params.skip_side_effects || hits.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<String> = hits.iter().map(|e| e.id.clone()).collect();
+        self.apply_recall_side_effects(&ids)?;
+        Ok(())
     }
 
     /// Core FTS5 + LIKE keyword search (extracted for reuse by recall and hybrid).
@@ -8607,6 +8629,74 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_recall_reinforce_flag_bumps_returned_hits_opt_in_only() {
+        // Opt-in counterpart to hybrid_recall_is_read_only_and_idempotent:
+        // reinforce=true applies the standard side-effects to the returned
+        // hits; skip_side_effects still wins over it.
+        let (db, path) = temp_db();
+        let blob = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|f| f.to_le_bytes()).collect() };
+        db.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO entities (id, category, key, body_json, type, status,
+                    retrieval_count, last_accessed_unix_ms, created_at_unix_ms,
+                    decay_score, layer, embedding, archived)
+                 VALUES ('e-r', 'insight', 'reinf', '{\"note\":\"espresso ritual\"}',
+                         'insight', 'active', 0, 0, 0, 0.5, 'buffer', ?1, 0)",
+                params![blob(&[1.0, 0.0, 0.0])],
+            )
+            .unwrap();
+        db.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO entities_fts (rowid, body_json)
+                 VALUES ((SELECT rowid FROM entities WHERE id = 'e-r'), '{\"note\":\"espresso ritual\"}')",
+                [],
+            )
+            .unwrap();
+
+        // skip_side_effects wins over reinforce: still a pure read.
+        let pure = RecallParams {
+            query: "espresso".to_string(),
+            mode: crate::models::SearchMode::Hybrid,
+            embedding: Some(vec![1.0, 0.0, 0.0]),
+            limit: 10,
+            reinforce: true,
+            skip_side_effects: true,
+            ..RecallParams::default()
+        };
+        db.recall(&pure).unwrap();
+        let rc: i64 = db
+            .conn()
+            .unwrap()
+            .query_row("SELECT retrieval_count FROM entities WHERE id = 'e-r'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rc, 0, "skip_side_effects must override reinforce");
+
+        // reinforce alone: returned hit gets the standard side-effects.
+        let reinforcing = RecallParams {
+            skip_side_effects: false,
+            ..pure
+        };
+        let hits = db.recall(&reinforcing).unwrap();
+        assert!(hits.iter().any(|e| e.id == "e-r"), "hit expected");
+        let (rc2, la2, ds2): (i64, i64, f64) = db
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT retrieval_count, last_accessed_unix_ms, decay_score FROM entities WHERE id = 'e-r'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(rc2, 1, "reinforce must bump retrieval_count");
+        assert!(la2 > 0, "reinforce must touch last_accessed");
+        assert!(ds2 > 0.5, "reinforce must boost decay_score, got {ds2}");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
     fn hybrid_over_fetches_arms_before_fusion() {
         // Each hybrid arm is fetched at a candidate pool LARGER than `limit`, then
         // RRF truncates to `limit`. This surfaces a cross-arm "consensus" hit that
@@ -8840,6 +8930,7 @@ mod tests {
             agent_id: None,
             visibility: None,
             layer: None,
+            reinforce: false,
             },
         )
         .unwrap();
@@ -8973,6 +9064,7 @@ mod tests {
                     agent_id: None,
                     visibility: None,
                     layer: None,
+                    reinforce: false,
                 }) {
                     Ok(_) => {},
                     Err(e) => {
@@ -9036,6 +9128,7 @@ mod tests {
             agent_id: None,
             visibility: None,
             layer: None,
+            reinforce: false,
         };
 
         // Scope to "alpha" — should only see ent_a
@@ -9081,6 +9174,7 @@ mod tests {
             agent_id: None,
             visibility: None,
             layer: None,
+            reinforce: false,
         };
         let results = db.recall(&params).unwrap();
         let found = results.iter().find(|e| e.key == "key1").expect("entity recalled");

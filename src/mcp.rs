@@ -392,6 +392,11 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
           "default": false,
           "description": "Add a normalized confidence score (0.0-1.0) to each result, rolled up from rank, trust (verified/certainty), and decay. Presentation-only; does not change ranking."
         },
+        "reinforce": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt-in reinforcement for mode='dense'/'hybrid': bump retrieval_count/last_accessed/decay on the returned hits so semantically-used memories resist decay and promote through layers. Default false keeps semantic recall side-effect-free and byte-deterministic over a frozen DB. No effect on mode='fts5', which already reinforces."
+        },
         "expansion": {
           "type": "object",
           "properties": {

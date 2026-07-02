@@ -172,6 +172,11 @@ pub struct RecallArgs {
     /// existing callers and snapshot tests are unaffected; ranking is unchanged.
     #[serde(default, deserialize_with = "null_as_default")]
     pub include_confidence: bool,
+    /// Opt-in reinforcement for dense/hybrid recall: bump retrieval stats on
+    /// the returned hits so semantically-used memories resist decay. Default
+    /// false — the semantic paths stay byte-deterministic (#247).
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub reinforce: bool,
 }
 
 /// #287: presentation-layer confidence rollup over signals Mneme already has.
@@ -516,6 +521,7 @@ pub fn handle_recall(db: &Database, args: Value) -> Result<String, String> {
         agent_id: a.agent_id.clone(),
         visibility: None,
         layer: a.layer.as_deref().filter(|s| !s.is_empty()).map(canonical_layer),
+        reinforce: a.reinforce,
     };
 
     let entities = db
@@ -646,6 +652,9 @@ fn handle_recall_with_expansion(db: &Database, a: &RecallArgs) -> Result<String,
             agent_id: a.agent_id.clone(),
             visibility: None,
             layer: a.layer.as_deref().filter(|s| !s.is_empty()).map(canonical_layer),
+            // Fts5-only path: reinforcement is handled by the batched
+            // side-effect below, not the per-variant recalls.
+            reinforce: false,
         };
 
         if let Ok(entities) = db.recall(&params) {

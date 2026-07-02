@@ -235,6 +235,15 @@ pub struct RecallParams {
     #[allow(dead_code)]
     pub visibility: Option<String>,
     pub layer: Option<String>,
+    /// Opt-in reinforcement for Dense/Hybrid recall. The semantic paths are
+    /// side-effect-free by default so repeated recalls over a frozen DB stay
+    /// byte-deterministic (#247) — the cost is that memories only ever found
+    /// semantically decay as if unused. When true, the returned hits receive
+    /// the same retrieval_count/last_accessed/decay-boost side-effects the
+    /// fts5 path applies, trading determinism for "used memories resist
+    /// decay". Ignored when skip_side_effects is set. No effect on the fts5
+    /// path, which already reinforces unless skip_side_effects.
+    pub reinforce: bool,
 }
 
 /// Search mode for recall: FTS5 keyword, dense vector, or hybrid fusion.
@@ -299,6 +308,7 @@ impl Default for RecallParams {
             agent_id: None,
             visibility: None,
             layer: None,
+            reinforce: false,
         }
     }
 }

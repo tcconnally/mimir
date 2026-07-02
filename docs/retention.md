@@ -104,13 +104,22 @@ Deletion is explicit and two-step:
 - **`purge`** — permanently delete entities that are **already archived**.
   Supports `dry_run`. This is the only way memory leaves the database.
 
-## Known limitation
+## Semantic recall and reinforcement
 
-Retrieval reinforcement currently fires only on the keyword (`fts5`) recall
-path; the default hybrid/dense path is side-effect-free to keep recall
-byte-deterministic over a frozen DB (#247, see
+By default, retrieval reinforcement fires only on the keyword (`fts5`) recall
+path; the hybrid/dense paths are side-effect-free so recall over a frozen DB
+stays byte-deterministic (#247, see
 `deterministic-recall-and-provenance.md`). A memory that is only ever found
-via hybrid recall therefore still decays as if unused. Whether to trade that
-determinism for reinforcement-on-use is an open product decision; until it is
-made, mark load-bearing memories `verified` (floor) or `always_on`
-(unconditional injection) rather than relying on usage to keep them alive.
+semantically therefore decays as if unused — unless you opt in:
+
+- **`reinforce: true`** on `mimir_recall` with `mode: 'dense'`/`'hybrid'`
+  applies the standard side-effects (retrieval-count bump, recency reset,
+  +0.25 decay boost, layer promotion) to the returned hits. This trades
+  byte-determinism of *subsequent* recalls for "used memories resist decay" —
+  the recall that carries the flag still returns the same ranking it would
+  have without it.
+- Alternatively, mark load-bearing memories `verified` (decay floor) or
+  `always_on` (unconditional injection) and keep semantic recall pure.
+
+`skip_side_effects` always wins over `reinforce`: a caller that asked for a
+pure read never mutates.
