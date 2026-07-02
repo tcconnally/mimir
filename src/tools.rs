@@ -3229,6 +3229,147 @@ mod tests {
     }
 
     #[test]
+    fn set_valid_to_close_is_audited_and_noop_is_not() {
+        // #373: set_valid_to previously wrote no entity_history snapshot, so a
+        // close was invisible to transaction-time reconstruction — queries at
+        // a tx instant BEFORE the close reported the close anyway. An
+        // effective close must snapshot the pre-close (open) version; a no-op
+        // (stored close kept) must not.
+        use std::thread::sleep;
+        use std::time::Duration;
+        let (db, path) = temp_db();
+
+        handle_remember(
+            &db,
+            json!({"category": "facts", "key": "svt", "body_json": "{\"note\":\"open fact\"}"}),
+        )
+        .expect("open fact");
+        let ent = db.get_entity("facts", "svt").unwrap().unwrap();
+        assert!(db.history_versions("facts", "svt").unwrap().is_empty());
+
+        sleep(Duration::from_millis(5));
+        let tx_open = now_ms(); // while the fact was still believed open
+        sleep(Duration::from_millis(5));
+
+        let closed = db.set_valid_to(&ent.id, now_ms()).expect("close");
+        assert_eq!(
+            db.history_versions("facts", "svt").unwrap().len(),
+            1,
+            "an effective close must write exactly one snapshot"
+        );
+
+        // As of tx_open the fact reconstructs OPEN (the pre-close snapshot
+        // answers, valid_to unbounded)…
+        let r = handle_bitemporal(
+            &db,
+            json!({"category": "facts", "key": "svt",
+                   "tx_at_unix_ms": tx_open, "valid_at_unix_ms": closed + 60_000}),
+        )
+        .expect("bitemporal pre-close knowledge");
+        let v: Value = serde_json::from_str(&r).unwrap();
+        assert_eq!(v["found"], json!(true), "pre-close knowledge must not show the close: {r}");
+        assert_eq!(v["valid_to_unix_ms"], Value::Null, "{r}");
+        assert_eq!(v["is_live_version"], json!(false), "{r}");
+        // …while current knowledge shows the close: same instant unanswerable,
+        // an in-period instant reports valid_to = closed.
+        let r = handle_bitemporal(
+            &db,
+            json!({"category": "facts", "key": "svt",
+                   "tx_at_unix_ms": now_ms(), "valid_at_unix_ms": closed + 60_000}),
+        )
+        .expect("bitemporal post-close knowledge");
+        let v: Value = serde_json::from_str(&r).unwrap();
+        assert_eq!(v["found"], json!(false), "{r}");
+        let r = handle_bitemporal(
+            &db,
+            json!({"category": "facts", "key": "svt",
+                   "tx_at_unix_ms": now_ms(), "valid_at_unix_ms": closed - 1}),
+        )
+        .expect("bitemporal in-period cell");
+        let v: Value = serde_json::from_str(&r).unwrap();
+        assert_eq!(v["found"], json!(true), "{r}");
+        assert_eq!(v["valid_to_unix_ms"], json!(closed), "{r}");
+
+        // No-op calls (same value, or a later one — the earlier close is
+        // kept) write NO snapshot.
+        assert_eq!(db.set_valid_to(&ent.id, closed).expect("same-value no-op"), closed);
+        assert_eq!(
+            db.set_valid_to(&ent.id, closed + 10_000).expect("would-extend no-op"),
+            closed
+        );
+        assert_eq!(
+            db.history_versions("facts", "svt").unwrap().len(),
+            1,
+            "no-op set_valid_to must not snapshot"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn supersede_close_inherits_the_audit_snapshot() {
+        // #373: mimir_supersede funnels through set_valid_to, so closing the
+        // old fact's period now snapshots it — the pre-supersede open version
+        // stays reconstructable at earlier transaction instants.
+        use std::thread::sleep;
+        use std::time::Duration;
+        let (db, path) = temp_db();
+
+        handle_remember(
+            &db,
+            json!({"category": "facts", "key": "sup-old", "body_json": "{\"note\":\"old\"}"}),
+        )
+        .expect("old");
+        handle_remember(
+            &db,
+            json!({"category": "facts", "key": "sup-new", "body_json": "{\"note\":\"new\"}"}),
+        )
+        .expect("new");
+        assert!(db.history_versions("facts", "sup-old").unwrap().is_empty());
+
+        sleep(Duration::from_millis(5));
+        let tx_open = now_ms();
+        sleep(Duration::from_millis(5));
+
+        let r = handle_supersede(
+            &db,
+            json!({"from_category": "facts", "from_key": "sup-old",
+                   "to_category": "facts", "to_key": "sup-new"}),
+        )
+        .expect("supersede");
+        let v: Value = serde_json::from_str(&r).unwrap();
+        let closed_at = v["from_valid_to_unix_ms"].as_i64().expect("close instant");
+
+        assert_eq!(
+            db.history_versions("facts", "sup-old").unwrap().len(),
+            1,
+            "supersede's close must inherit the audit snapshot"
+        );
+        // Pre-supersede knowledge still believes the old fact open at an
+        // instant the close later excluded.
+        let r = handle_bitemporal(
+            &db,
+            json!({"category": "facts", "key": "sup-old",
+                   "tx_at_unix_ms": tx_open, "valid_at_unix_ms": closed_at + 60_000}),
+        )
+        .expect("bitemporal pre-supersede knowledge");
+        let v: Value = serde_json::from_str(&r).unwrap();
+        assert_eq!(v["found"], json!(true), "{r}");
+        assert_eq!(v["valid_to_unix_ms"], Value::Null, "{r}");
+        // Current knowledge: closed.
+        let r = handle_bitemporal(
+            &db,
+            json!({"category": "facts", "key": "sup-old",
+                   "tx_at_unix_ms": now_ms(), "valid_at_unix_ms": closed_at + 60_000}),
+        )
+        .expect("bitemporal post-supersede knowledge");
+        let v: Value = serde_json::from_str(&r).unwrap();
+        assert_eq!(v["found"], json!(false), "{r}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn bitemporal_tool_reports_both_axes() {
         use std::thread::sleep;
         use std::time::Duration;

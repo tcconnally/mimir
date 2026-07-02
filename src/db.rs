@@ -1848,23 +1848,7 @@ impl Database {
             // re-assert (#371) — same body, but the pre-change valid period
             // must stay reconstructable.
             if content_changed || audit_period_change {
-                tx.execute(
-                    "INSERT INTO entity_history
-                     (history_id, id, category, key, body_json, status, type, tags,
-                      decay_score, retrieval_count, layer, topic_path, archived,
-                      archive_reason, links, verified, source, always_on, certainty,
-                      workspace_hash, agent_id, visibility, valid_from_unix_ms,
-                      valid_to_unix_ms, recorded_at_unix_ms, invalidated_at_unix_ms,
-                      supersedes, superseded_by, created_at_unix_ms, last_accessed_unix_ms)
-                     SELECT ?1, id, category, key, body_json, status, type, tags,
-                      decay_score, retrieval_count, layer, topic_path, archived,
-                      archive_reason, links, verified, source, always_on, certainty,
-                      workspace_hash, agent_id, visibility, valid_from_unix_ms,
-                      valid_to_unix_ms, recorded_at_unix_ms, ?2,
-                      supersedes, ?3, created_at_unix_ms, last_accessed_unix_ms
-                     FROM entities WHERE id = ?3",
-                    params![history_id, now, id],
-                )?;
+                Self::snapshot_live_row_to_history(&tx, &history_id, now, &id)?;
             }
 
             tx.execute(
@@ -3614,10 +3598,43 @@ impl Database {
         Ok(())
     }
 
+    /// Snapshot the current live row of `id` into `entity_history`, retired at
+    /// transaction time `invalidated_at` and linked back to the live id via
+    /// `superseded_by`. All other columns (incl. the prior recorded_at) are
+    /// copied verbatim, so the version was live during
+    /// [recorded_at, invalidated_at). Shared by the remember supersession /
+    /// audited-re-assert path (#371) and the audited set_valid_to close (#373);
+    /// the caller owns the transaction and the follow-up stamp of the live row.
+    fn snapshot_live_row_to_history(
+        conn: &rusqlite::Connection,
+        history_id: &str,
+        invalidated_at: i64,
+        id: &str,
+    ) -> Result<(), rusqlite::Error> {
+        conn.execute(
+            "INSERT INTO entity_history
+             (history_id, id, category, key, body_json, status, type, tags,
+              decay_score, retrieval_count, layer, topic_path, archived,
+              archive_reason, links, verified, source, always_on, certainty,
+              workspace_hash, agent_id, visibility, valid_from_unix_ms,
+              valid_to_unix_ms, recorded_at_unix_ms, invalidated_at_unix_ms,
+              supersedes, superseded_by, created_at_unix_ms, last_accessed_unix_ms)
+             SELECT ?1, id, category, key, body_json, status, type, tags,
+              decay_score, retrieval_count, layer, topic_path, archived,
+              archive_reason, links, verified, source, always_on, certainty,
+              workspace_hash, agent_id, visibility, valid_from_unix_ms,
+              valid_to_unix_ms, recorded_at_unix_ms, ?2,
+              supersedes, ?3, created_at_unix_ms, last_accessed_unix_ms
+             FROM entities WHERE id = ?3",
+            params![history_id, invalidated_at, id],
+        )?;
+        Ok(())
+    }
+
     /// Close an entity's application-time period (#363): record when the fact
     /// stopped being true in the world. Used by mimir_supersede — superseding
     /// a fact ends its validity (at transaction time unless the caller says
-    /// when). Does not touch the transaction axis.
+    /// when).
     ///
     /// Conservative by construction (#363 review):
     ///   * Refuses `valid_to <= valid_from` — an inverted period would shadow
@@ -3628,16 +3645,23 @@ impl Database {
     ///     revive it). Tightening (an earlier close) is allowed; when the
     ///     stored close is already at-or-before the requested one, it is kept.
     ///
+    /// AUDITED (#373, mirroring the #371/#372 audited re-assert): an effective
+    /// close/tighten snapshots the pre-change row to entity_history and
+    /// advances the live row's transaction time, so as_of/bitemporal_at at a
+    /// tx instant before the close still reconstruct the fact as open. A
+    /// no-op call (stored close kept) writes NO snapshot and touches nothing.
+    ///
     /// Returns the EFFECTIVE close instant (the requested one, or the earlier
     /// stored close that was kept).
     pub fn set_valid_to(&self, id: &str, valid_to: i64) -> Result<i64, Box<dyn std::error::Error>> {
         let conn = self.conn()?;
-        let (eff_from, cur_to): (i64, Option<i64>) = conn.query_row(
+        let (eff_from, cur_to, old_rec): (i64, Option<i64>, i64) = conn.query_row(
             "SELECT COALESCE(valid_from_unix_ms, recorded_at_unix_ms, created_at_unix_ms), \
-                    valid_to_unix_ms \
+                    valid_to_unix_ms, \
+                    COALESCE(recorded_at_unix_ms, created_at_unix_ms) \
              FROM entities WHERE id = ?1",
             params![id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         if valid_to <= eff_from {
             return Err(format!(
@@ -3649,14 +3673,32 @@ impl Database {
         if let Some(cur) = cur_to {
             if cur <= valid_to {
                 // Already closed at or before the requested instant: keep the
-                // earlier close (never extend validity).
+                // earlier close (never extend validity). No-op — no snapshot.
                 return Ok(cur);
             }
         }
-        conn.execute(
-            "UPDATE entities SET valid_to_unix_ms = ?1 WHERE id = ?2",
-            params![valid_to, id],
+        // #373: audited close. Snapshot the pre-close version (invalidated at
+        // `now`, bumped strictly past the old recorded_at so the history
+        // window is never zero-width — same guarantee as remember's), advance
+        // the live row's recorded_at and link supersedes, and pin a
+        // still-NULL valid_from (pre-v9 rows a legacy binary may still write)
+        // to the OLD effective opening — readers derive effective valid_from
+        // via COALESCE(valid_from, recorded_at, …), so advancing recorded_at
+        // over a NULL valid_from would silently shift the opening to `now`.
+        let now = now_ms().max(old_rec + 1);
+        let history_id = format!(
+            "hist-{}",
+            uuid::Uuid::new_v4().to_string().replace('-', "")[..16].to_string()
+        );
+        let tx = conn.unchecked_transaction()?;
+        Self::snapshot_live_row_to_history(&tx, &history_id, now, id)?;
+        tx.execute(
+            "UPDATE entities SET valid_to_unix_ms = ?1, recorded_at_unix_ms = ?2,
+                supersedes = ?3, valid_from_unix_ms = COALESCE(valid_from_unix_ms, ?4)
+             WHERE id = ?5",
+            params![valid_to, now, history_id, eff_from, id],
         )?;
+        tx.commit()?;
         Ok(valid_to)
     }
 

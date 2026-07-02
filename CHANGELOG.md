@@ -46,6 +46,13 @@ All notable changes to Perseus Vault (formerly Mimir/Mneme) are documented here.
   count 53 → 55.
 
 ### Fixed
+- Audited `set_valid_to` closes (#373): closing/tightening a fact's valid
+  period (directly or via `mimir_supersede`) now snapshots the pre-close
+  version to `entity_history` and advances the live row's transaction time —
+  previously a close was invisible to `mimir_as_of`/`mimir_bitemporal`
+  reconstruction, which reported the close even at transaction instants
+  before it happened. Tighten-only acceptance semantics are unchanged, and a
+  no-op call (an earlier stored close is kept) writes no snapshot.
 - Bi-temporal audit gap (#371): an identical-body re-remember that moves the
   bounds of an already-CLOSED valid period (e.g. re-extending past a
   `mimir_supersede`/`set_valid_to` close) now snapshots the pre-change version
