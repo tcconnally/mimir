@@ -357,6 +357,21 @@ pub fn entity_count(conn: &Connection) -> Result<i64, Box<dyn std::error::Error>
     Ok(count)
 }
 
+/// Truncate `s` to at most `max_bytes` bytes without splitting a UTF-8
+/// character. `&s[..n]` panics when `n` is not a char boundary, so walk the
+/// cut point back to the nearest boundary instead (stable-Rust equivalent of
+/// the nightly `floor_char_boundary`). (#352)
+fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Migrate from v0.1.x schema to v0.2.0.
 ///
 /// Opens the old DB, reads all memories, writes them as entities into the new schema,
@@ -457,9 +472,12 @@ pub fn migrate_from_v0_1(
         }
         let tags_json = serde_json::to_string(&tags_value).unwrap_or_else(|_| "[]".to_string());
 
-        // Category and key: derive from type + truncated id
+        // Category and key: derive from type + truncated id. Truncation must
+        // respect char boundaries: legacy v0.1 ids were written by external
+        // systems and may contain multi-byte UTF-8 — a raw byte slice panics
+        // if byte 20 falls inside a char, aborting the whole migration (#352).
         let category = "general".to_string();
-        let key = format!("migrated-{}", &id[..id.len().min(20)]);
+        let key = format!("migrated-{}", truncate_at_char_boundary(&id, 20));
 
         let verified_int = if verified != 0 { 1 } else { 0 };
 
@@ -925,6 +943,78 @@ mod tests {
         assert!(body.contains("Test content"));
 
         // Cleanup old db
+        let _ = std::fs::remove_file(&old_path);
+    }
+
+    #[test]
+    fn truncate_at_char_boundary_never_splits_chars() {
+        // Shorter than the limit: unchanged.
+        assert_eq!(truncate_at_char_boundary("abc", 20), "abc");
+        // Exactly at the limit: unchanged.
+        assert_eq!(truncate_at_char_boundary("a".repeat(20).as_str(), 20), "a".repeat(20));
+        // ASCII over the limit: plain byte cut.
+        assert_eq!(truncate_at_char_boundary("abcdef", 3), "abc");
+        // Multi-byte char straddling the cut point: back up to the boundary.
+        // "é" is 2 bytes; cutting "aé" at byte 2 lands mid-char.
+        assert_eq!(truncate_at_char_boundary("aéz", 2), "a");
+        // 4-byte char straddling the cut.
+        assert_eq!(truncate_at_char_boundary("ab😀z", 4), "ab");
+        // Degenerate limit 0.
+        assert_eq!(truncate_at_char_boundary("é", 0), "");
+    }
+
+    #[test]
+    fn migration_from_v0_1_handles_multibyte_id_without_panic() {
+        // #352: a legacy id whose multi-byte UTF-8 char straddles byte offset
+        // 20 used to panic in the byte-index slice building `key`, aborting
+        // the whole one-time migration. The char at bytes 19..21 ("é") is the
+        // exact repro from the issue.
+        let (old_conn, old_path) = temp_db();
+        old_conn
+            .execute_batch(
+                "CREATE TABLE memories (
+                    id TEXT PRIMARY KEY, content TEXT NOT NULL,
+                    type TEXT DEFAULT 'insight', summary TEXT DEFAULT '',
+                    relevance REAL DEFAULT 0.0, decay_score REAL DEFAULT 1.0,
+                    retrieval_count INTEGER DEFAULT 0, layer TEXT DEFAULT 'working',
+                    topic_path TEXT DEFAULT '', created_at_unix_ms INTEGER NOT NULL,
+                    last_accessed_unix_ms INTEGER NOT NULL, workspace_hash TEXT DEFAULT '',
+                    tags TEXT DEFAULT '{}', links TEXT DEFAULT '[]', source TEXT DEFAULT 'mimir',
+                    verified INTEGER DEFAULT 0
+                );",
+            )
+            .expect("create v0.1 schema");
+
+        // 19 ASCII bytes, then a 2-byte char occupying bytes 19..21.
+        let evil_id = format!("{}é-tail", "x".repeat(19));
+        assert!(!evil_id.is_char_boundary(20), "precondition: byte 20 is mid-char");
+        let now = now_ms();
+        old_conn
+            .execute(
+                "INSERT INTO memories (id, content, type, created_at_unix_ms, last_accessed_unix_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![evil_id, "Unicode id content", "insight", now, now],
+            )
+            .expect("insert multibyte-id memory");
+        drop(old_conn);
+
+        let (new_conn, _new_path) = temp_db();
+        let report = migrate_from_v0_1(&old_path, &new_conn).expect("migrate must not panic");
+
+        assert_eq!(report.total_old_memories, 1);
+        assert_eq!(report.entities_created, 1);
+        assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+
+        let key: String = new_conn
+            .query_row(
+                "SELECT key FROM entities WHERE id = ?1",
+                params![evil_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Boundary walked back from 20 to 19: the é is dropped, not split.
+        assert_eq!(key, format!("migrated-{}", "x".repeat(19)));
+
         let _ = std::fs::remove_file(&old_path);
     }
 
