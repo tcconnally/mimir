@@ -352,6 +352,8 @@ pub struct ContextArgs {
     pub categories: Vec<String>,
     #[serde(default = "default_context_limit")]
     pub limit: i64,
+    #[serde(default)]
+    pub workspace_hash: Option<String>,
 }
 
 fn default_context_limit() -> i64 {
@@ -1078,7 +1080,7 @@ pub fn handle_context(db: &Database, args: Value) -> String {
         Err(e) => return json!({"error": format!("Invalid context arguments: {}", e)}).to_string(),
     };
 
-    match db.context(&a.categories, a.limit) {
+    match db.context(&a.categories, a.limit, a.workspace_hash.as_deref()) {
         Ok(markdown) => {
             let total_chars = markdown.len();
             json!({"markdown": markdown, "total_chars": total_chars}).to_string()
@@ -1602,6 +1604,8 @@ pub struct RecallWhenArgs {
     pub context: String,
     #[serde(default = "default_rw_limit")]
     pub limit: i64,
+    #[serde(default)]
+    pub workspace_hash: Option<String>,
 }
 
 fn default_rw_limit() -> i64 {
@@ -1625,7 +1629,7 @@ pub fn handle_recall_when(db: &Database, args: Value) -> Result<String, String> 
         .map_err(|e| format!("Invalid recall_when arguments: {}", e))?;
 
     let entities = db
-        .recall_when(&a.context, a.limit)
+        .recall_when(&a.context, a.limit, a.workspace_hash.as_deref())
         .map_err(|e| format!("Recall_when failed: {}", e))?;
 
     let items_expanded: Vec<serde_json::Value> =

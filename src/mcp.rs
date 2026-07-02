@@ -1626,6 +1626,10 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
           "type": "integer",
           "default": 10,
           "description": "Maximum number of entities to include in the context block"
+        },
+        "workspace_hash": {
+          "type": "string",
+          "description": "Workspace scope filter (v1.2.0). When set, only entities with a matching workspace_hash are included. Omit for no workspace filtering — in a federated vault that leaks every workspace's memory into the block."
         }
       },
       "required": []
@@ -2201,6 +2205,10 @@ fn list_tools(id: Option<Value>) -> JsonRpcResponse {
           "type": "integer",
           "description": "Maximum entities to return (default 10, max 100)",
           "default": 10
+        },
+        "workspace_hash": {
+          "type": "string",
+          "description": "Workspace scope filter (v1.2.0). When set, only entities with a matching workspace_hash can fire. Omit for no workspace filtering — in a federated vault that lets one workspace's triggers inject into another's turns."
         }
       },
       "required": [

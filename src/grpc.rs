@@ -196,7 +196,7 @@ pub mod grpc {
         async fn context(&self, req: Request<ContextRequest>) -> Result<Response<ContextResponse>, Status> {
             let r = req.into_inner();
             with_db(self, |db| {
-                let ctx = db.context(&r.categories, r.limit)?;
+                let ctx = db.context(&r.categories, r.limit, r.workspace_hash.as_deref())?;
                 Ok(Response::new(ContextResponse { context: ctx }))
             })
         }
